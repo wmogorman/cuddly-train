@@ -28,11 +28,11 @@
   Base API URL. Default: https://api.itglue.com
 
 .EXAMPLE
-  .\Delete-AdComputers.ps1 -Subdomain "datamax" -MaxPerRun 200
+  .\Delete-Ad-Computer.ps1 -Subdomain "datamax" -MaxPerRun 200
 
 .EXAMPLE (Datto RMM recommended)
   PowerShell (no profile), 64-bit:
-    -Command "& { . .\Delete-AdComputers.ps1 -Subdomain 'datamax' -MaxPerRun 200 -WhatIf:$false }"
+    -Command "& { . .\Delete-Ad-Computer.ps1 -Subdomain 'datamax' -MaxPerRun 200 -WhatIf:$false }"
   Store API key as a Site or Global variable and expose to the script via $env:ITG_API_KEY.
 #>
 
