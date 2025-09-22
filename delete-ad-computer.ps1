@@ -1,16 +1,17 @@
-<# 
+<#
 .SYNOPSIS
   Deletes IT Glue Flexible Assets of a given type (default: "AD Computer") in controlled batches.
 
 .DESCRIPTION
-  Designed for hourly runs in Datto RMM. Each run deletes up to -MaxPerRun assets, so you can
-  safely chip away without blasting the API or nuking everything at once.
+  Designed for Datto RMM or ad-hoc runs. By default each run deletes up to -MaxPerRun assets so you can
+  safely chip away without blasting the API. Use -RunUntilEmpty to stay online until no assets remain.
+  A simple rate limiter (defaults: 3000 changes / 5 minutes) prevents IT Glue write-limit violations.
 
 .PARAMETER ApiKey
   IT Glue API key. If omitted, the script will use $env:ITGlueKey.
 
 .PARAMETER Subdomain
-  Your IT Glue account subdomain (the “x-account-subdomain” header).
+  Your IT Glue account subdomain (the "x-account-subdomain" header).
 
 .PARAMETER AssetTypeName
   Flexible Asset Type name. Default: "AD Computer".
@@ -26,6 +27,15 @@
 
 .PARAMETER BaseUri
   Base API URL. Default: https://api.itglue.com
+
+.PARAMETER RunUntilEmpty
+  When set, override -MaxPerRun and continue deleting until no more matching assets are returned.
+
+.PARAMETER RateLimitChanges
+  Maximum asset deletes allowed per rolling window. Default: 3000. Set to 0 or less to disable.
+
+.PARAMETER RateLimitWindowSeconds
+  Length of the rate limit window in seconds. Default: 300 (5 minutes). Set to 0 or less to disable.
 
 .EXAMPLE
   .\Delete-Ad-Computer.ps1 -Subdomain "datamax" -MaxPerRun 200
@@ -57,12 +67,35 @@ param(
   [int]$PageSize = 200,
 
   [Parameter(Mandatory=$false)]
-  [string]$BaseUri = 'https://api.itglue.com'
+  [string]$BaseUri = 'https://api.itglue.com',
+
+  [Parameter(Mandatory=$false)]
+  [switch]$RunUntilEmpty,
+
+  [Parameter(Mandatory=$false)]
+  [int]$RateLimitChanges = 3000,
+
+  [Parameter(Mandatory=$false)]
+  [int]$RateLimitWindowSeconds = 300
 )
 
 if ([string]::IsNullOrWhiteSpace($ApiKey)) {
   throw "Missing API key. Pass -ApiKey or set env var ITGlueKey."
 }
+
+if (-not $RunUntilEmpty -and $MaxPerRun -le 0) {
+  throw "-MaxPerRun must be greater than zero when -RunUntilEmpty is not specified."
+}
+
+if ($PageSize -le 0) {
+  throw "-PageSize must be greater than zero."
+}
+
+if ($RateLimitChanges -lt 0 -or $RateLimitWindowSeconds -lt 0) {
+  throw "-RateLimitChanges and -RateLimitWindowSeconds must be zero or positive."
+}
+
+$throttleEnabled = ($RateLimitChanges -gt 0 -and $RateLimitWindowSeconds -gt 0)
 
 # --- Helpers -----------------------------------------------------------------
 
@@ -163,17 +196,19 @@ try {
   Write-Verbose "Type '$AssetTypeName' => ID $typeId"
 
   $deleted = 0
-  $page    = 1
 
-  while ($deleted -lt $MaxPerRun) {
-    $batch = Get-FlexAssetsBatch -typeId $typeId -pageSize $PageSize -pageNumber $page -orgId $OrgId
+  $windowStart = Get-Date
+  $windowCount = 0
+
+  while ($true) {
+    $batch = Get-FlexAssetsBatch -typeId $typeId -pageSize $PageSize -pageNumber 1 -orgId $OrgId
     if (-not $batch -or $batch.Count -eq 0) {
       Write-Output "No more '$AssetTypeName' assets to process."
       break
     }
 
     foreach ($asset in $batch) {
-      if ($deleted -ge $MaxPerRun) { break }
+      if (-not $RunUntilEmpty -and $deleted -ge $MaxPerRun) { break }
 
       $id   = $asset.id
       $name = $asset.attributes.'name'
@@ -186,7 +221,19 @@ try {
         try {
           Invoke-ITGlue -Method DELETE -Path $target | Out-Null
           $deleted++
+          $windowCount++
           Write-Output "[DELETED] $caption"
+
+          if ($throttleEnabled -and $windowCount -ge $RateLimitChanges) {
+            $elapsed = (Get-Date) - $windowStart
+            $remaining = [int][Math]::Ceiling($RateLimitWindowSeconds - $elapsed.TotalSeconds)
+            if ($remaining -gt 0) {
+              Write-Verbose "Rate limit reached ($RateLimitChanges deletes). Sleeping for $remaining seconds."
+              Start-Sleep -Seconds $remaining
+            }
+            $windowStart = Get-Date
+            $windowCount = 0
+          }
         }
         catch {
           Write-Warning "[SKIPPED] $caption -> $($_.Exception.Message)"
@@ -196,12 +243,10 @@ try {
       }
     }
 
-    if ($deleted -ge $MaxPerRun) { break }
-    # Advance to next page only if we fully consumed this one
-    $page++
+    if (-not $RunUntilEmpty -and $deleted -ge $MaxPerRun) { break }
   }
 
-  Write-Output "Run complete. Deleted this run: $deleted  | MaxPerRun: $MaxPerRun  | Type: '$AssetTypeName'  | Org filter: $(if ($PSBoundParameters.ContainsKey('OrgId') -and $null -ne $OrgId) { $OrgId } else { 'None' })"
+  Write-Output ("Run complete. Deleted this run: {0} | MaxPerRun: {1} | RunUntilEmpty: {2} | Type: '{3}' | Org filter: {4}" -f $deleted, $MaxPerRun, $RunUntilEmpty.IsPresent, $AssetTypeName, (if ($PSBoundParameters.ContainsKey('OrgId') -and $null -ne $OrgId) { $OrgId } else { 'None' }))
 }
 catch {
   Write-Error $_
