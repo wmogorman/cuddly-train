@@ -7,7 +7,7 @@
   safely chip away without blasting the API or nuking everything at once.
 
 .PARAMETER ApiKey
-  IT Glue API key. If omitted, the script will use $env:ITG_API_KEY.
+  IT Glue API key. If omitted, the script will use $env:ITGlueKey.
 
 .PARAMETER Subdomain
   Your IT Glue account subdomain (the “x-account-subdomain” header).
@@ -33,13 +33,13 @@
 .EXAMPLE (Datto RMM recommended)
   PowerShell (no profile), 64-bit:
     -Command "& { . .\Delete-Ad-Computer.ps1 -Subdomain 'datamax' -MaxPerRun 200 -WhatIf:$false }"
-  Store API key as a Site or Global variable and expose to the script via $env:ITG_API_KEY.
+  Store API key as a Site or Global variable and expose to the script via $env:ITGlueKey.
 #>
 
 [CmdletBinding(SupportsShouldProcess)]
 param(
   [Parameter(Mandatory=$false)]
-  [string]$ApiKey = $env:ITG_API_KEY,
+  [string]$ApiKey = $env:ITGlueKey,
 
   [Parameter(Mandatory=$true)]
   [string]$Subdomain,
@@ -61,7 +61,7 @@ param(
 )
 
 if ([string]::IsNullOrWhiteSpace($ApiKey)) {
-  throw "Missing API key. Pass -ApiKey or set env var ITG_API_KEY."
+  throw "Missing API key. Pass -ApiKey or set env var ITGlueKey."
 }
 
 # --- Helpers -----------------------------------------------------------------
