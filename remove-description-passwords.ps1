@@ -3,21 +3,26 @@
   Scan IT Glue passwords for descriptions that might contain plaintext credentials.
 
 .DESCRIPTION
-  Fetches all passwords for a given organization and flags descriptions that look like
-  they contain embedded passwords. Intended for Datto RMM or ad-hoc execution.
+  Fetches passwords for one or more IT Glue organizations and flags descriptions that look
+  like they contain embedded passwords. Intended for Datto RMM or ad-hoc execution.
 
 .PARAMETER ApiKey
   IT Glue API key. Defaults to $env:ITGlueKey for Datto RMM compatibility.
 
 .PARAMETER OrgId
-  IT Glue organization ID to inspect.
+  Optional one or more IT Glue organization IDs. When omitted, the script scans every organization
+  accessible to the API key.
 
 .PARAMETER BaseUri
   Base API URL. Default: https://api.itglue.com.
 
 .EXAMPLE
-  # Datto RMM recommended invocation
-  # Store the API key in a Global/Site credential exposed as $env:ITGlueKey
+  # Datto RMM recommended invocation across all orgs
+  PowerShell (no profile), 64-bit:
+    -Command "& { . .\remove-description-passwords.ps1 }"
+
+.EXAMPLE
+  # Scan a specific organization
   PowerShell (no profile), 64-bit:
     -Command "& { . .\remove-description-passwords.ps1 -OrgId 12345 }"
 #>
@@ -27,8 +32,8 @@ param(
   [Parameter(Mandatory=$false)]
   [string]$ApiKey = $env:ITGlueKey,
 
-  [Parameter(Mandatory=$true)]
-  [string]$OrgId,
+  [Parameter(Mandatory=$false)]
+  [string[]]$OrgId,
 
   [Parameter(Mandatory=$false)]
   [string]$BaseUri = 'https://api.itglue.com'
@@ -38,8 +43,67 @@ if ([string]::IsNullOrWhiteSpace($ApiKey)) {
   throw 'Missing API key. Pass -ApiKey or set env var ITGlueKey.'
 }
 
-if ([string]::IsNullOrWhiteSpace($OrgId)) {
-  throw 'Missing OrgId. Specify -OrgId to target an IT Glue organization.'
+$BaseUri = $BaseUri.TrimEnd('/')
+
+function Invoke-ITGlueRequest {
+  param(
+    [Parameter(Mandatory=$true)] [string]$Uri,
+    [Parameter(Mandatory=$true)] [string]$Method,
+    [hashtable]$Headers,
+    $Body
+  )
+
+  Invoke-RestMethod -Uri $Uri -Method $Method -Headers $Headers -Body $Body -ErrorAction Stop
+}
+
+function Get-ITGlueOrganizations {
+  param(
+    [string]$ApiKey,
+    [string]$BaseUri,
+    [string[]]$OrgIds
+  )
+
+  $headers = @{
+    'x-api-key' = $ApiKey
+    'Accept'    = 'application/vnd.api+json'
+  }
+
+  $results = @()
+
+  if ($OrgIds -and $OrgIds.Count -gt 0) {
+    foreach ($id in $OrgIds) {
+      $uri = '{0}/organizations/{1}' -f $BaseUri, $id
+      try {
+        $response = Invoke-ITGlueRequest -Uri $uri -Method 'GET' -Headers $headers
+        if ($response.data) {
+          $results += [PSCustomObject]@{
+            Id   = [string]$response.data.id
+            Name = [string]$response.data.attributes.name
+          }
+        }
+      }
+      catch {
+        Write-Warning ("Failed to retrieve organization {0}: {1}" -f $id, $_.Exception.Message)
+      }
+    }
+    return $results | Sort-Object -Property Id -Unique
+  }
+
+  $uri = '{0}/organizations?page[size]=1000' -f $BaseUri
+  do {
+    $response = Invoke-ITGlueRequest -Uri $uri -Method 'GET' -Headers $headers
+    if ($response.data) {
+      foreach ($org in $response.data) {
+        $results += [PSCustomObject]@{
+          Id   = [string]$org.id
+          Name = [string]$org.attributes.name
+        }
+      }
+    }
+    $uri = $response.links.next
+  } while ($uri)
+
+  return $results | Sort-Object -Property Id -Unique
 }
 
 function Get-ITGluePasswords {
@@ -54,11 +118,11 @@ function Get-ITGluePasswords {
     'Accept'    = 'application/vnd.api+json'
   }
 
-  $uri = '{0}/organizations/{1}/passwords?page[size]=1000' -f $BaseUri.TrimEnd('/'), $OrgId
+  $uri = '{0}/organizations/{1}/passwords?page[size]=1000' -f $BaseUri, $OrgId
   $results = @()
 
   do {
-    $response = Invoke-RestMethod -Uri $uri -Headers $headers -Method Get
+    $response = Invoke-ITGlueRequest -Uri $uri -Method 'GET' -Headers $headers
     $results  += $response.data
     $uri       = $response.links.next
   } while ($uri)
@@ -89,16 +153,28 @@ function Test-DescriptionForPassword {
   return $false
 }
 
-$passwords = Get-ITGluePasswords -ApiKey $ApiKey -BaseUri $BaseUri -OrgId $OrgId
+$organizations = Get-ITGlueOrganizations -ApiKey $ApiKey -BaseUri $BaseUri -OrgIds $OrgId
+if (-not $organizations) {
+  Write-Warning 'No organizations found to scan.'
+  return
+}
+
 $report = @()
 
-foreach ($pw in $passwords) {
-  $desc = $pw.attributes.description
-  if (Test-DescriptionForPassword -Description $desc) {
-    $report += [PSCustomObject]@{
-      PasswordName = $pw.attributes.name
-      Description  = $desc
-      PasswordID   = $pw.id
+foreach ($org in $organizations) {
+  Write-Verbose "Scanning organization $($org.Id) - $($org.Name)"
+  $passwords = Get-ITGluePasswords -ApiKey $ApiKey -BaseUri $BaseUri -OrgId $org.Id
+
+  foreach ($pw in $passwords) {
+    $desc = $pw.attributes.description
+    if (Test-DescriptionForPassword -Description $desc) {
+      $report += [PSCustomObject]@{
+        OrgId        = $org.Id
+        OrgName      = $org.Name
+        PasswordName = $pw.attributes.name
+        Description  = $desc
+        PasswordID   = $pw.id
+      }
     }
   }
 }
