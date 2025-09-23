@@ -14,7 +14,7 @@
   Your IT Glue account subdomain (the "x-account-subdomain" header).
 
 .PARAMETER AssetTypeName
-  Flexible Asset Type name. Default: "AD Computer".
+  Flexible Asset Type name. Defaults to the environment variable AssetTypeName when present, otherwise "AD Computer".
 
 .PARAMETER OrgId
   Optional: limit deletions to a single IT Glue organization ID.
@@ -55,7 +55,7 @@ param(
   [string]$Subdomain,
 
   [Parameter(Mandatory=$false)]
-  [string]$AssetTypeName = 'AD Computer',
+  [string]$AssetTypeName = $(if (-not [string]::IsNullOrWhiteSpace($env:AssetTypeName)) { $env:AssetTypeName } else { 'AD Computer' }),
 
   [Parameter(Mandatory=$false)]
   [Nullable[int]]$OrgId,
@@ -81,6 +81,10 @@ param(
 
 if ([string]::IsNullOrWhiteSpace($ApiKey)) {
   throw "Missing API key. Pass -ApiKey or set env var ITGlueKey."
+}
+
+if ([string]::IsNullOrWhiteSpace($AssetTypeName)) {
+  throw 'Missing asset type name. Set $env:AssetTypeName or pass -AssetTypeName.'
 }
 
 if (-not $RunUntilEmpty -and $MaxPerRun -le 0) {
