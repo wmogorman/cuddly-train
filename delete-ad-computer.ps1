@@ -246,7 +246,8 @@ try {
     if (-not $RunUntilEmpty -and $deleted -ge $MaxPerRun) { break }
   }
 
-  Write-Output ("Run complete. Deleted this run: {0} | MaxPerRun: {1} | RunUntilEmpty: {2} | Type: '{3}' | Org filter: {4}" -f $deleted, $MaxPerRun, $RunUntilEmpty.IsPresent, $AssetTypeName, (if ($PSBoundParameters.ContainsKey('OrgId') -and $null -ne $OrgId) { $OrgId } else { 'None' }))
+  $orgSummary = if ($PSBoundParameters.ContainsKey('OrgId') -and $null -ne $OrgId) { $OrgId } else { 'None' }
+  Write-Output ("Run complete. Deleted this run: {0} | MaxPerRun: {1} | RunUntilEmpty: {2} | Type: '{3}' | Org filter: {4}" -f $deleted, $MaxPerRun, $RunUntilEmpty.IsPresent, $AssetTypeName, $orgSummary)
 }
 catch {
   Write-Error $_
