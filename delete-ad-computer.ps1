@@ -213,13 +213,31 @@ try {
 
     foreach ($asset in $batch) {
       if (-not $RunUntilEmpty -and $deleted -ge $MaxPerRun) { break }
+      if (-not $asset) { continue }
 
-      $id   = $asset.id
-      $name = $asset.attributes.'name'
-      $org  = $asset.relationships.'organization'.data.id
+      $id = $asset.id
+      if ([string]::IsNullOrWhiteSpace([string]$id)) {
+        Write-Warning 'Skipping asset with missing ID.'
+        continue
+      }
+
+      $attributes = $asset.attributes
+      $name = '<Unnamed Asset>'
+      if ($attributes -and $attributes.'name') {
+        $name = [string]$attributes.'name'
+      }
+
+      $relationships = $asset.relationships
+      $orgIdValue = $null
+      if ($relationships -and $relationships.'organization' -and $relationships.'organization'.data) {
+        $orgIdValue = $relationships.'organization'.data.id
+      }
+      if ([string]::IsNullOrWhiteSpace([string]$orgIdValue)) {
+        $orgIdValue = 'Unknown'
+      }
 
       $target = "flexible_assets/$id"
-      $caption = "Delete $AssetTypeName (ID=$id, OrgId=$org, Name='$name')"
+      $caption = "Delete $AssetTypeName (ID=$id, OrgId=$orgIdValue, Name='$name')"
 
       if ($PSCmdlet.ShouldProcess($caption, 'DELETE')) {
         try {

@@ -53,7 +53,18 @@ function Invoke-ITGlueRequest {
     $Body
   )
 
-  Invoke-RestMethod -Uri $Uri -Method $Method -Headers $Headers -Body $Body -ErrorAction Stop
+  $invokeParams = @{
+    Uri         = $Uri
+    Method      = $Method
+    Headers     = $Headers
+    ErrorAction = 'Stop'
+  }
+
+  if ($PSBoundParameters.ContainsKey('Body') -and $null -ne $Body) {
+    $invokeParams['Body'] = $Body
+  }
+
+  Invoke-RestMethod @invokeParams
 }
 
 function Get-ITGlueOrganizations {
@@ -118,14 +129,38 @@ function Get-ITGluePasswords {
     'Accept'    = 'application/vnd.api+json'
   }
 
-  $uri = '{0}/organizations/{1}/passwords?page[size]=1000' -f $BaseUri, $OrgId
+  $encodedOrgId = [System.Uri]::EscapeDataString([string]$OrgId)
+  $uri = '{0}/passwords?filter[organization_id]={1}&page[size]=1000' -f $BaseUri, $encodedOrgId
   $results = @()
 
-  do {
-    $response = Invoke-ITGlueRequest -Uri $uri -Method 'GET' -Headers $headers
-    $results  += $response.data
-    $uri       = $response.links.next
-  } while ($uri)
+  while ($true) {
+    try {
+      $response = Invoke-ITGlueRequest -Uri $uri -Method 'GET' -Headers $headers
+    }
+    catch {
+      $statusCode = $null
+      if ($_.Exception -and $_.Exception.Response -and $_.Exception.Response.StatusCode) {
+        $statusCode = [int]$_.Exception.Response.StatusCode
+      }
+
+      if ($statusCode -eq 404) {
+        Write-Warning ("Passwords endpoint returned 404 for organization {0}. Skipping." -f $OrgId)
+        break
+      }
+
+      throw
+    }
+
+    if ($response.data) {
+      $results += $response.data
+    }
+
+    if (-not $response.links -or [string]::IsNullOrWhiteSpace([string]$response.links.next)) {
+      break
+    }
+
+    $uri = [string]$response.links.next
+  }
 
   return $results
 }
