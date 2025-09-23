@@ -137,17 +137,8 @@ function Test-DescriptionForPassword {
     return $false
   }
 
-  $patterns = @(
-    'password\s*is\s*[:=]?\s*\S+',
-    'pwd\s*[:=]?\s*\S+',
-    'pass\s*[:=]?\s*\S+',
-    'pw\s*[:=]?\s*\S+'
-  )
-
-  foreach ($pattern in $patterns) {
-    if ($Description -match $pattern) {
-      return $true
-    }
+  if ($Description -match '(?i)password') {
+    return $true
   }
 
   return $false
