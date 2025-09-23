@@ -179,5 +179,5 @@ foreach ($org in $organizations) {
   }
 }
 
-$report | Export-Csv -Path './itglue-passwords-to-investigate.csv' -NoTypeInformation
-Write-Host 'Report generated: itglue-passwords-to-investigate.csv'
+$report | Export-Csv -Path 'C:\itglue-passwords-to-investigate.csv' -NoTypeInformation
+Write-Host 'Report generated: C:\itglue-passwords-to-investigate.csv'
