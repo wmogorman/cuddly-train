@@ -182,7 +182,7 @@ function Get-FirstMatchValue {
   return $null
 }
 
-function Extract-ManufacturerModel {
+function Get-ManufacturerModel {
   param(
     [string]$Description,
     [string]$Notes
