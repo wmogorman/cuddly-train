@@ -3,7 +3,7 @@
   Populate manufacturer and model on IT Glue configuration items that are missing those fields.
 
 .DESCRIPTION
-  Looks through configuration items for one or more organizations, trying to infer manufacturer
+  Looks through configurations for one or more organizations, trying to infer manufacturer
   and model values from the description or notes fields. Designed for Datto RMM or ad-hoc execution.
 
 .PARAMETER ApiKey
@@ -16,7 +16,7 @@
   Base API URL. Default: https://api.itglue.com.
 
 .PARAMETER PageSize
-  Number of configuration items to pull per request. Default: 100.
+  Number of configuration records to pull per request. Default: 100.
 
 .EXAMPLE
   PowerShell (no profile), 64-bit:
@@ -73,7 +73,16 @@ function Invoke-ITGlueRequest {
     $invokeParams['ContentType'] = $ContentType
   }
 
-  Invoke-RestMethod @invokeParams
+  try {
+    Invoke-RestMethod @invokeParams
+  }
+  catch {
+    $message = $_.Exception.Message
+    if ($_.Exception.Response -and $_.Exception.Response.ResponseUri) {
+      $message = "{0} (URI: {1})" -f $message, $_.Exception.Response.ResponseUri
+    }
+    throw (New-Object System.Exception("IT Glue request failed: $message", $_.Exception))
+  }
 }
 
 function Get-ITGlueOrganizations {
@@ -128,7 +137,7 @@ function Get-ITGlueOrganizations {
   return $results | Sort-Object -Property Id -Unique
 }
 
-function Get-ITGlueConfigurationItems {
+function Get-ITGlueConfigurations {
   param(
     [string]$ApiKey,
     [string]$BaseUri,
@@ -142,7 +151,7 @@ function Get-ITGlueConfigurationItems {
   }
 
   $encodedOrgId = [System.Uri]::EscapeDataString([string]$OrgId)
-  $uri = '{0}/configuration_items?filter[organization_id]={1}&page[size]={2}' -f $BaseUri, $encodedOrgId, $PageSize
+  $uri = '{0}/configurations?filter[organization_id]={1}&page[size]={2}' -f $BaseUri, $encodedOrgId, $PageSize
   $results = @()
 
   while ($true) {
@@ -182,7 +191,7 @@ function Get-FirstMatchValue {
   return $null
 }
 
-function Get-ManufacturerModel {
+function Extract-ManufacturerModel {
   param(
     [string]$Description,
     [string]$Notes
@@ -217,7 +226,7 @@ function Get-ManufacturerModel {
   }
 }
 
-function Update-ITGlueConfigurationItem {
+function Update-ITGlueConfiguration {
   param(
     [string]$ApiKey,
     [string]$BaseUri,
@@ -237,13 +246,13 @@ function Update-ITGlueConfigurationItem {
 
   $body = @{
     data = @{
-      type       = 'configuration_items'
+      type       = 'configurations'
       id         = [string]$ItemId
       attributes = $Attributes
     }
   } | ConvertTo-Json -Depth 5
 
-  $uri = '{0}/configuration_items/{1}' -f $BaseUri, [System.Uri]::EscapeDataString([string]$ItemId)
+  $uri = '{0}/configurations/{1}' -f $BaseUri, [System.Uri]::EscapeDataString([string]$ItemId)
   Invoke-ITGlueRequest -Uri $uri -Method 'PATCH' -Headers $headers -Body $body -ContentType 'application/vnd.api+json'
 }
 
@@ -257,7 +266,7 @@ $updates = @()
 
 foreach ($org in $organizations) {
   Write-Verbose "Scanning organization $($org.Id) - $($org.Name)"
-  $items = Get-ITGlueConfigurationItems -ApiKey $ApiKey -BaseUri $BaseUri -OrgId $org.Id -PageSize $PageSize
+  $items = Get-ITGlueConfigurations -ApiKey $ApiKey -BaseUri $BaseUri -OrgId $org.Id -PageSize $PageSize
 
   foreach ($item in $items) {
     $currentManufacturer = $item.attributes.manufacturer
@@ -286,7 +295,7 @@ foreach ($org in $organizations) {
     $target = '{0} ({1})' -f $item.attributes.name, $org.Name
     if ($PSCmdlet.ShouldProcess($target, 'Update manufacturer/model')) {
       try {
-        Update-ITGlueConfigurationItem -ApiKey $ApiKey -BaseUri $BaseUri -ItemId $item.id -Attributes $attributesToUpdate
+        Update-ITGlueConfiguration -ApiKey $ApiKey -BaseUri $BaseUri -ItemId $item.id -Attributes $attributesToUpdate
         $updates += [PSCustomObject]@{
           OrgId         = $org.Id
           OrgName       = $org.Name
