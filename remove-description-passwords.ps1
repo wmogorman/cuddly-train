@@ -165,18 +165,14 @@ function Get-ITGluePasswords {
   return $results
 }
 
-function Test-DescriptionForPassword {
-  param([string]$Description)
+function Test-ContentForPassword {
+  param([string]$Text)
 
-  if ([string]::IsNullOrWhiteSpace($Description)) {
+  if ([string]::IsNullOrWhiteSpace($Text)) {
     return $false
   }
 
-  if ($Description -match '(?i)password') {
-    return $true
-  }
-
-  return $false
+  return ($Text -match '(?i)password')
 }
 
 $organizations = Get-ITGlueOrganizations -ApiKey $ApiKey -BaseUri $BaseUri -OrgIds $OrgId
@@ -192,14 +188,26 @@ foreach ($org in $organizations) {
   $passwords = Get-ITGluePasswords -ApiKey $ApiKey -BaseUri $BaseUri -OrgId $org.Id
 
   foreach ($pw in $passwords) {
-    $desc = $pw.attributes.description
-    if (Test-DescriptionForPassword -Description $desc) {
+    $desc  = $pw.attributes.description
+    $notes = $pw.attributes.notes
+
+    $matchedFields = @()
+    if (Test-ContentForPassword -Text $desc) {
+      $matchedFields += 'Description'
+    }
+    if (Test-ContentForPassword -Text $notes) {
+      $matchedFields += 'Notes'
+    }
+
+    if ($matchedFields.Count -gt 0) {
       $report += [PSCustomObject]@{
-        OrgId        = $org.Id
-        OrgName      = $org.Name
-        PasswordName = $pw.attributes.name
-        Description  = $desc
-        PasswordID   = $pw.id
+        OrgId         = $org.Id
+        OrgName       = $org.Name
+        PasswordName  = $pw.attributes.name
+        Description   = $desc
+        Notes         = $notes
+        MatchedFields = ($matchedFields -join ', ')
+        PasswordID    = $pw.id
       }
     }
   }
