@@ -3,6 +3,10 @@ $oldServer1 = "BBM-EVO01"
 $oldServer2 = "10.0.1.4"
 $newServer1 = "BBM-EVO02"
 $newServer2 = "10.0.1.11"
+$oldServer3 = "BBM-FP01"
+$oldServer4 = "10.0.1.3"
+$newServer3 = "BBM-DC01"
+$newServer4 = "10.0.1.6"
 
 # Function to search and replace values in registry
 function Update-RegistryValues {
@@ -54,4 +58,7 @@ function Update-RegistryValues {
 Write-Output "Starting registry update process..."
 Update-RegistryValues -searchValue $oldServer1 -replaceValue $newServer1
 Update-RegistryValues -searchValue $oldServer2 -replaceValue $newServer2
+Update-RegistryValues -searchValue $oldServer3 -replaceValue $newServer3
+Update-RegistryValues -searchValue $oldServer4 -replaceValue $newServer4
 Write-Output "Registry update process completed."
+
