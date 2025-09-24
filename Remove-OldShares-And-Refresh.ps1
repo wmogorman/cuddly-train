@@ -190,6 +190,49 @@ function Remove-CmdKeyTarget {
     catch {}
 }
 
+function Get-ProfileInventory {
+    $profileListKey = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList'
+
+    if (-not (Test-Path $profileListKey)) {
+        return @()
+    }
+
+    $profiles = @()
+    $entries = Get-ChildItem $profileListKey -ErrorAction SilentlyContinue
+    foreach ($entry in $entries) {
+        $sid = $entry.PSChildName
+        if ($sid -notmatch '^S-1-5-21-') { continue }
+
+        $props = $null
+        try {
+            $props = Get-ItemProperty -LiteralPath $entry.PSPath -ErrorAction Stop
+        }
+        catch {
+            continue
+        }
+
+        $rawPath = $props.ProfileImagePath
+        if ([string]::IsNullOrWhiteSpace($rawPath)) { continue }
+        $expandedPath = [Environment]::ExpandEnvironmentVariables($rawPath)
+
+        if (-not (Test-Path -LiteralPath $expandedPath)) { continue }
+        if ($expandedPath -match '\\Windows\\system32\\config\\systemprofile') { continue }
+        if ($expandedPath -match '\\Windows\\ServiceProfiles\\') { continue }
+        if ($expandedPath -match '\\Users\\(Default|Default User|All Users|Public)$') { continue }
+
+        $isLoaded = $false
+        try { $isLoaded = Test-Path -LiteralPath ("Registry::HKEY_USERS\\$sid") } catch {}
+
+        $profiles += [pscustomobject]@{
+            SID       = $sid
+            LocalPath = $expandedPath
+            Loaded    = $isLoaded
+        }
+    }
+
+    return $profiles
+}
+
 # Pre-seed with legacy hostnames to ensure they are purged even if no mappings remain.
 foreach ($name in $serverReplacements.Keys) { Add-ServerName $name }
 foreach ($name in $serverReplacements.Values) { Add-ServerName $name }
@@ -208,19 +251,13 @@ try {
 catch {}
 
 Write-Host "Enumerating user profiles..."
-$profiles = @()
-try {
-    $profiles = Get-CimInstance Win32_UserProfile -ErrorAction Stop |
-        Where-Object { -not $_.Special -and $_.LocalPath -and (Test-Path $_.LocalPath) }
-}
-catch {
-    Write-Warning "Unable to enumerate profiles via WMI: $($_.Exception.Message)"
-}
+$profiles = Get-ProfileInventory
 
 if (-not $profiles) {
     Write-Warning 'No user profiles found to process.'
 }
 else {
+    Write-Host "Processing $($profiles.Count) profile(s)..."
     Invoke-PerUserCleanup -Profiles $profiles
 }
 
@@ -258,4 +295,3 @@ Write-Host 'Running gpupdate /force...'
 cmd /c "gpupdate /force" | Out-Null
 
 Write-Host 'Done. Any updated drive maps will be applied on policy refresh or next logon.'
-
