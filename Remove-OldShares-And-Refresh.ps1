@@ -24,7 +24,7 @@ function Add-ServerName {
 
     [void]$servers.Add($name)
 
-    if ($serverReplacements.ContainsKey($name)) {
+    if ($serverReplacements.Contains($name)) {
         [void]$servers.Add($serverReplacements[$name])
     }
 
@@ -137,29 +137,40 @@ function Invoke-PerUserCleanup {
         $localPath = $userProfile.LocalPath
         if (-not $sid -or -not $localPath) { continue }
 
-        $hiveKey = "Registry::HKEY_USERS\\$sid"
-        $hiveRoot = "HKU:\\$sid"
+        $hiveRoot = "Registry::HKEY_USERS\\$sid"
+        $ntUser = Join-Path $localPath 'NTUSER.DAT'
 
+        $mountName = $null
         $mountedHere = $false
-        if (-not (Test-Path $hiveKey)) {
-            $ntUser = Join-Path $localPath 'NTUSER.DAT'
-            if (-not (Test-Path $ntUser)) { continue }
 
+        $hiveAvailable = $false
+        try { $hiveAvailable = Test-Path -LiteralPath $hiveRoot } catch {}
+
+        if (-not $hiveAvailable -and $userProfile.Loaded) {
+            Write-Host "  Using live hive for $sid (profile is currently loaded)."
+            $hiveAvailable = $true
+        }
+
+        if (-not $hiveAvailable) {
+            if (-not (Test-Path -LiteralPath $ntUser)) { continue }
+
+            $mountName = "TempHive_$([Guid]::NewGuid().ToString('N'))"
             Write-Host "Loading hive for $sid from $ntUser"
-            & reg.exe load "HKU\\$sid" "$ntUser" 2>$null
+            & reg.exe load "HKU\\$mountName" "$ntUser" 2>$null
             if ($LASTEXITCODE -ne 0) {
                 Write-Warning "  Failed to load hive for $sid"
                 continue
             }
             $mountedHere = $true
+            $hiveRoot = "Registry::HKEY_USERS\\$mountName"
         }
 
         try {
             Update-UserHive -HiveRoot $hiveRoot -DisplayName $localPath
         }
         finally {
-            if ($mountedHere) {
-                & reg.exe unload "HKU\\$sid" 2>$null | Out-Null
+            if ($mountedHere -and $mountName) {
+                & reg.exe unload "HKU\\$mountName" 2>$null | Out-Null
             }
         }
     }
@@ -247,3 +258,4 @@ Write-Host 'Running gpupdate /force...'
 cmd /c "gpupdate /force" | Out-Null
 
 Write-Host 'Done. Any updated drive maps will be applied on policy refresh or next logon.'
+
