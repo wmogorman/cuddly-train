@@ -1,133 +1,249 @@
-# Force-Remap-Drives.ps1
-# Run in USER context (logon script or RMM as logged-on user)
-# Purpose: Nuke stale mappings, remove cached entries, re-map drives to new UNC paths
+# Remove-OldShares-And-Refresh.ps1
+# Disconnect SMB mappings across all user profiles, update legacy server references, remove cached credentials, and run gpupdate /force.
 
-# --- SETTINGS ---
-$Mappings = @{
-  'M' = '\\bbm-dc01\data'
-  'R' = '\\bbm-evo02\dbamfg'
-  'S' = '\\bbm-dc01\Customer Supplied Data'
-  'Z' = '\\bbm-dc01\QMS'
-  'I' = '\\bbm-dc01\Inventory'
+$serverReplacements = [ordered]@{
+    'BBM-FP01'  = 'BBM-DC01'
+    '10.0.1.3'  = '10.0.1.6'
+    'BBM-EVO01' = 'BBM-EVO02'
+    '10.0.1.4'  = '10.0.1.11'
 }
 
-# Any legacy targets we should yank if found
-$LegacyTargets = @(
-  '\\bbm-fp01\', '\\bbm-fs1\', '\\bbm-evo01\'
-)
+$servers = New-Object System.Collections.Generic.HashSet[string] ([StringComparer]::OrdinalIgnoreCase)
+$activeShares = New-Object System.Collections.Generic.List[string]
 
-# Log file in user profile (change if desired)
-$LogPath = Join-Path $env:LOCALAPPDATA 'DriveRemap\remap.log'
-New-Item -Path (Split-Path $LogPath) -ItemType Directory -Force | Out-Null
+function Add-ServerName {
+    param([string]$Server)
 
-function Write-Log {
-  param([string]$Message)
-  $timestamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
-  "$timestamp  $Message" | Out-File -FilePath $LogPath -Append -Encoding UTF8
-}
+    if ([string]::IsNullOrWhiteSpace($Server)) { return }
 
-function Remove-DriveMapping {
-  param([Parameter(Mandatory)] [ValidatePattern('^[A-Za-z]$')] [string]$Letter)
+    $name = $Server.Trim().TrimStart('\\')
+    if (-not $name) { return }
 
-  $lp = "${Letter}:"
-  Write-Log "Removing mapping for $lp (any method available)."
+    $name = $name.Split('\')[0]
+    if (-not $name) { return }
 
-  try { Remove-SmbMapping -LocalPath $lp -Force -ErrorAction SilentlyContinue } catch {}
-  try { net use $lp /delete /y | Out-Null } catch {}
-  try { Remove-PSDrive -Name $Letter -Force -ErrorAction SilentlyContinue } catch {}
+    [void]$servers.Add($name)
 
-  # Remove cached per-user mapping key so Windows doesn’t “reconnect at logon”
-  $regKey = "HKCU:\Network\$Letter"
-  try {
-    if (Test-Path $regKey) {
-      Remove-Item $regKey -Recurse -Force -ErrorAction SilentlyContinue
-      Write-Log "Deleted $regKey."
+    if ($serverReplacements.ContainsKey($name)) {
+        [void]$servers.Add($serverReplacements[$name])
     }
-  } catch {
-    Write-Log ("WARN: Could not delete ${regKey}: {0}" -f $_.Exception.Message)
-  }
+
+    $reverseMatch = $serverReplacements.GetEnumerator() | Where-Object { $_.Value -eq $name }
+    foreach ($item in $reverseMatch) {
+        [void]$servers.Add($item.Key)
+    }
 }
 
-function Map-Drive {
-  param(
-    [Parameter(Mandatory)] [ValidatePattern('^[A-Za-z]$')] [string]$Letter,
-    [Parameter(Mandatory)] [string]$Path
-  )
-  $lp = "${Letter}:"
-  Write-Log "Mapping $lp -> $Path"
+function Get-ServersFromPath {
+    param([string]$Path)
 
-  # Primary method
-  try {
-    # New-PSDrive with -Persist writes HKCU:\Network\<Letter>
-    New-PSDrive -Name $Letter -PSProvider FileSystem -Root $Path -Persist -Scope Global -ErrorAction Stop | Out-Null
-  } catch {
-    Write-Log "New-PSDrive failed for ${lp}: $($_.Exception.Message) - trying New-SmbMapping..."
+    if ([string]::IsNullOrWhiteSpace($Path)) { return }
+    if ($Path -match '^\\\\([^\\\/]+)') {
+        Add-ServerName $matches[1]
+    }
+}
+
+function Set-ServerReplacements {
+    param([string]$Text)
+
+    if ([string]::IsNullOrWhiteSpace($Text)) { return $Text }
+
+    $result = $Text
+    foreach ($pair in $serverReplacements.GetEnumerator()) {
+        $escaped = [System.Text.RegularExpressions.Regex]::Escape($pair.Key)
+        $result = [System.Text.RegularExpressions.Regex]::Replace(
+            $result,
+            $escaped,
+            [string]$pair.Value,
+            [System.Text.RegularExpressions.RegexOptions]::IgnoreCase
+        )
+    }
+    return $result
+}
+
+function Get-UncFromMountPointName {
+    param([string]$Name)
+
+    if ([string]::IsNullOrWhiteSpace($Name)) { return $null }
+    if (-not $Name.StartsWith('##')) { return $null }
+
+    $converted = $Name.Substring(2).Replace('#', '\\')
+    if (-not $converted) { return $null }
+
+    return "\\\\$converted"
+}
+
+function Update-UserHive {
+    param(
+        [string]$HiveRoot,
+        [string]$DisplayName
+    )
+
+    Write-Host "Processing profile hive: $DisplayName"
+
+    $networkKey = Join-Path $HiveRoot 'Network'
+    if (Test-Path $networkKey) {
+        Write-Host "  Updating persisted drive mappings..."
+        $networkItems = Get-ChildItem $networkKey -ErrorAction SilentlyContinue
+        foreach ($item in $networkItems) {
+            $props = $null
+            try {
+                $props = Get-ItemProperty -LiteralPath $item.PSPath -ErrorAction Stop
+            }
+            catch {
+                Write-Warning "    Failed to read properties for $($item.PSChildName): $($_.Exception.Message)"
+                continue
+            }
+
+            $remotePath = $props.RemotePath
+            Get-ServersFromPath $remotePath
+
+            $updatedPath = Set-ServerReplacements $remotePath
+            if ($updatedPath -and $updatedPath -ne $remotePath) {
+                try {
+                    Set-ItemProperty -LiteralPath $item.PSPath -Name RemotePath -Value $updatedPath -ErrorAction Stop
+                    Write-Host "    RemotePath updated: $remotePath -> $updatedPath"
+                }
+                catch {
+                    Write-Warning "    Failed to update RemotePath for $($item.PSChildName): $($_.Exception.Message)"
+                }
+            }
+        }
+    }
+
+    $mp2 = Join-Path $HiveRoot 'Software\Microsoft\Windows\CurrentVersion\Explorer\MountPoints2'
+    if (Test-Path $mp2) {
+        $mountEntries = Get-ChildItem $mp2 -ErrorAction SilentlyContinue | Where-Object { $_.PSChildName -like '##*' }
+        foreach ($entry in $mountEntries) {
+            $unc = Get-UncFromMountPointName $entry.PSChildName
+            if (-not $unc) { continue }
+
+            Get-ServersFromPath $unc
+            $updated = Set-ServerReplacements $unc
+
+            if ($updated -ne $unc) {
+                Write-Host "  Removing stale mount point: $($entry.PSChildName)"
+                Remove-Item -LiteralPath $entry.PSPath -Recurse -Force -ErrorAction SilentlyContinue
+            }
+        }
+    }
+}
+
+function Invoke-PerUserCleanup {
+    param([System.Collections.IEnumerable]$Profiles)
+
+    foreach ($userProfile in $Profiles) {
+        $sid = $userProfile.SID
+        $localPath = $userProfile.LocalPath
+        if (-not $sid -or -not $localPath) { continue }
+
+        $hiveKey = "Registry::HKEY_USERS\\$sid"
+        $hiveRoot = "HKU:\\$sid"
+
+        $mountedHere = $false
+        if (-not (Test-Path $hiveKey)) {
+            $ntUser = Join-Path $localPath 'NTUSER.DAT'
+            if (-not (Test-Path $ntUser)) { continue }
+
+            Write-Host "Loading hive for $sid from $ntUser"
+            & reg.exe load "HKU\\$sid" "$ntUser" 2>$null
+            if ($LASTEXITCODE -ne 0) {
+                Write-Warning "  Failed to load hive for $sid"
+                continue
+            }
+            $mountedHere = $true
+        }
+
+        try {
+            Update-UserHive -HiveRoot $hiveRoot -DisplayName $localPath
+        }
+        finally {
+            if ($mountedHere) {
+                & reg.exe unload "HKU\\$sid" 2>$null | Out-Null
+            }
+        }
+    }
+}
+
+function Get-CmdKeyEntries {
+    (cmd /c "cmdkey /list") 2>$null | Out-String
+}
+
+function Remove-CmdKeyTarget {
+    param([string]$Target)
+
     try {
-      New-SmbMapping -LocalPath $lp -RemotePath $Path -Persistent $true -ErrorAction Stop | Out-Null
-    } catch {
-      Write-Log "ERROR: New-SmbMapping failed for ${lp}: $($_.Exception.Message)"
-      return $false
+        cmd /c "cmdkey /delete:`"$Target`"" | Out-Null
+        Write-Host "  Deleted stored credential: $Target"
     }
-  }
-
-  Start-Sleep -Milliseconds 400
-  if (Test-Path "$lp\") {
-    Write-Log "OK: $lp is accessible."
-    return $true
-  } else {
-    Write-Log "ERROR: $lp is not accessible after mapping."
-    return $false
-  }
+    catch {}
 }
 
-# --- EXECUTION ---
+# Pre-seed with legacy hostnames to ensure they are purged even if no mappings remain.
+foreach ($name in $serverReplacements.Keys) { Add-ServerName $name }
+foreach ($name in $serverReplacements.Values) { Add-ServerName $name }
 
-Write-Log "===== Starting drive remap for user $env:USERNAME on $env:COMPUTERNAME ====="
-
-# 1) Remove any mapped drives pointing at legacy servers (surgical cleanup)
+# Capture live connections under the current security context.
 try {
-  $current = Get-SmbMapping -ErrorAction SilentlyContinue
-  foreach ($map in ($current | Where-Object { $_.RemotePath })) {
-    foreach ($legacy in $LegacyTargets) {
-      if ($map.RemotePath.ToLower().StartsWith($legacy.ToLower())) {
-        Write-Log "Found legacy mapping $($map.LocalPath) -> $($map.RemotePath). Removing…"
-        try { Remove-SmbMapping -LocalPath $map.LocalPath -Force -ErrorAction SilentlyContinue } catch {}
-      }
+    $netUse = (cmd /c "net use") 2>$null
+    foreach ($line in $netUse) {
+        if ($line -match '^\\\\[^\\\s]+\\[^\s]+') {
+            $sharePath = $matches[0]
+            $null = $activeShares.Add($sharePath)
+            Get-ServersFromPath $sharePath
+        }
     }
-  }
-} catch {
-  # If Get-SmbMapping isn’t available, ignore and continue
 }
+catch {}
 
-# 2) Remove our target drive letters unconditionally
-foreach ($letter in $Mappings.Keys) {
-  Remove-DriveMapping -Letter $letter
-}
-
-# 3) Extra: also clear any old “net use” reconnections for our letters
-foreach ($letter in $Mappings.Keys) {
-  try { cmd /c "net use $($letter): /delete /y" | Out-Null } catch {}
-}
-
-# 4) Re-map to new locations
-$results = @()
-foreach ($kv in $Mappings.GetEnumerator()) {
-  $ok = Map-Drive -Letter $kv.Key -Path $kv.Value
-  $results += [pscustomobject]@{
-    Drive = "$($kv.Key):"
-    Path  = $kv.Value
-    Status = if ($ok) { 'Mapped' } else { 'FAILED' }
-  }
-}
-
-# 5) Optional: Nudge Explorer to pick up new mappings immediately (non-fatal if it fails)
+Write-Host "Enumerating user profiles..."
+$profiles = @()
 try {
-  # Send a lightweight broadcast that often refreshes Explorer drive list
-  (New-Object -ComObject WScript.Shell).AppActivate('Explorer') | Out-Null
-} catch {}
+    $profiles = Get-CimInstance Win32_UserProfile -ErrorAction Stop |
+        Where-Object { -not $_.Special -and $_.LocalPath -and (Test-Path $_.LocalPath) }
+}
+catch {
+    Write-Warning "Unable to enumerate profiles via WMI: $($_.Exception.Message)"
+}
 
-Write-Log "Summary:`n$($results | Format-Table -AutoSize | Out-String)"
-Write-Log "===== Completed drive remap ====="
+if (-not $profiles) {
+    Write-Warning 'No user profiles found to process.'
+}
+else {
+    Invoke-PerUserCleanup -Profiles $profiles
+}
 
-# Exit code: 0 if all mapped, 1 if any failed
-if ($results.Status -contains 'FAILED') { exit 1 } else { exit 0 }
+if ($activeShares.Count -gt 0) {
+    Write-Host "Disconnecting $($activeShares.Count) active SMB connection(s) for the current context..."
+    cmd /c "net use * /delete /y" 2>$null | Out-Null
+}
+else {
+    Write-Host "No active SMB connections detected for the current context."
+}
+
+Write-Host "Checking Credential Manager for stored credentials..."
+$cmdKeyOutput = Get-CmdKeyEntries
+if ($cmdKeyOutput) {
+    $targets = @()
+    foreach ($line in $cmdKeyOutput -split "`r?`n") {
+        if ($line -match '^\s*Target:\s*(.+?)\s*$') { $targets += $matches[1] }
+    }
+
+    foreach ($target in $targets) {
+        foreach ($server in $servers) {
+            if ($target -match [System.Text.RegularExpressions.Regex]::Escape($server)) {
+                Remove-CmdKeyTarget -Target $target
+                break
+            }
+        }
+    }
+}
+
+Write-Host 'Purging Kerberos tickets...'
+try { klist purge -li 0x3e7 2>$null | Out-Null } catch {}
+try { klist purge 2>$null | Out-Null } catch {}
+
+Write-Host 'Running gpupdate /force...'
+cmd /c "gpupdate /force" | Out-Null
+
+Write-Host 'Done. Any updated drive maps will be applied on policy refresh or next logon.'
