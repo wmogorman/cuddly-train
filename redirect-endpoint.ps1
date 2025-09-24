@@ -24,29 +24,74 @@ function Update-RegistryValues {
     foreach ($hive in $registryHives) {
         Write-Output "Searching in $hive..."
         
-        # Get all string values recursively
-        Get-ChildItem -Path $hive -Recurse -ErrorAction SilentlyContinue | 
+        Get-ChildItem -Path $hive -Recurse -ErrorAction SilentlyContinue |
         ForEach-Object {
             $currentKey = $_.PSPath
-            Get-ItemProperty -Path $currentKey -ErrorAction SilentlyContinue |
-            Select-Object * -ExcludeProperty PS* |
-            ForEach-Object {
-                $properties = $_.PSObject.Properties
-                foreach ($prop in $properties) {
-                    if ($prop.Value -is [string] -and $prop.Value -like "*$searchValue*") {
-                        $newValue = $prop.Value.Replace($searchValue, $replaceValue)
-                        Write-Output "Found match in: $currentKey"
-                        Write-Output "Property: $($prop.Name)"
-                        Write-Output "Old Value: $($prop.Value)"
-                        Write-Output "New Value: $newValue"
-                        
-                        try {
-                            Set-ItemProperty -Path $currentKey -Name $prop.Name -Value $newValue -ErrorAction Stop
-                            Write-Output "Successfully updated value"
+
+            try {
+                $item = Get-ItemProperty -Path $currentKey -ErrorAction Stop
+            }
+            catch {
+                Write-Verbose "Skipping ${currentKey}: $($_.Exception.Message)"
+                continue
+            }
+
+            foreach ($prop in $item.PSObject.Properties) {
+                if ($prop.Name -like 'PS*') {
+                    continue
+                }
+
+                $value = $prop.Value
+                if ($null -eq $value) {
+                    continue
+                }
+
+                if ($value -is [string]) {
+                    if ($value -notlike "*$searchValue*") {
+                        continue
+                    }
+
+                    $newValue = $value.Replace($searchValue, $replaceValue)
+                    Write-Output "Found match in: $currentKey"
+                    Write-Output "Property: $($prop.Name)"
+                    Write-Output "Old Value: $value"
+                    Write-Output "New Value: $newValue"
+
+                    try {
+                        Set-ItemProperty -Path $currentKey -Name $prop.Name -Value $newValue -ErrorAction Stop
+                        Write-Output "Successfully updated value"
+                    }
+                    catch {
+                        Write-Output "Failed to update value: $($_.Exception.Message)"
+                    }
+                }
+                elseif ($value -is [string[]]) {
+                    $needsUpdate = $false
+                    $newValues = foreach ($entry in $value) {
+                        if ($entry -like "*$searchValue*") {
+                            $needsUpdate = $true
+                            $entry.Replace($searchValue, $replaceValue)
                         }
-                        catch {
-                            Write-Output "Failed to update value: $($_.Exception.Message)"
+                        else {
+                            $entry
                         }
+                    }
+
+                    if (-not $needsUpdate) {
+                        continue
+                    }
+
+                    Write-Output "Found match in: $currentKey"
+                    Write-Output "Property: $($prop.Name)"
+                    Write-Output "Old Value: $($value -join ', ')"
+                    Write-Output "New Value: $($newValues -join ', ')"
+
+                    try {
+                        Set-ItemProperty -Path $currentKey -Name $prop.Name -Value $newValues -ErrorAction Stop
+                        Write-Output "Successfully updated value"
+                    }
+                    catch {
+                        Write-Output "Failed to update value: $($_.Exception.Message)"
                     }
                 }
             }
@@ -61,4 +106,3 @@ Update-RegistryValues -searchValue $oldServer2 -replaceValue $newServer2
 Update-RegistryValues -searchValue $oldServer3 -replaceValue $newServer3
 Update-RegistryValues -searchValue $oldServer4 -replaceValue $newServer4
 Write-Output "Registry update process completed."
-
