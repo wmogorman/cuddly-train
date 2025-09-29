@@ -1,19 +1,63 @@
+[CmdletBinding()]
+param(
+    [Parameter(Mandatory = $false)]
+    [string]$IdCsvPath,
+
+    [Parameter(Mandatory = $false)]
+    [string[]]$PwAssetIds
+)
+
+# Allow IDs to be supplied directly or via CSV when running in RMM
+$PasswordIdList = @()
+
+if ($PwAssetIds) {
+    $PasswordIdList += $PwAssetIds
+}
+
+if ($IdCsvPath) {
+    if (-not (Test-Path -LiteralPath $IdCsvPath)) {
+        throw "ID CSV path '$IdCsvPath' was not found."
+    }
+
+    $csvRows = Import-Csv -Path $IdCsvPath
+
+    if (-not $csvRows) {
+        throw "ID CSV '$IdCsvPath' is empty or could not be read."
+    }
+
+    foreach ($row in $csvRows) {
+        $candidate = $row.PasswordID
+        if (-not $candidate) {
+            $candidate = $row.PasswordId
+        }
+
+        if (-not [string]::IsNullOrWhiteSpace($candidate)) {
+            $PasswordIdList += $candidate
+        }
+    }
+}
+
+$PasswordIdList = @(
+    $PasswordIdList |
+        ForEach-Object { $_.ToString().Trim() } |
+        Where-Object { $_ } |
+        Select-Object -Unique
+)
+
+if (-not $PasswordIdList) {
+    throw "No Password IDs supplied. Use -PwAssetIds or provide a CSV with a 'PasswordID' column."
+}
+
 # Define your IT Glue base URI
 $ITGlueAPIKey = $env:ITGlueKey
 $headers = @{
-    "x-api-key" = $ITGlueAPIKey
+    "x-api-key"  = $ITGlueAPIKey
     "Content-Type" = "application/vnd.api+json"
 }
 $baseUri = "https://api.itglue.com"
 
-# List of PasswordIDs you want to check
-$PasswordIDs = @(
-    12345,
-    67890,
-    24680
-)
-
-foreach ($id in $PasswordIDs) {
+foreach ($id in $PasswordIdList) {
+    $id = $id.Trim()
     Write-Host "Processing PasswordID $id..."
 
     # Get password record
