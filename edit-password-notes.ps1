@@ -72,7 +72,7 @@ foreach ($id in $PasswordIdList) {
     }
 
     # Remove 'password' and everything following it on the same line
-    $cleanedNotes = $notes -replace '(?i)password.*', ''
+    $cleanedNotes = $notes -replace '(?i)(?:old\s+)?password.*', ''
 
     if ($cleanedNotes -ne $notes) {
         Write-Host "Cleaning notes for PasswordID $id..."
@@ -94,3 +94,4 @@ foreach ($id in $PasswordIdList) {
         Write-Host "No 'password' text found in notes for PasswordID $id"
     }
 }
+
