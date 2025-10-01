@@ -44,15 +44,20 @@ resource sa 'Microsoft.Storage/storageAccounts@2023-01-01' = {
   }
 }
 
+resource fileService 'Microsoft.Storage/storageAccounts/fileServices@2023-01-01' = {
+  name: '${sa.name}/default'
+}
+
 resource share 'Microsoft.Storage/storageAccounts/fileServices/shares@2023-01-01' = {
-  name: '${sa.name}/default/${fileShareName}'
+  name: fileShareName
+  parent: fileService
   properties: {
     accessTier: 'TransactionOptimized'
     enabledProtocols: 'SMB'
   }
 }
 
-var saKey = listKeys(sa.id, '2023-01-01').keys[0].value
+var saKey = sa.listKeys().keys[0].value
 
 resource aci 'Microsoft.ContainerInstance/containerGroups@2023-05-01' = {
   name: containerGroupName
@@ -76,7 +81,7 @@ resource aci 'Microsoft.ContainerInstance/containerGroups@2023-05-01' = {
           resources: {
             requests: {
               cpu: cpuCores
-              memoryInGb: memoryInGb
+              memoryInGB: memoryInGb
             }
           }
           ports: [
@@ -99,7 +104,7 @@ resource aci 'Microsoft.ContainerInstance/containerGroups@2023-05-01' = {
       {
         name: 'saves'
         azureFile: {
-          shareName: share.name
+          shareName: fileShareName
           storageAccountName: sa.name
           storageAccountKey: saKey
         }
