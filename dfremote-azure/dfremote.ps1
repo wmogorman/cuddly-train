@@ -64,7 +64,7 @@ Select-AzSubscription -SubscriptionId $SubscriptionId
 $SshKey = Get-Content -LiteralPath $SshPublicKeyPath -Raw
 
 # 1) Resource group
-$rgObj = Get-OrCreateResource -Description "resource group '$Rg'" `
+$null = Get-OrCreateResource -Description "resource group '$Rg'" `
     -Get    { Get-AzResourceGroup -Name $Rg -ErrorAction SilentlyContinue } `
     -Create { New-AzResourceGroup -Name $Rg -Location $Location -ErrorAction Stop }
 
