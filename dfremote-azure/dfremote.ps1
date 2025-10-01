@@ -5,7 +5,7 @@
 # Recommended: SSH key pair ready (use ssh-keygen if needed)
 
 # --------- EDIT ME ----------
-$SubscriptionId   = "<YOUR-SUBSCRIPTION-ID>"
+$SubscriptionId   = "41f7fcbd-3674-4137-abc8-55d963ac109d"
 $Rg               = "rg-dfremote"
 $Location         = "eastus"
 $VmName           = "dfremote-vm"
@@ -16,7 +16,7 @@ $DataDiskSizeGB   = 64
 $AdminUsername    = "azureuser"
 $SshPublicKeyPath = "$HOME\.ssh\id_rsa.pub"     # path to your public key
 # Allow only these IPs/CIDRs (add your home/work IPs). Use "x.x.x.x/32" for single IPs.
-$AllowedCidrs     = @("1.2.3.4/32","5.6.7.8/32")  # <-- CHANGE THIS
+$AllowedCidrs     = @("64.183.220.138/32")  # <-- CHANGE THIS
 # ----------------------------
 
 Select-AzSubscription -SubscriptionId $SubscriptionId
@@ -143,11 +143,11 @@ $dataDisk    = New-AzDisk -DiskName "$VmName-data" -Disk $dataDiskCfg -ResourceG
 $vmConfig    = Add-AzVMDataDisk -VM $vmConfig -Name "$VmName-data" -CreateOption Attach -ManagedDiskId $dataDisk.Id -Lun 0 -Caching ReadWrite
 
 # 5) Create the VM with cloud-init
-$vm = New-AzVM -ResourceGroupName $Rg -Location $Location -VM $vmConfig `
+New-AzVM -ResourceGroupName $Rg -Location $Location -VM $vmConfig `
   -PublicIpAddressName $pipName -VirtualNetworkName $vnetName -SubnetName $subnetName `
   -SecurityGroupName $nsgName -OpenPorts 22 `
   -SshKeyName "$VmName-ssh" -SshKeyValue $SshKey `
-  -CustomData $cloudInit
+  -CustomData $cloudInit | Out-Null
 
 # 6) (Optional) Auto-shutdown at 1:00 AM Central using Azure CLI fallback (works across SKUs)
 try {
