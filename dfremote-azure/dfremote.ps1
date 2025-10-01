@@ -71,6 +71,85 @@ $subnetCfg = New-AzVirtualNetworkSubnetConfig -Name $subnetName -AddressPrefix "
 $vnet = New-AzVirtualNetwork -Name $vnetName -ResourceGroupName $Rg -Location $Location `
   -AddressPrefix "10.10.0.0/16" -Subnet $subnetCfg
 
+  Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+
+# ---- REQUIRED VARIABLES (edit as needed) ----
+$SubscriptionId = "<your-subscription-guid>"
+$Rg            = "rg-dfremote"
+$Location      = "southcentralus"
+$VnetName      = "vnet-dfremote"
+$SubnetName    = "subnet-dfremote"
+$NsgName       = "nsg-dfremote"
+$PipName       = "pip-dfremote"
+$NicName       = "nic-dfremote"
+$VmName        = "dfremote-vm"
+# --------------------------------------------
+
+# 1) RG
+$rgObj = Get-AzResourceGroup -Name $Rg -ErrorAction SilentlyContinue
+if (-not $rgObj) { $rgObj = New-AzResourceGroup -Name $Rg -Location $Location }
+
+# 2) VNet + Subnet
+$vnet = Get-AzVirtualNetwork -Name $VnetName -ResourceGroupName $Rg -ErrorAction SilentlyContinue
+if (-not $vnet) {
+  $vnet = New-AzVirtualNetwork -Name $VnetName -ResourceGroupName $Rg -Location $Location -AddressPrefix "10.20.0.0/16"
+  Add-AzVirtualNetworkSubnetConfig -Name $SubnetName -AddressPrefix "10.20.1.0/24" -VirtualNetwork $vnet | Out-Null
+  $vnet = Set-AzVirtualNetwork -VirtualNetwork $vnet
+}
+$subnet = Get-AzVirtualNetworkSubnetConfig -Name $SubnetName -VirtualNetwork $vnet
+if (-not $subnet) { throw "Subnet '$SubnetName' not found in VNet '$VnetName'." }
+
+# 3) NSG + UDP 1235
+$nsg = Get-AzNetworkSecurityGroup -Name $NsgName -ResourceGroupName $Rg -ErrorAction SilentlyContinue
+if (-not $nsg) {
+  $nsg = New-AzNetworkSecurityGroup -Name $NsgName -ResourceGroupName $Rg -Location $Location
+  $rule = New-AzNetworkSecurityRuleConfig -Name "Allow-DFRemote-UDP-1235" -Access Allow -Protocol Udp -Direction Inbound -Priority 1000 -SourceAddressPrefix * -SourcePortRange * -DestinationAddressPrefix * -DestinationPortRange 1235
+  $nsg.SecurityRules.Add($rule)
+  $nsg | Set-AzNetworkSecurityGroup | Out-Null
+}
+# Associate NSG to subnet (safer than per-NIC)
+if (-not $subnet.NetworkSecurityGroup -or $subnet.NetworkSecurityGroup.Id -ne $nsg.Id) {
+  $vnet = Get-AzVirtualNetwork -Name $VnetName -ResourceGroupName $Rg
+  Set-AzVirtualNetworkSubnetConfig -Name $SubnetName -VirtualNetwork $vnet -AddressPrefix $subnet.AddressPrefix -NetworkSecurityGroup $nsg | Out-Null
+  $vnet = Set-AzVirtualNetwork -VirtualNetwork $vnet
+  $subnet = Get-AzVirtualNetworkSubnetConfig -Name $SubnetName -VirtualNetwork $vnet
+}
+
+# 4) Public IP
+$pip = Get-AzPublicIpAddress -Name $PipName -ResourceGroupName $Rg -ErrorAction SilentlyContinue
+if (-not $pip) {
+  $pip = New-AzPublicIpAddress -Name $PipName -ResourceGroupName $Rg -Location $Location -AllocationMethod Static -Sku Standard
+}
+
+# 5) NIC (with explicit IDs to avoid nulls)
+$nic = Get-AzNetworkInterface -Name $NicName -ResourceGroupName $Rg -ErrorAction SilentlyContinue
+if (-not $nic) {
+  $nic = New-AzNetworkInterface -Name $NicName -ResourceGroupName $Rg -Location $Location `
+         -SubnetId $subnet.Id -PublicIpAddressId $pip.Id -NetworkSecurityGroupId $nsg.Id
+}
+if (-not $nic -or -not $nic.Id) { throw "NIC creation failed; check subnet/pip/nsg IDs." }
+
+# 6) VM config (Ubuntu LTS Gen2; good base for Docker)
+$cred = Get-Credential -Message "Enter local admin for the VM (Linux user)"
+$vmConfig = New-AzVMConfig -VMName $VmName -VMSize "Standard_B2s" |
+            Set-AzVMOperatingSystem -Linux -ComputerName $VmName -Credential $cred |
+            Set-AzVMSourceImage -PublisherName "Canonical" -Offer "0001-com-ubuntu-server-jammy" -Skus "22_04-lts-gen2" -Version "latest" |
+            Add-AzVMNetworkInterface -Id $nic.Id
+
+# Optional: data disk for persistence (attach later inside the OS to /var/dfremote)
+$diskName = "$VmName-data"
+$disk = Get-AzDisk -DiskName $diskName -ResourceGroupName $Rg -ErrorAction SilentlyContinue
+if (-not $disk) {
+  $diskConfig = New-AzDiskConfig -Location $Location -CreateOption Empty -DiskSizeGB 16 -SkuName StandardSSD_LRS
+  $disk = New-AzDisk -ResourceGroupName $Rg -DiskName $diskName -Disk $diskConfig
+}
+$vmConfig = Add-AzVMDataDisk -VM $vmConfig -Name $disk.Name -ManagedDiskId $disk.Id -Lun 0 -CreateOption Attach
+
+# 7) Create the VM (zones/availability can be added if desired)
+New-AzVM -ResourceGroupName $Rg -Location $Location -VM $vmConfig
+
+
 # NIC
 $nic = New-AzNetworkInterface -Name $nicName -ResourceGroupName $Rg -Location $Location `
   -SubnetId $vnet.Subnets[0].Id -PublicIpAddressId $pubIp.Id
