@@ -6,6 +6,7 @@
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+$onWindows = [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Windows)
 
 function Get-OrCreateResource {
     param(
@@ -46,7 +47,7 @@ $VmSize           = "Standard_B2s"
 $OsDiskSizeGB     = 64
 $DataDiskSizeGB   = 64
 $AdminUsername    = "azureuser"
-$SshPublicKeyPath = "$HOME\.ssh\id_rsa.pub"     # path to your public key
+$SshPublicKeyPath = [System.IO.Path]::Combine($HOME, ".ssh", "id_rsa.pub")     # path to your public key
 # Allow only these IPs/CIDRs (add your home/work IPs). Use "x.x.x.x/32" for single IPs.
 $AllowedCidrs     = @("64.183.220.138/32")  # <-- CHANGE THIS
 # ----------------------------
@@ -61,6 +62,27 @@ $diskName   = "$VmName-data"
 Select-AzSubscription -SubscriptionId $SubscriptionId
 
 # 0) Read SSH public key
+if ($SshPublicKeyPath -like "~*") {
+    $relativeSshKey = $SshPublicKeyPath.Substring(1).TrimStart('/','\')
+    $relativeSshKey = $relativeSshKey -replace '[\\/]', [string][System.IO.Path]::DirectorySeparatorChar
+    $SshPublicKeyPath = [System.IO.Path]::Combine($HOME, $relativeSshKey)
+}
+if (-not $onWindows -and $SshPublicKeyPath -like "*\*") {
+    $normalizedCandidate = $SshPublicKeyPath -replace "\\", "/"
+    if (Test-Path -LiteralPath $normalizedCandidate) {
+        $SshPublicKeyPath = $normalizedCandidate
+    }
+}
+if (-not (Test-Path -LiteralPath $SshPublicKeyPath)) {
+    $cloudShellHint = if ($env:AZUREPS_HOST_ENVIRONMENT -eq 'cloudshell') {
+        'Generate a key with: ssh-keygen -t rsa -b 4096 -f ~/.ssh/id_rsa -N ""'
+    } else {
+        $null
+    }
+    $message = "SSH public key not found at '$SshPublicKeyPath'."
+    if ($cloudShellHint) { $message = "$message $cloudShellHint" }
+    throw $message
+}
 $SshKey = Get-Content -LiteralPath $SshPublicKeyPath -Raw
 
 # 1) Resource group
