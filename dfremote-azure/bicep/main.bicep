@@ -45,7 +45,8 @@ resource sa 'Microsoft.Storage/storageAccounts@2023-01-01' = {
 }
 
 resource fileService 'Microsoft.Storage/storageAccounts/fileServices@2023-01-01' = {
-  name: '${sa.name}/default'
+  parent: sa
+  name: 'default'
 }
 
 resource share 'Microsoft.Storage/storageAccounts/fileServices/shares@2023-01-01' = {
@@ -114,4 +115,5 @@ resource aci 'Microsoft.ContainerInstance/containerGroups@2023-05-01' = {
 }
 
 output publicIP string = aci.properties.ipAddress.ip
-output fileShareUNC string = '//' + sa.name + '.file.core.windows.net/' + fileShareName
+output fileShareUNC string = '//${sa.name}.file.${environment().suffixes.storage}/${fileShareName}'
+
