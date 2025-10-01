@@ -1,0 +1,33 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "storageAccountName": {
+      "value": "stdfremote${unique}"
+    },
+    "containerGroupName": {
+      "value": "dfremote-aci"
+    },
+    "containerName": {
+      "value": "dfremote"
+    },
+    "image": {
+      "value": "mifki/dfremote"
+    },
+    "udpPort": {
+      "value": 1235
+    },
+    "mountPath": {
+      "value": "/df/data/save"
+    },
+    "fileShareName": {
+      "value": "dfremote-saves"
+    },
+    "cpuCores": {
+      "value": 1
+    },
+    "memoryInGb": {
+      "value": 1
+    }
+  }
+}
