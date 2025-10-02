@@ -73,17 +73,12 @@ if (-not $onWindows -and $SshPublicKeyPath -like "*\*") {
         $SshPublicKeyPath = $normalizedCandidate
     }
 }
-if (-not (Test-Path -LiteralPath $SshPublicKeyPath)) {
-    $cloudShellHint = if ($env:AZUREPS_HOST_ENVIRONMENT -eq 'cloudshell') {
-        'Generate a key with: ssh-keygen -t rsa -b 4096 -f ~/.ssh/id_rsa -N ""'
-    } else {
-        $null
-    }
-    $message = "SSH public key not found at '$SshPublicKeyPath'."
-    if ($cloudShellHint) { $message = "$message $cloudShellHint" }
-    throw $message
+$SshKey = $null
+if (Test-Path -LiteralPath $SshPublicKeyPath) {
+    $SshKey = Get-Content -LiteralPath $SshPublicKeyPath -Raw
+} else {
+    Write-Host "SSH public key not found at '$SshPublicKeyPath'. A new SSH key pair will be generated when the VM is created." -ForegroundColor Yellow
 }
-$SshKey = Get-Content -LiteralPath $SshPublicKeyPath -Raw
 
 # 1) Resource group
 $null = Get-OrCreateResource -Description "resource group '$Rg'" `
@@ -226,11 +221,26 @@ if (-not $vmExists) {
 
     $vmConfig = Add-AzVMDataDisk -VM $vmConfig -Name $diskName -CreateOption Attach -ManagedDiskId $dataDisk.Id -Lun 0 -Caching ReadWrite
 
-    New-AzVM -ResourceGroupName $Rg -Location $Location -VM $vmConfig `
-      -PublicIpAddressName $pipName -VirtualNetworkName $vnetName -SubnetName $subnetName `
-      -SecurityGroupName $nsgName -OpenPorts 22 `
-      -SshKeyName "$VmName-ssh" -SshKeyValue $SshKey `
-      -CustomData $cloudInit | Out-Null
+    $vmParams = @{
+      ResourceGroupName    = $Rg
+      Location             = $Location
+      VM                   = $vmConfig
+      PublicIpAddressName  = $pipName
+      VirtualNetworkName   = $vnetName
+      SubnetName           = $subnetName
+      SecurityGroupName    = $nsgName
+      OpenPorts            = 22
+      SshKeyName           = "$VmName-ssh"
+      CustomData           = $cloudInit
+    }
+
+    if ($SshKey) {
+      $vmParams["SshKeyValue"] = $SshKey
+    } else {
+      $vmParams["GenerateSshKey"] = $true
+    }
+
+    New-AzVM @vmParams | Out-Null
 } else {
     Write-Host "VM '$VmName' already exists; skipping creation." -ForegroundColor Yellow
 }
@@ -248,3 +258,6 @@ $pub = Get-AzPublicIpAddress -Name $pipName -ResourceGroupName $Rg
 "DF Remote public IP:  $($pub.IpAddress)"
 "UDP Port:             1235 (allowed only from: $($AllowedCidrs -join ', '))"
 "SSH:                  ssh $AdminUsername@$($pub.DnsSettings.Fqdn)"
+
+
+
