@@ -73,14 +73,13 @@ if (-not $onWindows -and $SshPublicKeyPath -like "*\*") {
         $SshPublicKeyPath = $normalizedCandidate
     }
 }
+
 $SshKey = $null
 if (Test-Path -LiteralPath $SshPublicKeyPath) {
-     = Get-Content -LiteralPath  -Raw
+    $SshKey = Get-Content -LiteralPath $SshPublicKeyPath -Raw
 }
 
-if () {
-     = .Trim()
-} else {
+if (-not $SshKey) {
     Write-Host "SSH public key not found at '$SshPublicKeyPath'. Generating a new SSH key pair." -ForegroundColor Yellow
     $sshDir = Split-Path -Path $SshPublicKeyPath -Parent
     if ($sshDir -and -not (Test-Path -LiteralPath $sshDir)) {
@@ -118,8 +117,8 @@ if () {
 
 if ($SshKey) {
     $SshKey = $SshKey.Trim()
-}
 
+}
 # 1) Resource group
 $null = Get-OrCreateResource -Description "resource group '$Rg'" `
     -Get    { Get-AzResourceGroup -Name $Rg -ErrorAction SilentlyContinue } `
@@ -252,7 +251,7 @@ $dataDisk = Get-OrCreateResource -Description "managed disk '$diskName'" `
 
 $vmExists = Get-AzVM -Name $VmName -ResourceGroupName $Rg -ErrorAction SilentlyContinue
 if (-not $vmExists) {
-    $cred = New-Object System.Management.Automation.PSCredential ($AdminUsername,(ConvertTo-SecureString "unused" -AsPlainText -Force))
+    $cred = New-Object System.Management.Automation.PSCredential ($AdminUsername, (ConvertTo-SecureString "unused" -AsPlainText -Force))
     $vmConfig = New-AzVMConfig -VMName $VmName -VMSize $VmSize |
       Set-AzVMOperatingSystem -Linux -ComputerName $VmName -Credential $cred -DisablePasswordAuthentication |
       Set-AzVMSourceImage -PublisherName Canonical -Offer 0001-com-ubuntu-server-jammy -Skus 22_04-lts-gen2 -Version latest |
@@ -262,7 +261,7 @@ if (-not $vmExists) {
     $vmConfig = Add-AzVMDataDisk -VM $vmConfig -Name $diskName -CreateOption Attach -ManagedDiskId $dataDisk.Id -Lun 0 -Caching ReadWrite
 
     if (-not $SshKey) {
-      throw "SSH public key content was not loaded."
+        throw "SSH public key content was not loaded."
     }
 
     $authorizedKeyPath = "/home/$AdminUsername/.ssh/authorized_keys"
@@ -271,11 +270,20 @@ if (-not $vmExists) {
     $vmConfig.OSProfile.CustomData = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($cloudInit))
 
     New-AzVM -ResourceGroupName $Rg -Location $Location -VM $vmConfig | Out-Null
+} else {
+    Write-Host "VM '$VmName' already exists; skipping creation." -ForegroundColor Yellow
+}
 
+# 7) (Optional) Auto-shutdown
+try {
+  az vm auto-shutdown -g $Rg -n $VmName --time 0100 --email "" | Out-Null
+} catch {
+  Write-Host "Auto-shutdown via az CLI not set (CLI missing?). You can set it in the Portal (Operations -> Auto-shutdown)." -ForegroundColor Yellow
+}
 
-
-
-
-
-
-
+# 8) Output connection details
+$pub = Get-AzPublicIpAddress -Name $pipName -ResourceGroupName $Rg
+"DF Remote public DNS: $($pub.DnsSettings.Fqdn)"
+"DF Remote public IP:  $($pub.IpAddress)"
+"UDP Port:             1235 (allowed only from: $($AllowedCidrs -join ', '))"
+"SSH:                  ssh $AdminUsername@$($pub.DnsSettings.Fqdn)"
