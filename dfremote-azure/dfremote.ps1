@@ -302,3 +302,4 @@ $pub = Get-AzPublicIpAddress -Name $pipName -ResourceGroupName $Rg
 "SSH:                  ssh $AdminUsername@$($pub.DnsSettings.Fqdn)"
 
 
+"@
