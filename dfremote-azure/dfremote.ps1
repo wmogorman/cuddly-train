@@ -1,4 +1,4 @@
-# =========================
+﻿# =========================
 # DF Remote on Azure (VM)
 # =========================
 # Prereqs: Az PowerShell modules installed; you're logged in: Connect-AzAccount
@@ -77,7 +77,39 @@ $SshKey = $null
 if (Test-Path -LiteralPath $SshPublicKeyPath) {
     $SshKey = Get-Content -LiteralPath $SshPublicKeyPath -Raw
 } else {
-    Write-Host "SSH public key not found at '$SshPublicKeyPath'. A new SSH key pair will be generated when the VM is created." -ForegroundColor Yellow
+    Write-Host "SSH public key not found at '$SshPublicKeyPath'. Generating a new SSH key pair." -ForegroundColor Yellow
+    $sshDir = Split-Path -Path $SshPublicKeyPath -Parent
+    if ($sshDir -and -not (Test-Path -LiteralPath $sshDir)) {
+        New-Item -ItemType Directory -Path $sshDir -Force | Out-Null
+    }
+
+    $privateKeyPath = if ($SshPublicKeyPath.EndsWith('.pub')) {
+        $SshPublicKeyPath.Substring(0, $SshPublicKeyPath.Length - 4)
+    } else {
+        "$SshPublicKeyPath.key"
+    }
+
+    $sshKeygen = Get-Command ssh-keygen -ErrorAction SilentlyContinue
+    if (-not $sshKeygen) {
+        throw "SSH public key not found at '$SshPublicKeyPath', and ssh-keygen is unavailable to create one automatically."
+    }
+
+    $privateKeyExists = Test-Path -LiteralPath $privateKeyPath
+    if ($privateKeyExists) {
+        $publicKey = & $sshKeygen.Definition -y -f $privateKeyPath
+        if (-not $publicKey) {
+            throw "Failed to derive public key from existing private key at '$privateKeyPath'."
+        }
+        Set-Content -Path $SshPublicKeyPath -Value $publicKey
+    } else {
+        & $sshKeygen.Definition -t rsa -b 4096 -f $privateKeyPath -N '' | Out-Null
+    }
+
+    if (-not (Test-Path -LiteralPath $SshPublicKeyPath)) {
+        throw "Automatic SSH key generation failed; expected public key at '$SshPublicKeyPath'."
+    }
+
+    $SshKey = Get-Content -LiteralPath $SshPublicKeyPath -Raw
 }
 
 # 1) Resource group
@@ -233,12 +265,11 @@ if (-not $vmExists) {
       SshKeyName           = "$VmName-ssh"
       CustomData           = $cloudInit
     }
-
-    if ($SshKey) {
-      $vmParams["SshKeyValue"] = $SshKey
-    } else {
-      $vmParams["GenerateSshKey"] = $true
+    if (-not $SshKey) {
+      throw "SSH public key content was not loaded."
     }
+
+    $vmParams["SshKeyValue"] = $SshKey
 
     New-AzVM @vmParams | Out-Null
 } else {
@@ -258,6 +289,11 @@ $pub = Get-AzPublicIpAddress -Name $pipName -ResourceGroupName $Rg
 "DF Remote public IP:  $($pub.IpAddress)"
 "UDP Port:             1235 (allowed only from: $($AllowedCidrs -join ', '))"
 "SSH:                  ssh $AdminUsername@$($pub.DnsSettings.Fqdn)"
+
+
+
+
+
 
 
 
