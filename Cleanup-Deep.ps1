@@ -70,10 +70,7 @@ $targets = @(
 )
 
 foreach ($t in $targets) {
-  # Remove-Item handles wildcards in PS; use -LiteralPath only when not a pattern
-  try {
-    Remove-Item $t -Recurse -Force -ErrorAction SilentlyContinue
-  } catch { }
+  try { Remove-Item $t -Recurse -Force -ErrorAction SilentlyContinue } catch { }
 }
 
 # Single file: memory.dmp
@@ -126,8 +123,8 @@ foreach ($p in @(
 
 # Browser updater/installer caches
 Write-Host "[*] Clearing browser updater/installer caches (Chrome/Google Updater)..."
-$pf  = $env:ProgramFiles
-$pf86 = $env:ProgramFiles(x86)
+$pf   = $env:ProgramFiles
+$pf86 = ${env:ProgramFiles(x86)}   # <-- fixed: env var with () needs braces
 
 foreach ($d in @(
   (Join-Path $pf   'Google\Chrome\Application\*\Installer'),
