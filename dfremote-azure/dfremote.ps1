@@ -73,7 +73,7 @@ if (-not $nic) {
 
 # ---------- SSH Key ----------
 if (-not (Test-Path $SshPublicKeyPath)) { throw "SSH public key not found at $SshPublicKeyPath" }
-$sshKey = Get-Content -Raw -Path $SshPublicKeyPath
+$sshKey = (Get-Content -Raw -Path $SshPublicKeyPath).Trim()
 
 # ---------- Cloud-Init (user-data) ----------
 # Prepares:
@@ -82,7 +82,7 @@ $sshKey = Get-Content -Raw -Path $SshPublicKeyPath
 #  - formats/ mounts the attached data disk at /srv/dfremote (by UUID in /etc/fstab)
 #  - creates /opt/dfremote and a systemd unit `dfremote.service` that runs $BIN with --data-dir
 #  - puts a README with next steps
-$cloudInit = @"
+$cloudInit = @'
 #cloud-config
 package_update: true
 packages:
@@ -93,12 +93,12 @@ packages:
   - ufw
 
 users:
-  - name: $AdminUsername
+  - name: __ADMIN_USERNAME__
     sudo: ALL=(ALL) NOPASSWD:ALL
     groups: [ adm, sudo ]
     shell: /bin/bash
     ssh_authorized_keys:
-      - $sshKey
+      - __SSH_KEY__
 
 write_files:
   - path: /opt/dfremote/README-FIRST.txt
@@ -138,7 +138,7 @@ write_files:
       User=root
       Environment=DATA_DIR=/srv/dfremote
       WorkingDirectory=/opt/dfremote
-      ExecStart=/opt/dfremote/bin/dfremote-server --data-dir \${DATA_DIR} --port 1235 --host 0.0.0.0
+      ExecStart=/opt/dfremote/bin/dfremote-server --data-dir ${DATA_DIR} --port 1235 --host 0.0.0.0
       Restart=on-failure
       RestartSec=5s
       # Hardening (tune as needed)
@@ -157,29 +157,29 @@ write_files:
       DISK_DEV=""
       # Find the first data disk (LUN0) on Azure SCSI bus
       for d in /dev/disk/azure/scsi1/*; do
-        if [ -e "\$d" ]; then
-          DISK_DEV=\$(readlink -f "\$d")
+        if [ -e "$d" ]; then
+          DISK_DEV=$(readlink -f "$d")
           break
         fi
       done
 
-      if [ -z "\$DISK_DEV" ]; then
+      if [ -z "$DISK_DEV" ]; then
         echo "No Azure data disk found under /dev/disk/azure/scsi1" >&2
         exit 0
       fi
 
-      PART=\${DISK_DEV}1
-      if ! lsblk -no FSTYPE "\$DISK_DEV" | grep -q .; then
+      PART=${DISK_DEV}1
+      if ! lsblk -no FSTYPE "$DISK_DEV" | grep -q .; then
         # Partition & format if blank
-        parted -s "\$DISK_DEV" mklabel gpt
-        parted -s "\$DISK_DEV" mkpart primary ext4 0% 100%
-        mkfs.ext4 -F "\$PART"
+        parted -s "$DISK_DEV" mklabel gpt
+        parted -s "$DISK_DEV" mkpart primary ext4 0% 100%
+        mkfs.ext4 -F "$PART"
       fi
 
       mkdir -p /srv/dfremote
       # Get UUID and mount persistently
-      UUID=\$(blkid -s UUID -o value "\$PART")
-      grep -q "\$UUID" /etc/fstab || echo "UUID=\$UUID  /srv/dfremote  ext4  defaults,nofail  0  2" >> /etc/fstab
+      UUID=$(blkid -s UUID -o value "$PART")
+      grep -q "$UUID" /etc/fstab || echo "UUID=$UUID  /srv/dfremote  ext4  defaults,nofail  0  2" >> /etc/fstab
       mount -a
       chown -R root:root /srv/dfremote
       chmod 0777 /srv/dfremote
@@ -194,7 +194,9 @@ runcmd:
   - systemctl daemon-reload
   # service is disabled until you place a real binary at /opt/dfremote/bin/dfremote-server
   # enable it later with: systemctl enable --now dfremote
-"@
+'@
+$cloudInit = $cloudInit.Replace('__ADMIN_USERNAME__', $AdminUsername)
+$cloudInit = $cloudInit.Replace('__SSH_KEY__', $sshKey)
 
 # ---------- VM Image ----------
 $ubuntuImage = @{
