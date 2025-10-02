@@ -1,4 +1,4 @@
-<# 
+﻿<# 
 .SYNOPSIS
   Deep cleanup for common Windows disk hogs (caches, dumps, installers, stale update content).
   PowerShell port of the provided batch script.
@@ -152,12 +152,15 @@ if ($pf86) { Remove-ItemQuiet -Path (Join-Path $pf86 'Adobe\Acrobat DC\Setup Fil
 Write-Host "[*] Clearing per-user caches (Temp, CrashDumps, Chrome/Edge Cache_Data)..."
 Get-ChildItem 'C:\Users' -Directory -ErrorAction SilentlyContinue | ForEach-Object {
   $U = $_.FullName
-  foreach ($p in @(
-    Join-Path $U 'AppData\Local\Temp\*',
-    Join-Path $U 'AppData\Local\CrashDumps\*',
-    Join-Path $U 'AppData\Local\Google\Chrome\User Data\Default\Cache\Cache_Data',
-    Join-Path $U 'AppData\Local\Microsoft\Edge\User Data\Default\Cache\Cache_Data'
-  )) {
+  $cacheRelPaths = @(
+    'AppData\Local\Temp\*'
+    'AppData\Local\CrashDumps\*'
+    'AppData\Local\Google\Chrome\User Data\Default\Cache\Cache_Data'
+    'AppData\Local\Microsoft\Edge\User Data\Default\Cache\Cache_Data'
+  )
+
+  foreach ($rel in $cacheRelPaths) {
+    $p = Join-Path -Path $U -ChildPath $rel
     try {
       if ($p.EndsWith('Cache_Data')) {
         Remove-ItemQuiet -Path $p
