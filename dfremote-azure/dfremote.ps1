@@ -1,4 +1,4 @@
-﻿# =========================
+# =========================
 # DF Remote on Azure (VM)
 # =========================
 # Prereqs: Az PowerShell modules installed; you're logged in: Connect-AzAccount
@@ -75,7 +75,11 @@ if (-not $onWindows -and $SshPublicKeyPath -like "*\*") {
 }
 $SshKey = $null
 if (Test-Path -LiteralPath $SshPublicKeyPath) {
-    $SshKey = Get-Content -LiteralPath $SshPublicKeyPath -Raw
+     = Get-Content -LiteralPath  -Raw
+}
+
+if () {
+     = .Trim()
 } else {
     Write-Host "SSH public key not found at '$SshPublicKeyPath'. Generating a new SSH key pair." -ForegroundColor Yellow
     $sshDir = Split-Path -Path $SshPublicKeyPath -Parent
@@ -110,6 +114,10 @@ if (Test-Path -LiteralPath $SshPublicKeyPath) {
     }
 
     $SshKey = Get-Content -LiteralPath $SshPublicKeyPath -Raw
+}
+
+if ($SshKey) {
+    $SshKey = $SshKey.Trim()
 }
 
 # 1) Resource group
@@ -253,42 +261,16 @@ if (-not $vmExists) {
 
     $vmConfig = Add-AzVMDataDisk -VM $vmConfig -Name $diskName -CreateOption Attach -ManagedDiskId $dataDisk.Id -Lun 0 -Caching ReadWrite
 
-    $vmParams = @{
-      ResourceGroupName    = $Rg
-      Location             = $Location
-      VM                   = $vmConfig
-      PublicIpAddressName  = $pipName
-      VirtualNetworkName   = $vnetName
-      SubnetName           = $subnetName
-      SecurityGroupName    = $nsgName
-      OpenPorts            = 22
-      SshKeyName           = "$VmName-ssh"
-      CustomData           = $cloudInit
-    }
     if (-not $SshKey) {
       throw "SSH public key content was not loaded."
     }
 
-    $vmParams["SshKeyValue"] = $SshKey
+    $authorizedKeyPath = "/home/$AdminUsername/.ssh/authorized_keys"
+    $vmConfig = Add-AzVMSSHKey -VM $vmConfig -KeyData $SshKey -Path $authorizedKeyPath
 
-    New-AzVM @vmParams | Out-Null
-} else {
-    Write-Host "VM '$VmName' already exists; skipping creation." -ForegroundColor Yellow
-}
+    $vmConfig.OSProfile.CustomData = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($cloudInit))
 
-# 7) (Optional) Auto-shutdown
-try {
-  az vm auto-shutdown -g $Rg -n $VmName --time 0100 --email "" | Out-Null
-} catch {
-  Write-Host "Auto-shutdown via az CLI not set (CLI missing?). You can set it in the Portal (Operations -> Auto-shutdown)." -ForegroundColor Yellow
-}
-
-# 8) Output connection details
-$pub = Get-AzPublicIpAddress -Name $pipName -ResourceGroupName $Rg
-"DF Remote public DNS: $($pub.DnsSettings.Fqdn)"
-"DF Remote public IP:  $($pub.IpAddress)"
-"UDP Port:             1235 (allowed only from: $($AllowedCidrs -join ', '))"
-"SSH:                  ssh $AdminUsername@$($pub.DnsSettings.Fqdn)"
+    New-AzVM -ResourceGroupName $Rg -Location $Location -VM $vmConfig | Out-Null
 
 
 
