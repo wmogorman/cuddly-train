@@ -57,7 +57,7 @@ $subnetName = "subnet1"
 $nsgName    = "$VmName-nsg"
 $nicName    = "$VmName-nic"
 $pipName    = "$VmName-pip"
-$diskName   = "$VmName-data"
+$diskName   = "dfremote-vm-data"
 
 Select-AzSubscription -SubscriptionId $SubscriptionId
 
@@ -214,19 +214,32 @@ fs_setup:
 mounts:
   - [ /dev/disk/azure/scsi1/lun0, /srv/dfremote, 'ext4', 'defaults,nofail', '0', '2' ]
 write_files:
+  - path: /usr/local/bin/ensure-dfremote-install.sh
+    permissions: '0755'
+    owner: root:root
+    content: |
+      #!/bin/bash
+      set -euo pipefail
+      TARGET="/srv/dfremote/df"
+      mkdir -p "${TARGET}"
+      if [ -z "$(ls -A "${TARGET}" 2>/dev/null)" ]; then
+        docker run --rm -v "${TARGET}":/dfhost mifki/dfremote bash -c 'set -euo pipefail; cp -a /df/. /dfhost/'
+      fi
+      chown -R {ADMINUSER}:{ADMINUSER} "${TARGET}"
   - path: /etc/systemd/system/dfremote.service
     permissions: '0644'
     owner: root:root
     content: |
       [Unit]
       Description=DF Remote (Docker)
+      Requires=docker.service
       After=network-online.target docker.service
       Wants=network-online.target
 
       [Service]
       Type=simple
-      ExecStartPre=/usr/bin/mkdir -p /srv/dfremote/save
-      ExecStart=/usr/bin/docker run --rm --name dfremote -p 1235:1235/udp -v /srv/dfremote/save:/df/data/save mifki/dfremote
+      ExecStartPre=/usr/local/bin/ensure-dfremote-install.sh
+      ExecStart=/usr/bin/docker run --rm --name dfremote -p 1235:1235/udp -v /srv/dfremote/df:/df mifki/dfremote
       Restart=always
       RestartSec=5
 
@@ -234,11 +247,11 @@ write_files:
       WantedBy=multi-user.target
 runcmd:
   - systemctl daemon-reload
-  - systemctl enable docker
-  - systemctl start docker
+  - systemctl enable --now docker
+  - /usr/local/bin/ensure-dfremote-install.sh
   - systemctl enable dfremote
-  - systemctl start dfremote
-"@
+  - systemctl restart dfremote
+
 
 $cloudInit = $cloudInit.Replace("{ADMINUSER}", $AdminUsername)
 
