@@ -265,7 +265,7 @@ if (-not $vmExists) {
     }
 
     $authorizedKeyPath = "/home/$AdminUsername/.ssh/authorized_keys"
-    $vmConfig = Add-AzVMSSHKey -VM $vmConfig -KeyData $SshKey -Path $authorizedKeyPath
+    $vmConfig = Add-AzVMSshPublicKey -VM $vmConfig -KeyData $SshKey -Path $authorizedKeyPath
 
     $vmConfig.OSProfile.CustomData = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($cloudInit))
 
@@ -287,3 +287,5 @@ $pub = Get-AzPublicIpAddress -Name $pipName -ResourceGroupName $Rg
 "DF Remote public IP:  $($pub.IpAddress)"
 "UDP Port:             1235 (allowed only from: $($AllowedCidrs -join ', '))"
 "SSH:                  ssh $AdminUsername@$($pub.DnsSettings.Fqdn)"
+
+
