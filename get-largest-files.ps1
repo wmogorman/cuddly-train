@@ -1,13 +1,13 @@
 <# 
-Datto RMM: Largest Files & Root Folders (C:) — Safe-Exclude
+Datto RMM: Largest Files & Root Folders (C:) - Safe-Exclude
 - Lists largest files on C:\ (excludes unsafe-to-delete files/locations)
 - Lists root-level folder sizes on C:\ in descending order
 - Outputs CSVs and a concise console summary
 
 Parameters you can edit up top:
-  $TopFiles      — how many largest files to return
-  $TopFolders    — how many root folders to return
-  $MinFileSizeMB — skip files smaller than this (speeds scans)
+  $TopFiles      - how many largest files to return
+  $TopFolders    - how many root folders to return
+  $MinFileSizeMB - skip files smaller than this (speeds scans)
 #>
 
 param(
@@ -19,9 +19,8 @@ param(
 # ---------- Config ----------
 $Drive = 'C:'
 
-# Paths we consider unsafe to delete; anything under these is excluded
+# Paths we consider unsafe to delete; anything under these is excluded (Windows handled via critical subpaths below)
 $ProtectedRoots = @(
-    'C:\Windows',
     'C:\Program Files',
     'C:\Program Files (x86)',
     'C:\ProgramData',
@@ -34,9 +33,8 @@ $ProtectedRoots = @(
     'C:\$Recycle.Bin'          # system-managed
 )
 
-# Specific Windows subpaths that are notoriously dangerous to touch
+# Windows subpaths we still treat as off-limits
 $ProtectedCriticalSubpaths = @(
-    'C:\Windows\Installer',
     'C:\Windows\WinSxS',
     'C:\Windows\System32',
     'C:\Windows\SysWOW64',
@@ -140,7 +138,7 @@ $topLevelDirs = Try-GetChildItems -Path $Drive -DirsOnly | Where-Object {
     $_.Attributes -notmatch 'ReparsePoint' -and -not (Is-ProtectedPath -Path $_.FullName)
 }
 
-# Include root-level files (that aren’t protected)
+# Include root-level files (that aren't protected)
 $rootLevelFiles = Try-GetChildItems -Path $Drive -FilesOnly | Where-Object {
     -not (Is-ProtectedPath -Path $_.FullName) -and $_.Length -ge $minBytes
 }
@@ -226,3 +224,4 @@ Write-Host "Top $TopFolders root folders (preview):"
 $folderSizes | Select-Object @{n='SizeGB';e={$_.SizeGB}}, RootFolder | Format-Table -AutoSize
 
 exit 0
+
