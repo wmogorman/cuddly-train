@@ -1,4 +1,4 @@
-<# 
+﻿<# 
 Datto RMM: Largest Files & Root Folders (C:) - Safe-Exclude
 - Lists largest files on C:\ (excludes unsafe-to-delete files/locations)
 - Lists root-level folder sizes on C:\ in descending order
@@ -82,7 +82,7 @@ function Test-IsUnderPath {
     }
 }
 
-function Is-ProtectedPath {
+function Test-ProtectedPath {
     param([string]$Path)
     if ([string]::IsNullOrWhiteSpace($Path)) { return $true }
 
@@ -107,7 +107,7 @@ function Is-ProtectedPath {
     return $false
 }
 
-function Try-GetChildItems {
+function Get-ChildItemSafe {
     param(
         [string]$Path,
         [switch]$FilesOnly,
@@ -133,14 +133,14 @@ $minBytes = [int64]$MinFileSizeMB * 1MB
 $largestFiles = @()
 
 # We enumerate by top-level first to avoid expensive recursing into protected roots.
-$topLevelDirs = Try-GetChildItems -Path $Drive -DirsOnly | Where-Object {
+$topLevelDirs = Get-ChildItemSafe -Path $Drive -DirsOnly | Where-Object {
     # skip reparse points and protected roots
-    $_.Attributes -notmatch 'ReparsePoint' -and -not (Is-ProtectedPath -Path $_.FullName)
+    $_.Attributes -notmatch 'ReparsePoint' -and -not (Test-ProtectedPath -Path $_.FullName)
 }
 
 # Include root-level files (that aren't protected)
-$rootLevelFiles = Try-GetChildItems -Path $Drive -FilesOnly | Where-Object {
-    -not (Is-ProtectedPath -Path $_.FullName) -and $_.Length -ge $minBytes
+$rootLevelFiles = Get-ChildItemSafe -Path $Drive -FilesOnly | Where-Object {
+    -not (Test-ProtectedPath -Path $_.FullName) -and $_.Length -ge $minBytes
 }
 
 $largestFiles += $rootLevelFiles | Select-Object FullName, Length, @{n='SizeMB';e={[math]::Round($_.Length/1MB,2)}}, LastWriteTime
@@ -151,7 +151,7 @@ foreach ($dir in $topLevelDirs) {
     try {
         Get-ChildItem -LiteralPath $dir.FullName -File -Recurse -Force -ErrorAction Stop |
             Where-Object {
-                $_.Length -ge $minBytes -and -not (Is-ProtectedPath -Path $_.FullName)
+                $_.Length -ge $minBytes -and -not (Test-ProtectedPath -Path $_.FullName)
             } |
             ForEach-Object {
                 [pscustomobject]@{
@@ -174,12 +174,12 @@ Write-Host "Calculating root-level folder sizes on $Drive ... (excluding protect
 
 $folderSizes = @()
 
-$rootDirsForSizing = Try-GetChildItems -Path $Drive -DirsOnly | Where-Object {
+$rootDirsForSizing = Get-ChildItemSafe -Path $Drive -DirsOnly | Where-Object {
     $_.Attributes -notmatch 'ReparsePoint'
 } | Sort-Object Name
 
 foreach ($rd in $rootDirsForSizing) {
-    if (Is-ProtectedPath -Path $rd.FullName) {
+    if (Test-ProtectedPath -Path $rd.FullName) {
         # skip protected roots entirely
         continue
     }
@@ -188,7 +188,7 @@ foreach ($rd in $rootDirsForSizing) {
     try {
         # Enumerate all files under this root dir, excluding protected subpaths
         Get-ChildItem -LiteralPath $rd.FullName -File -Recurse -Force -ErrorAction Stop |
-            Where-Object { -not (Is-ProtectedPath -Path $_.FullName) } |
+            Where-Object { -not (Test-ProtectedPath -Path $_.FullName) } |
             ForEach-Object { $total += $_.Length }
     } catch {
         "`n[Folders] Access denied or error: $($rd.FullName) - $($_.Exception.Message)" | Out-File -FilePath $LogPath -Append -Encoding UTF8
@@ -224,4 +224,6 @@ Write-Host "Top $TopFolders root folders (preview):"
 $folderSizes | Select-Object @{n='SizeGB';e={$_.SizeGB}}, RootFolder | Format-Table -AutoSize
 
 exit 0
+
+
 
