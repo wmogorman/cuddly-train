@@ -1,0 +1,40 @@
+Windows Registry Editor Version 5.00
+
+[HKEY_CURRENT_USER\SOFTWARE\SimonTatham\PuTTY\Sessions\NetHack]
+"Present"=dword:00000001
+
+; ---- Basic connection (edit these to taste) ----
+"HostName"="nethack.alt.org"
+"Protocol"="ssh"
+"PortNumber"=dword:00000016        ; 22 decimal
+
+; ---- Terminal & keyboard: NetHack friendly ----
+"NetHackKeypad"=dword:00000001     ; Enable PuTTY’s NetHack keypad mode
+"NoApplicationKeys"=dword:00000001 ; Disable application *keypad* mode from server
+"NoApplicationCursors"=dword:00000000
+"ApplicationKeypad"=dword:00000000 ; Initial keypad state = Normal
+"ApplicationCursorKeys"=dword:00000000
+"BackspaceIsDelete"=dword:00000001
+"LinuxFunctionKeys"=dword:00000000
+
+; ---- Terminal type & colors ----
+"TerminalType"="xterm"
+"ANSIColour"=dword:00000001
+"Xterm256Colour"=dword:00000001
+"BoldAsColour"=dword:00000001
+
+; ---- Window size & font (nice for NetHack map) ----
+"TermWidth"=dword:00000064         ; 100 columns
+"TermHeight"=dword:00000028        ; 40 rows
+"Font"="Consolas"
+"FontIsBold"=dword:00000000
+"FontHeight"=dword:00000010        ; 16 pt
+"FontQuality"=dword:00000003
+
+; ---- Usability niceties ----
+"ScrollbackLines"=dword:000186A0   ; 100,000
+"Beep"=dword:00000000              ; No bell
+"WinTitle"="NetHack"
+"WinNameAlways"=dword:00000000
+"CloseOnExit"=dword:00000001
+"WarnOnClose"=dword:00000001
