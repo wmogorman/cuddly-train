@@ -26,7 +26,7 @@ Windows Registry Editor Version 5.00
 "UTF8linedraw"=dword:00000001
 
 ; ---- Window size & font (nice for NetHack map) ----
-"TermWidth"=dword:00000064         ; 200 columns
+"TermWidth"=dword:000000A0         ; 160 columns
 "TermHeight"=dword:00000028        ; 40 rows
 "Font"="Consolas"
 "FontIsBold"=dword:00000000
