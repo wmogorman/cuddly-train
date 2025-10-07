@@ -60,5 +60,19 @@ if ($PostLaunchDelayMilliseconds -gt 0) {
 
 Add-Type -AssemblyName System.Windows.Forms
 
-$initialKeys = "l$UserName{ENTER}"
+$passwordFile = Join-Path -Path $PSScriptRoot -ChildPath 'nethack-password.txt'
+if (-not (Test-Path -Path $passwordFile)) {
+    throw "Password file not found at $passwordFile. Run the initialization script to create it."
+}
+
+$securePassword = Get-Content -Path $passwordFile | ConvertTo-SecureString
+$passwordBstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($securePassword)
+try {
+    $plainPassword = [Runtime.InteropServices.Marshal]::PtrToStringUni($passwordBstr)
+} finally {
+    [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($passwordBstr)
+}
+
+$initialKeys = "l$UserName{ENTER}$plainPassword{ENTER}"
 [System.Windows.Forms.SendKeys]::SendWait($initialKeys)
+$plainPassword = $null
