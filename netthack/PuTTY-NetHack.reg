@@ -22,6 +22,8 @@ Windows Registry Editor Version 5.00
 "ANSIColour"=dword:00000001
 "Xterm256Colour"=dword:00000001
 "BoldAsColour"=dword:00000001
+"LineCodePage"="UTF-8"
+"UTF8linedraw"=dword:00000001
 
 ; ---- Window size & font (nice for NetHack map) ----
 "TermWidth"=dword:00000064         ; 100 columns
