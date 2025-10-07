@@ -23,7 +23,7 @@ Windows Registry Editor Version 5.00
 "Xterm256Colour"=dword:00000001
 "BoldAsColour"=dword:00000001
 "LineCodePage"="UTF-8"
-"UTF8linedraw"=dword:00000001
+"UTF8linedraw"=dword:00000000
 
 ; ---- Window size & font (nice for NetHack map) ----
 "TermWidth"=dword:000000A0         ; 160 columns
@@ -39,4 +39,4 @@ Windows Registry Editor Version 5.00
 "WinTitle"="NetHack"
 "WinNameAlways"=dword:00000000
 "CloseOnExit"=dword:00000001
-"WarnOnClose"=dword:00000001
+"WarnOnClose"=dword:00000000
