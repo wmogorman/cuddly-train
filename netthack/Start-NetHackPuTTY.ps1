@@ -36,15 +36,21 @@ if ($handle -eq 0 -or $process.HasExited) {
 
 $null = $stopwatch.Stop()
 
-Add-Type -Namespace PuTTYAutoKeys -Name NativeMethods -MemberDefinition @"
-    using System;
-    using System.Runtime.InteropServices;
+if (-not ("PuTTYAutoKeys.NativeMethods" -as [type])) {
+    $typeDefinition = @"
+using System;
+using System.Runtime.InteropServices;
+
+namespace PuTTYAutoKeys {
     public static class NativeMethods {
         [DllImport("user32.dll")]
         [return: MarshalAs(UnmanagedType.Bool)]
         public static extern bool SetForegroundWindow(IntPtr hWnd);
     }
+}
 "@
+    Add-Type -TypeDefinition $typeDefinition
+}
 
 [PuTTYAutoKeys.NativeMethods]::SetForegroundWindow($handle) | Out-Null
 
