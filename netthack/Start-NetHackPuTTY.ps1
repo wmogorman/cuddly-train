@@ -54,5 +54,5 @@ if ($PostLaunchDelayMilliseconds -gt 0) {
 
 Add-Type -AssemblyName System.Windows.Forms
 
-$initialKeys = "l{ENTER}$UserName{ENTER}"
+$initialKeys = "l$UserName{ENTER}"
 [System.Windows.Forms.SendKeys]::SendWait($initialKeys)
