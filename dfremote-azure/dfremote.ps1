@@ -4,7 +4,7 @@ Author: you + ChatGPT
 Last updated: 2025-10-02
 Prereqs:
   - Az PowerShell modules installed and logged in (Connect-AzAccount)
-  - SSH public key present (e.g., ~/.ssh/id_rsa.pub)
+  - Strong admin password ready (Azure Linux password policy)
 What it does:
   1) Creates/uses a Resource Group, VNet/Subnet, Public IP, NSG (UDP 1235 + SSH)
   2) Builds Ubuntu VM, injects cloud-init to prep /srv/dfremote and systemd unit
@@ -18,7 +18,7 @@ param(
   [Parameter(Mandatory=$true)] [string] $Location,                  # e.g. "eastus"
   [Parameter(Mandatory=$true)] [string] $VmName,                    # e.g. "dfremote-vm"
   [Parameter(Mandatory=$true)] [string] $AdminUsername,             # e.g. "william"
-  [Parameter(Mandatory=$true)] [string] $SshPublicKeyPath,          # e.g. "$HOME\.ssh\id_rsa.pub"
+  [Parameter(Mandatory=$true)] [string] $AdminPassword,             # must meet Azure complexity rules
   [string] $VmSize = "Standard_B2s",                                # tweak as needed
   [int]    $DataDiskSizeGB = 64,                                    # persistence disk
   [string] $VNetName = "$($ResourceGroupName)-vnet",
@@ -71,10 +71,6 @@ if (-not $nic) {
           -SubnetId $subnet.Id -PublicIpAddressId $pip.Id -NetworkSecurityGroupId $nsg.Id
 }
 
-# ---------- SSH Key ----------
-if (-not (Test-Path $SshPublicKeyPath)) { throw "SSH public key not found at $SshPublicKeyPath" }
-$sshKey = (Get-Content -Raw -Path $SshPublicKeyPath).Trim()
-
 # ---------- Cloud-Init (user-data) ----------
 # Prepares:
 #  - user/group
@@ -97,8 +93,6 @@ users:
     sudo: ALL=(ALL) NOPASSWD:ALL
     groups: [ adm, sudo ]
     shell: /bin/bash
-    ssh_authorized_keys:
-      - __SSH_KEY__
 
 write_files:
   - path: /opt/dfremote/README-FIRST.txt
@@ -196,7 +190,6 @@ runcmd:
   # enable it later with: systemctl enable --now dfremote
 '@
 $cloudInit = $cloudInit.Replace('__ADMIN_USERNAME__', $AdminUsername)
-$cloudInit = $cloudInit.Replace('__SSH_KEY__', $sshKey)
 
 # ---------- VM Image ----------
 $ubuntuImage = @{
@@ -207,17 +200,12 @@ $ubuntuImage = @{
 }
 
 # ---------- VM Config ----------
+$adminSecurePassword = ConvertTo-SecureString $AdminPassword -AsPlainText -Force
+$adminCredential = New-Object -TypeName PSCredential -ArgumentList $AdminUsername, $adminSecurePassword
 $vmConfig = New-AzVMConfig -VMName $VmName -VMSize $VmSize |
-  Set-AzVMOperatingSystem -Linux -ComputerName $VmName -Credential (New-Object -TypeName PSCredential -ArgumentList $AdminUsername,(ConvertTo-SecureString "unused" -AsPlainText -Force)) -DisablePasswordAuthentication |
+  Set-AzVMOperatingSystem -Linux -ComputerName $VmName -Credential $adminCredential -DisablePasswordAuthentication:$false |
   Set-AzVMSourceImage @ubuntuImage |
   Add-AzVMNetworkInterface -Id $nic.Id
-
-# Inject SSH key
-$vmConfig.OSProfile.LinuxConfiguration.Ssh = New-Object -TypeName Microsoft.Azure.Commands.Compute.Models.PSSshConfiguration
-$pubKey = New-Object -TypeName Microsoft.Azure.Commands.Compute.Models.PSSshPublicKey
-$pubKey.Path = "/home/$AdminUsername/.ssh/authorized_keys"
-$pubKey.KeyData = $sshKey
-$vmConfig.OSProfile.LinuxConfiguration.Ssh.PublicKeys = @($pubKey)
 
 # Add cloud-init (custom data)
 $vmConfig.OSProfile.CustomData = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($cloudInit))
