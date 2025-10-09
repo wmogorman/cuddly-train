@@ -4,7 +4,7 @@ Author: you + ChatGPT
 Last updated: 2025-10-02
 Prereqs:
   - Az PowerShell modules installed and logged in (Connect-AzAccount)
-  - Strong admin password ready (Azure Linux password policy)
+  - Admin password available as a SecureString parameter or stored in dfremote-password.txt (DPAPI-protected SecureString)
 What it does:
   1) Creates/uses a Resource Group, VNet/Subnet, Public IP, NSG (UDP 1235 + SSH)
   2) Builds Ubuntu VM, injects cloud-init to prep /srv/dfremote and systemd unit
@@ -18,7 +18,8 @@ param(
   [Parameter(Mandatory=$true)] [string] $Location,                  # e.g. "eastus"
   [Parameter(Mandatory=$true)] [string] $VmName,                    # e.g. "dfremote-vm"
   [Parameter(Mandatory=$true)] [string] $AdminUsername,             # e.g. "william"
-  [Parameter(Mandatory=$true)] [string] $AdminPassword,             # must meet Azure complexity rules
+  [SecureString] $AdminPassword,
+  [string] $AdminPasswordFile = (Join-Path -Path $PSScriptRoot -ChildPath 'dfremote-password.txt'),
   [string] $VmSize = "Standard_B2s",                                # tweak as needed
   [int]    $DataDiskSizeGB = 64,                                    # persistence disk
   [string] $VNetName = "$($ResourceGroupName)-vnet",
@@ -70,6 +71,28 @@ if (-not $nic) {
   $nic = New-AzNetworkInterface -Name $NicName -ResourceGroupName $ResourceGroupName -Location $Location `
           -SubnetId $subnet.Id -PublicIpAddressId $pip.Id -NetworkSecurityGroupId $nsg.Id
 }
+
+# ---------- Admin Password ----------
+if (-not $AdminPassword) {
+  if (-not (Test-Path -Path $AdminPasswordFile)) {
+    throw "Admin password file not found at $AdminPasswordFile. Create it with ConvertFrom-SecureString (DPAPI) on this machine."
+  }
+  $encryptedAdminPassword = (Get-Content -Path $AdminPasswordFile -Raw).Trim()
+  if (-not $encryptedAdminPassword) {
+    throw "Admin password file at $AdminPasswordFile is empty."
+  }
+  try {
+    $AdminPassword = ConvertTo-SecureString -String $encryptedAdminPassword
+  } catch {
+    throw "Failed to convert admin password from $AdminPasswordFile. Regenerate it on the same account that will run this script."
+  }
+}
+
+if (-not $AdminPassword) {
+  throw "Admin password not provided. Pass -AdminPassword or ensure dfremote-password.txt exists."
+}
+
+$adminCredential = New-Object -TypeName PSCredential -ArgumentList $AdminUsername, $AdminPassword
 
 # ---------- Cloud-Init (user-data) ----------
 # Prepares:
@@ -200,8 +223,6 @@ $ubuntuImage = @{
 }
 
 # ---------- VM Config ----------
-$adminSecurePassword = ConvertTo-SecureString $AdminPassword -AsPlainText -Force
-$adminCredential = New-Object -TypeName PSCredential -ArgumentList $AdminUsername, $adminSecurePassword
 $vmConfig = New-AzVMConfig -VMName $VmName -VMSize $VmSize |
   Set-AzVMOperatingSystem -Linux -ComputerName $VmName -Credential $adminCredential -DisablePasswordAuthentication:$false |
   Set-AzVMSourceImage @ubuntuImage |
