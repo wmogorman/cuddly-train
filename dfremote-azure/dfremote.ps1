@@ -19,7 +19,7 @@ param(
   [Parameter(Mandatory=$true)] [string] $VmName,                    # e.g. "dfremote-vm"
   [Parameter(Mandatory=$true)] [string] $AdminUsername,             # e.g. "william"
   [SecureString] $AdminPassword,
-  [string] $AdminPasswordFile = (Join-Path -Path $PSScriptRoot -ChildPath 'dfremote-password.txt'),
+  [SecureString] $AdminPasswordFile = (Join-Path -Path $PSScriptRoot -ChildPath 'dfremote-password.txt'),
   [string] $VmSize = "Standard_B2s",                                # tweak as needed
   [int]    $DataDiskSizeGB = 64,                                    # persistence disk
   [string] $VNetName = "$($ResourceGroupName)-vnet",
