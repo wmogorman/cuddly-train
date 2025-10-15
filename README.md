@@ -42,3 +42,27 @@ IT Glue Automation Scripts for Datto RMM
 - 401 responses usually signal a missing/invalid API key or subdomain; confirm the Datto variable value and script parameters
 - 429 throttling errors mean IT Glue rate limits were hit; raise `RateLimitWindowSeconds` or lower per-run deletion counts
 - Unexpected JSON structures: capture the raw response with `-Verbose` and adjust parsing logic as IT Glue introduces new fields
+
+**Headless: Network Glue SNMPv3**
+- Purpose: add SNMPv3 (MD5 + AES) credentials to Network Glue across one or all networks using a headless browser.
+- Location: `it-glue-headless/ng-snmp-md5aes.ts:1`
+- Prereqs:
+  - Node.js 18+ and npm
+  - First run: install Playwright’s Chromium browser
+    - `npm install`
+    - `npm run setup`
+- Configure: edit `it-glue-headless/it-glue-headless.env:1`
+  - `ITG_EMAIL`, `ITG_PASSWORD` (used on first run; session is saved)
+  - `ORG_NAME` (exact org name in IT Glue)
+  - `NETWORK_NAME` optional; leave blank to apply to all networks
+  - `SNMPV3_*` fields for user, auth proto/pass, priv proto/pass
+- Run:
+  - Headless: `npm start`
+  - Headed (for SSO/MFA): `npm run start:headed`
+- Behavior:
+  - Reuses `storage_state.json` after first successful login
+  - If `NETWORK_NAME` is blank, iterates visible network tabs and adds credentials; skips networks that already have them
+  - Triggers a manual discovery/sync at the end when available
+- Troubleshooting:
+  - If selectors fail after UI changes, run headed and observe the page to adjust `ORG_NAME`/`NETWORK_NAME` values
+  - Ensure your IT Glue role can access Admin → Network Glue and edit SNMP settings
