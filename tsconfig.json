@@ -4,8 +4,10 @@
     "module": "ESNext",
     "moduleResolution": "NodeNext",
     "lib": ["ES2020", "DOM"],
+    "types": ["node"],
     "resolveJsonModule": true,
     "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
     "forceConsistentCasingInFileNames": true,
     "skipLibCheck": true,
     "strict": true,
@@ -16,4 +18,3 @@
     "it-glue-headless/**/*.ts"
   ]
 }
-
