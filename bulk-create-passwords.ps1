@@ -1,19 +1,19 @@
 #requires -Version 5.1
 <#
 .SYNOPSIS
-  Bulk create IT Glue passwords from a CSV and generate 30-day share links.
+  Bulk create IT Glue passwords from a CSV file.
 
 .DESCRIPTION
   Reads a CSV that contains at minimum username, given name, email, and organization
-  columns. For each row the script creates an IT Glue password, enables email-restricted
-  sharing for 30 days, and writes an output CSV that mirrors the input columns with an
-  additional ShareLink column containing the generated URL.
+  columns. For each row the script creates an IT Glue password and writes an output CSV
+  that mirrors the input columns with an additional PasswordId column containing the
+  newly created record identifier.
 
 .PARAMETER InputCsvPath
   Path to the source CSV. Columns default to Username, GivenName, Email, and Organization.
 
 .PARAMETER OutputCsvPath
-  Destination CSV path. When omitted, "-with-share-links" is appended to the source filename.
+  Destination CSV path. When omitted, "-with-password-ids" is appended to the source filename.
 
 .PARAMETER ApiKey
   IT Glue API key. Defaults to the ITGlueKey environment variable.
@@ -46,7 +46,7 @@
   Optional IT Glue password folder ID to place the new records under.
 
 .PARAMETER DryRun
-  Parse the CSV and resolve organizations/categories, but do not create passwords or shares.
+  Parse the CSV and resolve organizations/categories, but do not create passwords.
 
 .EXAMPLE
   .\bulk-create-passwords.ps1 -InputCsvPath .\users.csv -Subdomain 'contoso'
@@ -105,11 +105,10 @@ if (-not $OutputCsvPath) {
     $dir = [System.IO.Path]::GetDirectoryName($InputCsvPath)
     $name = [System.IO.Path]::GetFileNameWithoutExtension($InputCsvPath)
     $ext = [System.IO.Path]::GetExtension($InputCsvPath)
-    $OutputCsvPath = [System.IO.Path]::Combine($dir, ($name + '-with-share-links' + $ext))
+    $OutputCsvPath = [System.IO.Path]::Combine($dir, ($name + '-with-password-ids' + $ext))
 }
 
 $BaseUri = $BaseUri.TrimEnd('/')
-$expiresAt = (Get-Date).ToUniversalTime().AddDays(30)
 
 $csvRows = Import-Csv -Path $InputCsvPath
 if (-not $csvRows) {
@@ -165,6 +164,7 @@ function Invoke-ITGlue {
         catch {
             $status = $null
             $bodyText = $null
+            $bodySummary = $null
 
             if ($_.Exception -and $_.Exception.Response) {
                 if ($_.Exception.Response.StatusCode) {
@@ -182,16 +182,54 @@ function Invoke-ITGlue {
                 catch {}
             }
 
+            if (-not [string]::IsNullOrWhiteSpace($bodyText)) {
+                $trimmedBody = $bodyText.Trim()
+                $bodySummary = $trimmedBody
+                try {
+                    $json = $trimmedBody | ConvertFrom-Json -ErrorAction Stop
+                    $messages = @()
+
+                    if ($json.errors) {
+                        foreach ($err in $json.errors) {
+                            $parts = @()
+                            if ($err.title) { $parts += [string]$err.title }
+                            if ($err.detail) { $parts += [string]$err.detail }
+                            if ($err.source -and $err.source.pointer) {
+                                $parts += ("Pointer: {0}" -f [string]$err.source.pointer)
+                            }
+                            if ($parts.Count -gt 0) {
+                                $messages += ($parts -join ' | ')
+                            }
+                        }
+                    }
+                    elseif ($json.error) {
+                        $messages += [string]$json.error
+                    }
+                    elseif ($json.message) {
+                        $messages += [string]$json.message
+                    }
+
+                    if ($messages.Count -gt 0) {
+                        $bodySummary = ($messages -join '; ')
+                    }
+                }
+                catch {}
+            }
+
+            if (-not $bodySummary) {
+                $bodySummary = '[no response body]'
+            }
+
             if ($status -eq 429 -or ($status -ge 500 -and $status -lt 600)) {
                 if ($attempt -ge $MaxRetries) {
-                    throw (New-Object System.Exception(("IT Glue request failed ({0}). Body: {1}" -f $status, $bodyText), $_.Exception))
+                    throw (New-Object System.Exception(("IT Glue request failed ({0}). Body: {1}" -f $status, $bodySummary), $_.Exception))
                 }
                 Start-Sleep -Seconds $delay
                 $delay = [Math]::Min(30, [int][Math]::Ceiling($delay * 1.5))
                 continue
             }
 
-            throw (New-Object System.Exception(("IT Glue request failed ({0}). Body: {1}" -f $status, $bodyText), $_.Exception))
+            throw (New-Object System.Exception(("IT Glue request failed ({0}). Body: {1}" -f $status, $bodySummary), $_.Exception))
         }
     } while ($attempt -le $MaxRetries)
 }
@@ -350,74 +388,30 @@ function New-ITGluePassword {
         [string]$Notes
     )
 
-    $relationships = @{
-        organization = @{
-            data = @{
-                type = 'organizations'
-                id   = $OrgId
-            }
-        }
-        'password-category' = @{
-            data = @{
-                type = 'password_categories'
-                id   = $CategoryId
-            }
-        }
-    }
-
-    if ($PasswordFolderId.HasValue) {
-        $relationships['password-folder'] = @{
-            data = @{
-                type = 'password_folders'
-                id   = [string]$PasswordFolderId.Value
-            }
-        }
-    }
-
     $attributes = @{
         name     = $Name
         username = $Username
         password = $Password
+        'organization_id' = [long]$OrgId
+        'password_category_id' = [long]$CategoryId
     }
 
     if (-not [string]::IsNullOrWhiteSpace($Notes)) {
         $attributes['notes'] = $Notes
     }
 
-    $body = @{
-        data = @{
-            type          = 'passwords'
-            attributes    = $attributes
-            relationships = $relationships
-        }
-    } | ConvertTo-Json -Depth 10
-
-    return Invoke-ITGlue -Method POST -Path 'passwords' -Body $body
-}
-
-function New-ITGluePasswordShare {
-    param(
-        [string]$PasswordId,
-        [string]$Email,
-        [datetime]$Expiration,
-        [string]$DisplayName
-    )
-
-    $attributes = @{
-        name        = $DisplayName
-        emails      = @($Email)
-        expires_at  = $Expiration.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+    if ($PasswordFolderId.HasValue) {
+        $attributes['password_folder_id'] = [long]$PasswordFolderId.Value
     }
 
     $body = @{
         data = @{
-            type       = 'password-share-links'
-            attributes = $attributes
+            type          = 'passwords'
+            attributes    = $attributes
         }
     } | ConvertTo-Json -Depth 10
 
-    $path = 'passwords/{0}/password-share-links' -f $PasswordId
-    return Invoke-ITGlue -Method POST -Path $path -Body $body
+    return Invoke-ITGlue -Method POST -Path 'passwords' -Body $body
 }
 
 $categoryId = Get-PasswordCategoryId -Name $PasswordCategoryName
@@ -434,7 +428,7 @@ foreach ($row in $csvRows) {
     $email = Get-ColumnValue -Row $row -Column $EmailColumn
     $orgName = Get-ColumnValue -Row $row -Column $OrganizationColumn
 
-    $shareLink = $null
+    $passwordIdOutput = $null
 
     try {
         if ([string]::IsNullOrWhiteSpace($email)) {
@@ -459,7 +453,7 @@ foreach ($row in $csvRows) {
         $notes = $notes.Trim()
 
         if ($DryRun) {
-            $shareLink = '[dry-run]'
+            $passwordIdOutput = '[dry-run]'
         }
         else {
             $passwordValue = New-RandomPassword -Length $PasswordLength
@@ -469,44 +463,31 @@ foreach ($row in $csvRows) {
                 throw 'Password creation returned an unexpected response.'
             }
 
-            $passwordId = [string]$passwordResponse.data.id
-            $shareResponse = New-ITGluePasswordShare -PasswordId $passwordId -Email $email -Expiration $expiresAt -DisplayName $displayName
-
-            if (-not $shareResponse.data -or -not $shareResponse.data.attributes) {
-                throw 'Password share creation returned an unexpected response.'
-            }
-
-            $linkCandidate = $shareResponse.data.attributes.link_url
-            if (-not $linkCandidate) {
-                $linkCandidate = $shareResponse.data.attributes.url
-            }
-            if (-not $linkCandidate) {
-                $linkCandidate = $shareResponse.data.attributes.share_link
-            }
-            if (-not $linkCandidate) {
-                throw 'Share link URL was not present in the API response.'
-            }
-
-            $shareLink = [string]$linkCandidate
+            $passwordIdOutput = [string]$passwordResponse.data.id
         }
     }
     catch {
         $errorMessage = $_.Exception.Message
         $errors += "Row $rowNumber ($email): $errorMessage"
         Write-Warning ("Row {0}: {1}" -f $rowNumber, $errorMessage)
+        if (-not $passwordIdOutput) {
+            $cleanMessage = ($errorMessage -replace '\s+', ' ').Trim()
+            if (-not $cleanMessage) { $cleanMessage = 'See console log for details.' }
+            $passwordIdOutput = "ERROR: $cleanMessage"
+        }
     }
 
     $outputRow = [ordered]@{}
     foreach ($prop in $row.PSObject.Properties) {
         $outputRow[$prop.Name] = $prop.Value
     }
-    $outputRow['ShareLink'] = $shareLink
+    $outputRow['PasswordId'] = $passwordIdOutput
 
     $outputRows += [pscustomobject]$outputRow
 }
 
 $outputRows | Export-Csv -Path $OutputCsvPath -NoTypeInformation
-Write-Host ("Output written to {0}" -f $OutputCsvPath)
+Write-Host ("Output written to {0} (see PasswordId column for results)" -f $OutputCsvPath)
 
 if ($errors.Count -gt 0) {
     Write-Warning ("Completed with {0} error(s). Review the Status column and console warnings." -f $errors.Count)
