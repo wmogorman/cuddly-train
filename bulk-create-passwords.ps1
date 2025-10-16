@@ -70,7 +70,7 @@ param(
     [string]$BaseUri = 'https://api.itglue.com',
 
     [Parameter(Mandatory = $false)]
-    [string]$PasswordCategoryName = 'General',
+    [string]$PasswordCategoryName = 'VPN',
 
     [Parameter(Mandatory = $false)]
     [Nullable[int]]$PasswordFolderId,
