@@ -164,20 +164,34 @@ function Invoke-ITGlue {
         }
         catch {
             $status = $null
-            if ($_.Exception -and $_.Exception.Response -and $_.Exception.Response.StatusCode) {
-                $status = [int]$_.Exception.Response.StatusCode
+            $bodyText = $null
+
+            if ($_.Exception -and $_.Exception.Response) {
+                if ($_.Exception.Response.StatusCode) {
+                    $status = [int]$_.Exception.Response.StatusCode
+                }
+
+                try {
+                    $responseStream = $_.Exception.Response.GetResponseStream()
+                    if ($responseStream) {
+                        $reader = New-Object System.IO.StreamReader($responseStream)
+                        $bodyText = $reader.ReadToEnd()
+                        $reader.Dispose()
+                    }
+                }
+                catch {}
             }
 
             if ($status -eq 429 -or ($status -ge 500 -and $status -lt 600)) {
                 if ($attempt -ge $MaxRetries) {
-                    throw
+                    throw (New-Object System.Exception(("IT Glue request failed ({0}). Body: {1}" -f $status, $bodyText), $_.Exception))
                 }
                 Start-Sleep -Seconds $delay
                 $delay = [Math]::Min(30, [int][Math]::Ceiling($delay * 1.5))
                 continue
             }
 
-            throw
+            throw (New-Object System.Exception(("IT Glue request failed ({0}). Body: {1}" -f $status, $bodyText), $_.Exception))
         }
     } while ($attempt -le $MaxRetries)
 }
