@@ -126,7 +126,8 @@
                                     "flags":  [
                                                   "empty"
                                               ],
-                                    "item_type":  "BAG",
+                                    "item_subtype":  "ITEM_TOOL_BAG",
+                                    "item_type":  "TOOL",
                                     "value":  5
                                 }
                             ],
@@ -174,7 +175,8 @@
                                     "flags":  [
                                                   "empty"
                                               ],
-                                    "item_type":  "BAG",
+                                    "item_subtype":  "ITEM_TOOL_BAG",
+                                    "item_type":  "TOOL",
                                     "value":  5
                                 }
                             ],
@@ -633,7 +635,8 @@
                                     "flags":  [
                                                   "empty"
                                               ],
-                                    "item_type":  "BAG",
+                                    "item_subtype":  "ITEM_TOOL_BAG",
+                                    "item_type":  "TOOL",
                                     "value":  30
                                 }
                             ],
@@ -664,7 +667,8 @@
                                     "flags":  [
                                                   "empty"
                                               ],
-                                    "item_type":  "BAG",
+                                    "item_subtype":  "ITEM_TOOL_BAG",
+                                    "item_type":  "TOOL",
                                     "value":  30
                                 }
                             ],
@@ -695,7 +699,8 @@
                                     "flags":  [
                                                   "empty"
                                               ],
-                                    "item_type":  "BAG",
+                                    "item_subtype":  "ITEM_TOOL_BAG",
+                                    "item_type":  "TOOL",
                                     "value":  30
                                 }
                             ],
@@ -726,7 +731,8 @@
                                     "flags":  [
                                                   "empty"
                                               ],
-                                    "item_type":  "BAG",
+                                    "item_subtype":  "ITEM_TOOL_BAG",
+                                    "item_type":  "TOOL",
                                     "value":  30
                                 }
                             ],
@@ -1520,7 +1526,8 @@
                                     "flags":  [
                                                   "empty"
                                               ],
-                                    "item_type":  "BAG",
+                                    "item_subtype":  "ITEM_TOOL_BAG",
+                                    "item_type":  "TOOL",
                                     "value":  10
                                 },
                                 {
