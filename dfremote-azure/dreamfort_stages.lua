@@ -6,7 +6,7 @@
 --   dreamfort_stages run [--dry-run|--orders-only|--skip-orders] <stage|category|all> [...]
 -- Place the DF cursor on the Dreamfort central stairs tile before running build stages.
 
-local DREAMFORT_FILE = 'dreamfort'
+local DREAMFORT_FILE = 'library/dreamfort.csv'
 local LOG_PREFIX = '[dreamfort_stages] '
 
 local CATEGORY_DISPLAY_NAMES = {
