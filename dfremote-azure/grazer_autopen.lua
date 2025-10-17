@@ -20,6 +20,23 @@ local SCAN_INTERVAL_TICKS = 1200     -- rescan every in-game day
 local state = dfhack.script_environment('grazer_autopen_state')
 state.seen_units = state.seen_units or {}
 state.running = state.running or false
+state.on_state_change_registered = state.on_state_change_registered or false
+
+local function reset_state()
+  state.seen_units = {}
+end
+
+if not state.on_state_change_registered then
+  dfhack.onStateChange.grazer_autopen = function(code)
+    if code == SC_WORLD_UNLOADED then
+      state.running = false
+      reset_state()
+    elseif code == SC_WORLD_LOADED then
+      reset_state()
+    end
+  end
+  state.on_state_change_registered = true
+end
 
 local function is_grazer(unit)
   if not unit or unit.flags1.dead or unit.flags1.caged then return false end
@@ -82,6 +99,10 @@ local function scan_units(force_rescan)
     return 0
   end
   local seen = state.seen_units
+  if not seen then
+    seen = {}
+    state.seen_units = seen
+  end
   for _, u in ipairs(world.units.active) do
     if force_rescan or not seen[u.id] then
       seen[u.id] = true
