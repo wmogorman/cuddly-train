@@ -6,7 +6,25 @@
 --   dreamfort_stages run [--dry-run|--orders-only|--skip-orders] <stage|category|all> [...]
 -- Place the DF cursor on the Dreamfort central stairs tile before running build stages.
 
-local DREAMFORT_FILE = 'library/dreamfort.csv'
+local function detect_dreamfort_file()
+  local base_path = dfhack.getDFPath and dfhack.getDFPath() or '.'
+  local candidates = {
+    {cmd = 'library/dreamfort.csv', path = 'data/blueprints/library/dreamfort.csv'},
+    {cmd = 'dreamfort.csv', path = 'data/blueprints/dreamfort.csv'},
+    {cmd = 'dreamfort', path = 'data/blueprints/dreamfort.csv'},
+  }
+  for _, candidate in ipairs(candidates) do
+    local full_path = base_path .. '/' .. candidate.path
+    local f = io.open(full_path, 'r')
+    if f then
+      f:close()
+      return candidate.cmd
+    end
+  end
+  return 'dreamfort'
+end
+
+local DREAMFORT_FILE = detect_dreamfort_file()
 local LOG_PREFIX = '[dreamfort_stages] '
 
 local CATEGORY_DISPLAY_NAMES = {
@@ -14,6 +32,8 @@ local CATEGORY_DISPLAY_NAMES = {
   core = 'Core Fort',
   mature = 'Mature Fort',
 }
+
+local blueprint_notice_printed = false
 
 local function tagset(list)
   if not list or #list == 0 then
@@ -594,6 +614,10 @@ local function run_quickfort_action(action, opts)
     for _, line in ipairs(out) do
       dfhack.println(line)
     end
+  elseif type(out) == 'number' then
+    if out ~= 0 then
+      dfhack.println(tostring(out))
+    end
   elseif out ~= nil and out ~= '' then
     dfhack.println(tostring(out))
   end
@@ -609,6 +633,10 @@ local function run_command_action(action)
   elseif type(out) == 'table' then
     for _, line in ipairs(out) do
       dfhack.println(line)
+    end
+  elseif type(out) == 'number' then
+    if out ~= 0 then
+      dfhack.println(tostring(out))
     end
   elseif out ~= nil and out ~= '' then
     dfhack.println(tostring(out))
@@ -634,6 +662,10 @@ local function run_stage(id, opts)
   if not stage then
     dfhack.printerr(LOG_PREFIX .. 'Unknown stage id: ' .. tostring(id))
     return false
+  end
+  if not blueprint_notice_printed then
+    dfhack.println(string.format('%sUsing blueprint workbook: %s', LOG_PREFIX, DREAMFORT_FILE))
+    blueprint_notice_printed = true
   end
   dfhack.println(string.format('%sRunning stage %s: %s', LOG_PREFIX, id, stage.title or stage.description or ''))
   local any_ran = false
