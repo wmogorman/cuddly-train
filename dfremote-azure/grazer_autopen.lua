@@ -8,15 +8,18 @@
 --   grazer_autopen once     -> scan all current units now (assign any loose grazers)
 --   grazer_autopen status   -> show whether listener is active
 
-local eventful = require('plugins.eventful')
-
 -- === CONFIG ===
 local PASTURE_NAME = 'Grazers'       -- <-- change if you named your pasture differently
 local INCLUDE_TAME_ONLY = true       -- only auto-pen tame animals (recommended)
 local INCLUDE_PETS = true            -- include pets (true) or skip them (false)
 local LOG_PREFIX = '[grazer_autopen] '
+local SCAN_INTERVAL_TICKS = 1200     -- rescan every in-game day
 
 -- --- helpers ---
+
+local state = dfhack.script_environment('grazer_autopen_state')
+state.seen_units = state.seen_units or {}
+state.running = state.running or false
 
 local function is_grazer(unit)
   if not unit or unit.flags1.dead or unit.flags1.caged then return false end
@@ -64,51 +67,70 @@ local function zone_assign_unit(zone_name, unit_id)
 end
 
 local function assign_if_grazer(unit)
-  if not unit then return end
+  if not unit then return false end
   if is_grazer(unit) then
     zone_assign_unit(PASTURE_NAME, unit.id)
+    return true
   end
+  return false
 end
 
-local LISTENER_NAME = 'grazer_autopen_onNewUnit'
-local active = false
+local function scan_units(force_rescan)
+  local count = 0
+  local world = df.global.world
+  if not world or not world.units then
+    return 0
+  end
+  local seen = state.seen_units
+  for _, u in ipairs(world.units.active) do
+    if force_rescan or not seen[u.id] then
+      seen[u.id] = true
+      if assign_if_grazer(u) then
+        count = count + 1
+      end
+    end
+  end
+  return count
+end
+
+local function schedule_scan()
+  if not state.running then return end
+  dfhack.timeout(SCAN_INTERVAL_TICKS, 'ticks', function()
+    if not state.running then return end
+    scan_units(false)
+    schedule_scan()
+  end)
+end
 
 local function start()
-  if active then
+  if state.running then
     dfhack.println(LOG_PREFIX .. 'already running.')
     return
   end
-  -- Hook: fires for births, migrants, invaders, etc.
-  eventful.onNewUnit[LISTENER_NAME] = function(id)
-    local u = df.unit.find(id)
-    assign_if_grazer(u)
-  end
-  active = true
+  state.running = true
+  state.seen_units = {}
+  scan_units(false)
+  schedule_scan()
   dfhack.println(LOG_PREFIX .. 'started. New grazers will be auto-pastured.')
 end
 
 local function stop()
-  if eventful.onNewUnit[LISTENER_NAME] then
-    eventful.onNewUnit[LISTENER_NAME] = nil
+  if not state.running then
+    dfhack.println(LOG_PREFIX .. 'already stopped.')
+    return
   end
-  active = false
+  state.running = false
   dfhack.println(LOG_PREFIX .. 'stopped.')
 end
 
 local function status()
   dfhack.println(('%sstatus: %s (pasture=%q, tame_only=%s, include_pets=%s)')
-    :format(LOG_PREFIX, active and 'ACTIVE' or 'inactive', PASTURE_NAME,
+    :format(LOG_PREFIX, state.running and 'ACTIVE' or 'inactive', PASTURE_NAME,
             tostring(INCLUDE_TAME_ONLY), tostring(INCLUDE_PETS)))
 end
 
 local function once_scan_existing()
-  local count = 0
-  for _,u in ipairs(df.global.world.units.active) do
-    if is_grazer(u) then
-      zone_assign_unit(PASTURE_NAME, u.id)
-      count = count + 1
-    end
-  end
+  local count = scan_units(true)
   dfhack.println(('%sScanned current map: attempted to assign %d grazers.')
     :format(LOG_PREFIX, count))
 end
