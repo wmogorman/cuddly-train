@@ -69,7 +69,13 @@ end
 -- Does this thought look like "unable to practice a martial art or a craft"?
 local function thought_matches_martial_or_craft(thought_id)
   if not thought_id then return false, nil end
-  local label = tostring(df.unit_thought_type[thought_id] or '')
+  local thought_enum = rawget(df, 'unit_thought_type')
+  local label = ''
+  if thought_enum then
+    label = tostring(thought_enum[thought_id] or '')
+  else
+    label = tostring(thought_id)
+  end
   local l = label:lower()
   -- Look for "unable"/"couldn't" + ("martial"/"combat" OR "craft"/"artisan")
   local unable = (l:find('unable', 1, true) ~= nil) or (l:find('couldn', 1, true) ~= nil)
@@ -84,7 +90,13 @@ end
 -- Need name string match for practice-martial/craft; treat focus_level < 0 as negative
 local function need_matches_martial_or_craft(need)
   if not need then return false, nil end
-  local label = tostring(df.unit_need_type[need.id] or '')
+  local need_enum = rawget(df, 'unit_need_type')
+  local label = ''
+  if need_enum then
+    label = tostring(need_enum[need.id] or '')
+  else
+    label = tostring(need.id or '')
+  end
   local l = label:lower()
   local is_martial = (l:find('martial',1,true) ~= nil) or (l:find('combat',1,true) ~= nil)
   local is_craft   = (l:find('craft',  1,true) ~= nil) or (l:find('artisan',1,true) ~= nil)
