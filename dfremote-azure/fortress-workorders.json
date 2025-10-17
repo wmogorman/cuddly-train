@@ -637,6 +637,7 @@
                                     "value":  30
                                 }
                             ],
+        "item_type":  "TOOL",
         "item_subtype":  "ITEM_TOOL_BAG",
         "job":  "MakeTool",
         "material_category":  [
@@ -669,6 +670,7 @@
                                     "value":  30
                                 }
                             ],
+        "item_type":  "TOOL",
         "item_subtype":  "ITEM_TOOL_BAG",
         "job":  "MakeTool",
         "material_category":  [
@@ -701,6 +703,7 @@
                                     "value":  30
                                 }
                             ],
+        "item_type":  "TOOL",
         "item_subtype":  "ITEM_TOOL_BAG",
         "job":  "MakeTool",
         "material_category":  [
@@ -733,6 +736,7 @@
                                     "value":  30
                                 }
                             ],
+        "item_type":  "TOOL",
         "item_subtype":  "ITEM_TOOL_BAG",
         "job":  "MakeTool",
         "material_category":  [
