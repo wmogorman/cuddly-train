@@ -637,7 +637,7 @@
                                     "value":  30
                                 }
                             ],
-        "job":  "ConstructBag",
+        "job":  "MakeBag",
         "material_category":  [
                                   "leather"
                               ]
@@ -668,7 +668,7 @@
                                     "value":  30
                                 }
                             ],
-        "job":  "ConstructBag",
+        "job":  "MakeBag",
         "material_category":  [
                                   "silk"
                               ]
@@ -699,7 +699,7 @@
                                     "value":  30
                                 }
                             ],
-        "job":  "ConstructBag",
+        "job":  "MakeBag",
         "material_category":  [
                                   "cloth"
                               ]
@@ -730,7 +730,7 @@
                                     "value":  30
                                 }
                             ],
-        "job":  "ConstructBag",
+        "job":  "MakeBag",
         "material_category":  [
                                   "yarn"
                               ]
