@@ -588,8 +588,14 @@ local function run_quickfort_action(action, opts)
   end
   dfhack.println(LOG_PREFIX .. table.concat(args, ' '))
   local ok, out = dfhack.run_command_silent(table.unpack(args))
-  if out and #out > 0 then
+  if type(out) == 'string' and #out > 0 then
     dfhack.println(out)
+  elseif type(out) == 'table' then
+    for _, line in ipairs(out) do
+      dfhack.println(line)
+    end
+  elseif out ~= nil and out ~= '' then
+    dfhack.println(tostring(out))
   end
   return ok
 end
@@ -598,8 +604,14 @@ local function run_command_action(action)
   local args = action.args or {}
   dfhack.println(LOG_PREFIX .. table.concat(args, ' '))
   local ok, out = dfhack.run_command_silent(table.unpack(args))
-  if out and #out > 0 then
+  if type(out) == 'string' and #out > 0 then
     dfhack.println(out)
+  elseif type(out) == 'table' then
+    for _, line in ipairs(out) do
+      dfhack.println(line)
+    end
+  elseif out ~= nil and out ~= '' then
+    dfhack.println(tostring(out))
   end
   return ok
 end
