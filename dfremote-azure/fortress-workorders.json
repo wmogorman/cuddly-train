@@ -2768,7 +2768,7 @@
                                     "value":  20
                                 }
                             ],
-        "job":  "ConstructBarrel",
+        "job":  "MakeBarrel",
         "material_category":  [
                                   "wood"
                               ]
