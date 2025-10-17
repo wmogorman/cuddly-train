@@ -637,7 +637,8 @@
                                     "value":  30
                                 }
                             ],
-        "job":  "MakeBag",
+        "item_subtype":  "ITEM_TOOL_BAG",
+        "job":  "MakeTool",
         "material_category":  [
                                   "leather"
                               ]
@@ -668,7 +669,8 @@
                                     "value":  30
                                 }
                             ],
-        "job":  "MakeBag",
+        "item_subtype":  "ITEM_TOOL_BAG",
+        "job":  "MakeTool",
         "material_category":  [
                                   "silk"
                               ]
@@ -699,7 +701,8 @@
                                     "value":  30
                                 }
                             ],
-        "job":  "MakeBag",
+        "item_subtype":  "ITEM_TOOL_BAG",
+        "job":  "MakeTool",
         "material_category":  [
                                   "cloth"
                               ]
@@ -730,7 +733,8 @@
                                     "value":  30
                                 }
                             ],
-        "job":  "MakeBag",
+        "item_subtype":  "ITEM_TOOL_BAG",
+        "job":  "MakeTool",
         "material_category":  [
                                   "yarn"
                               ]
