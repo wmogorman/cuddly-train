@@ -1,0 +1,382 @@
+<!DOCTYPE html>
+
+<html lang="en" data-content_root="../../">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>quickfort &#8212; DFHack 52.05-r2 documentation</title>
+    <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=03e43079" />
+    <link rel="stylesheet" type="text/css" href="../../_static/basic.css?v=b08954a9" />
+    <link rel="stylesheet" type="text/css" href="../../_static/alabaster.css?v=f6a572b4" />
+    <link rel="stylesheet" type="text/css" href="../../_static/dfhack.css?v=cb6e426a" />
+    <link rel="stylesheet" type="text/css" href="../../_static/sphinx5.css?v=1fc81746" />
+    <script src="../../_static/documentation_options.js?v=c9baa2ce"></script>
+    <script src="../../_static/doctools.js?v=9bcbadda"></script>
+    <script src="../../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <link rel="icon" href="../../_static/dfhack-icon.ico"/>
+    <link rel="search" title="Search" href="../../search.html" />
+    <link rel="next" title="quicksave" href="quicksave.html" />
+    <link rel="prev" title="questport" href="questport.html" />
+   
+  <link rel="stylesheet" href="../../_static/custom.css" type="text/css" />
+  
+
+  
+  
+
+  <script async type="text/javascript" src="/_/static/javascript/readthedocs-addons.js"></script><meta name="readthedocs-project-slug" content="dfhack" /><meta name="readthedocs-version-slug" content="stable" /><meta name="readthedocs-resolver-filename" content="/docs/tools/quickfort.html" /><meta name="readthedocs-http-status" content="200" /></head><body>
+  <div class="document">
+    
+      <div class="sphinxsidebar" role="navigation" aria-label="Main">
+        <div class="sphinxsidebarwrapper"><p class="logo">
+  <a href="../../index.html">
+    <img class="logo" src="../../_static/dfhack-logo.png" alt="Logo"/>
+    <h3 class="logo logo-name">Home</h3>
+  </a>
+</p><div class="relations">
+<h3>Related Topics</h3>
+<ul>
+  <li><a href="../../index.html">Documentation overview</a><ul>
+  <li><a href="../Tools.html">DFHack tools</a><ul>
+      <li>Previous: <a href="questport.html" title="previous chapter">questport</a></li>
+      <li>Next: <a href="quicksave.html" title="next chapter">quicksave</a></li>
+  </ul></li>
+  </ul></li>
+</ul>
+</div>
+<search id="searchbox" style="display: none" role="search">
+  <h3 id="searchlabel">Quick search</h3>
+    <div class="searchformwrapper">
+    <form class="search" action="../../search.html" method="get">
+      <input type="text" name="q" aria-labelledby="searchlabel" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"/>
+      <input type="submit" value="Go" />
+    </form>
+    </div>
+</search>
+<script>document.getElementById('searchbox').style.display = "block"</script>
+  <div>
+    <h3><a href="../../index.html">Table of Contents</a></h3>
+    <ul>
+<li><a class="reference internal" href="#">quickfort</a><ul>
+<li><a class="reference internal" href="#usage">Usage</a></li>
+<li><a class="reference internal" href="#examples">Examples</a></li>
+<li><a class="reference internal" href="#command-options">Command options</a></li>
+<li><a class="reference internal" href="#transformations">Transformations</a></li>
+<li><a class="reference internal" href="#configuration">Configuration</a></li>
+<li><a class="reference internal" href="#api">API</a></li>
+</ul>
+</li>
+</ul>
+
+  </div>
+        </div>
+      </div>
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          
+
+          <div class="body" role="main">
+            
+  <section id="quickfort">
+<span id="id1"></span><h1>quickfort<a class="headerlink" href="#quickfort" title="Link to this heading">¶</a></h1>
+<aside class="topic dfhack-tool-summary">
+<p><strong>Tags:</strong><span> </span><a class="reference internal" href="../../fort-tag-index.html"><span class="std std-ref">fort</span></a><span> | </span><a class="reference internal" href="../../design-tag-index.html"><span class="std std-ref">design</span></a><span> | </span><a class="reference internal" href="../../productivity-tag-index.html"><span class="std std-ref">productivity</span></a><span> | </span><a class="reference internal" href="../../buildings-tag-index.html"><span class="std std-ref">buildings</span></a><span> | </span><a class="reference internal" href="../../map-tag-index.html"><span class="std std-ref">map</span></a><span> | </span><a class="reference internal" href="../../stockpiles-tag-index.html"><span class="std std-ref">stockpiles</span></a></p>
+</aside>
+<aside class="topic dfhack-tool-summary">
+<p><strong>Command:</strong><span> </span><code class="docutils literal notranslate"><span class="pre">quickfort</span></code></p>
+<p><span>Apply layout blueprints to your fort.</span></p>
+</aside>
+<p>Quickfort reads stored blueprint files and applies them to the game map.
+You can apply blueprints that designate digging, build buildings, place
+stockpiles, mark zones, and more. If you find yourself spending time doing
+similar or repetitive designs in your forts, this tool can be an immense help.</p>
+<p>Note that this is the commandline tool. Please see <a class="reference internal" href="gui/quickfort.html#gui-quickfort"><span class="std std-ref">gui/quickfort</span></a> if you’d like
+a graphical in-game UI for selecting, previewing, and applying blueprints.</p>
+<p>You can create the blueprints by hand (see the <a class="reference internal" href="../guides/quickfort-user-guide.html#quickfort-blueprint-guide"><span class="std std-ref">Quickfort blueprint creation guide</span></a> for
+details) or you can build your plan “for real” in Dwarf Fortress, and then
+export your map using <a class="reference internal" href="gui/blueprint.html#gui-blueprint"><span class="std std-ref">gui/blueprint</span></a>. This way you can effectively copy and
+paste sections of your fort. Player-created blueprints are stored in the
+<code class="docutils literal notranslate"><span class="pre">dfhack-config/blueprints</span></code> directory.</p>
+<p>There are many ready-to-use blueprints in the
+<a class="reference internal" href="../guides/quickfort-library-guide.html#blueprint-library-guide"><span class="std std-ref">blueprint library</span></a> that is distributed with DFHack,
+so you can use this tool productively even if you haven’t created any blueprints
+yourself. Additional library blueprints can be
+<a class="reference internal" href="../guides/modding-guide.html#modding-guide"><span class="std std-ref">added with mods</span></a> as well.</p>
+<section id="usage">
+<h2>Usage<a class="headerlink" href="#usage" title="Link to this heading">¶</a></h2>
+<dl class="simple">
+<dt><code class="docutils literal notranslate"><span class="pre">quickfort</span> <span class="pre">list</span> <span class="pre">[-m|--mode</span> <span class="pre">&lt;mode&gt;]</span> <span class="pre">[-u|--useronly]</span> <span class="pre">[-h|--hidden]</span> <span class="pre">[&lt;search</span> <span class="pre">string&gt;]</span></code></dt><dd><p>Lists available blueprints. Blueprints are <code class="docutils literal notranslate"><span class="pre">.csv</span></code> files or sheets within
+<code class="docutils literal notranslate"><span class="pre">.xlsx</span></code> files that contain a <code class="docutils literal notranslate"><span class="pre">#&lt;mode&gt;</span></code> comment in the upper-left cell
+(please see <a class="reference internal" href="../guides/quickfort-user-guide.html#quickfort-blueprint-guide"><span class="std std-ref">Quickfort blueprint creation guide</span></a> for more information on modes). By
+default, library blueprints are included and blueprints that contain a
+<code class="docutils literal notranslate"><span class="pre">hidden()</span></code> marker in their modeline are excluded from the returned list.
+Specify <code class="docutils literal notranslate"><span class="pre">-u</span></code> or <code class="docutils literal notranslate"><span class="pre">-h</span></code> to exclude library or include hidden blueprints,
+respectively. The list can additionally be filtered by a specified mode
+(e.g. <code class="docutils literal notranslate"><span class="pre">-m</span> <span class="pre">build</span></code>) and/or strings to search for in a path, filename, mode,
+or comment. The id numbers in the reported list may not be contiguous if
+there are hidden or filtered blueprints that are not being shown.</p>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">quickfort</span> <span class="pre">delete</span> <span class="pre">&lt;filename&gt;</span> <span class="pre">[&lt;filename&gt;</span> <span class="pre">...]</span></code></dt><dd><p>Delete the specified blueprint file(s). Only player-owned blueprints (stored
+in the <code class="docutils literal notranslate"><span class="pre">dfhack-config/blueprints</span></code> directory) can be deleted. Blueprints
+provided by mods or the standard DFHack library cannot be deleted by this
+command.</p>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">quickfort</span> <span class="pre">gui</span> <span class="pre">[&lt;filename</span> <span class="pre">or</span> <span class="pre">search</span> <span class="pre">terms&gt;]</span></code></dt><dd><p>Invokes the quickfort UI with the specified parameters, giving you an
+interactive blueprint preview to work with before you apply it to the map.
+See the <a class="reference internal" href="gui/quickfort.html#gui-quickfort"><span class="std std-ref">gui/quickfort</span></a> documentation for details.</p>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">quickfort</span> <span class="pre">&lt;command&gt;[,&lt;command&gt;...]</span> <span class="pre">&lt;list_id&gt;[,&lt;list_id&gt;...]</span> <span class="pre">[&lt;options&gt;]</span></code></dt><dd><p>Applies the blueprint(s) with the id number(s) reported from the <code class="docutils literal notranslate"><span class="pre">list</span></code>
+command.</p>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">quickfort</span> <span class="pre">&lt;command&gt;[,&lt;command&gt;...]</span> <span class="pre">&lt;filename&gt;</span> <span class="pre">[-n|--name</span> <span class="pre">&lt;name&gt;[,&lt;name&gt;...]]</span> <span class="pre">[&lt;options&gt;]</span></code></dt><dd><p>Applies a blueprint in the specified file. The optional <code class="docutils literal notranslate"><span class="pre">name</span></code> parameter
+can select a specific blueprint from a file that contains multiple
+blueprints with the format <code class="docutils literal notranslate"><span class="pre">&lt;sheetname&gt;/&lt;label&gt;</span></code> for .xlsx files, or just
+<code class="docutils literal notranslate"><span class="pre">/&lt;label&gt;</span></code> for .csv files. The label is defined in the blueprint modeline,
+or, if not defined, defaults to its order in the sheet or file (e.g.
+<code class="docutils literal notranslate"><span class="pre">/2</span></code>). If the <code class="docutils literal notranslate"><span class="pre">-n</span></code> parameter is not specified, the first blueprint in
+the first sheet is used.</p>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">quickfort</span> <span class="pre">set</span> <span class="pre">[&lt;key&gt;</span> <span class="pre">&lt;value&gt;]</span></code></dt><dd><p>Allows you to modify the global quickfort configuration. Just run
+<code class="docutils literal notranslate"><span class="pre">quickfort</span> <span class="pre">set</span></code> to show current settings. See the <a class="reference internal" href="#configuration">Configuration</a> section
+below for available keys and values.</p>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">quickfort</span> <span class="pre">reset</span></code></dt><dd><p>Resets quickfort configuration to defaults.</p>
+</dd>
+</dl>
+<p><code class="docutils literal notranslate"><span class="pre">&lt;command&gt;</span></code> is one of:</p>
+<dl class="field-list simple">
+<dt class="field-odd">run<span class="colon">:</span></dt>
+<dd class="field-odd"><p>Applies the blueprint at your current in-game cursor position.</p>
+</dd>
+<dt class="field-even">orders<span class="colon">:</span></dt>
+<dd class="field-even"><p>Uses the manager interface to queue up workorders to manufacture items
+needed by the specified blueprint(s).</p>
+</dd>
+<dt class="field-odd">undo<span class="colon">:</span></dt>
+<dd class="field-odd"><p>Applies the inverse of the specified blueprint. Dig tiles are
+undesignated, buildings are canceled or scheduled for destruction
+(depending on their construction status), and stockpiles/zones are
+removed.</p>
+</dd>
+</dl>
+</section>
+<section id="examples">
+<h2>Examples<a class="headerlink" href="#examples" title="Link to this heading">¶</a></h2>
+<dl class="simple">
+<dt><code class="docutils literal notranslate"><span class="pre">quickfort</span> <span class="pre">gui</span> <span class="pre">library/aquifer_tap.csv</span> <span class="pre">-n</span> <span class="pre">/dig</span></code></dt><dd><p>Show the in-game preview for the “dig” blueprint in the
+<code class="docutils literal notranslate"><span class="pre">library/aquifer_tap.csv</span></code> file. You can interactively reposition the
+blueprint and apply it where you like (it’s intended to be applied in a
+light aquifer layer – run the associated “help” blueprint for more info).</p>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">quickfort</span> <span class="pre">list</span></code></dt><dd><p>List all available blueprints.</p>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">quickfort</span> <span class="pre">list</span> <span class="pre">dreamfort</span> <span class="pre">help</span></code></dt><dd><p>List all the blueprints that have both “dreamfort” and “help” as keywords.</p>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">quickfort</span> <span class="pre">run</span> <span class="pre">library/dreamfort.csv</span></code></dt><dd><p>Run the first blueprint in the <code class="docutils literal notranslate"><span class="pre">library/dreamfort.csv</span></code> file (which happens
+to be the “notes” blueprint that displays the help).</p>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">quickfort</span> <span class="pre">run</span> <span class="pre">library/pump_stack.csv</span> <span class="pre">-n</span> <span class="pre">/dig</span> <span class="pre">--repeat</span> <span class="pre">up,80</span> <span class="pre">--transform</span> <span class="pre">ccw,flipv</span></code></dt><dd><p>Dig a pump stack through 160 z-levels up from the current cursor location
+(each repetition of the <code class="docutils literal notranslate"><span class="pre">library/pump_stack.csv</span> <span class="pre">-n</span> <span class="pre">/dig</span></code> blueprint is 2
+z-levels). Also transform the blueprint by rotating counterclockwise and
+flipping vertically in order to fit the pump stack through some
+tricky-shaped caverns 50 z-levels above. Note that this kind of careful
+positioning is much easier to do interactively with <a class="reference internal" href="gui/quickfort.html#gui-quickfort"><span class="std std-ref">gui/quickfort</span></a>, but it
+can be done via the commandline as well if you know exactly what
+transformations and positioning you need.</p>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">quickfort</span> <span class="pre">orders</span> <span class="pre">10,11,12</span> <span class="pre">--dry-run</span></code></dt><dd><p>Process the blueprints with ids <code class="docutils literal notranslate"><span class="pre">10</span></code>, <code class="docutils literal notranslate"><span class="pre">11</span></code>, and <code class="docutils literal notranslate"><span class="pre">12</span></code> (run
+<code class="docutils literal notranslate"><span class="pre">quickfort</span> <span class="pre">list</span></code> to see which blueprints these are for you) and calculate
+what materials will be needed by your dwarves to actually complete the
+structures that the blueprints will designate. Display that list to the
+screen, but don’t actually enqueue the workorders (the <code class="docutils literal notranslate"><span class="pre">--dry-run</span></code> option
+prevents actual changes to the game).</p>
+</dd>
+</dl>
+</section>
+<section id="command-options">
+<h2>Command options<a class="headerlink" href="#command-options" title="Link to this heading">¶</a></h2>
+<p><code class="docutils literal notranslate"><span class="pre">&lt;options&gt;</span></code> can be zero or more of:</p>
+<dl class="simple">
+<dt><code class="docutils literal notranslate"><span class="pre">-c</span></code>, <code class="docutils literal notranslate"><span class="pre">--cursor</span> <span class="pre">&lt;x&gt;,&lt;y&gt;,&lt;z&gt;</span></code></dt><dd><p>Use the specified map coordinates instead of the current keyboard map
+cursor for the the blueprint start position. If this option is specified,
+then an active keyboard map cursor is not necessary.</p>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">-d</span></code>, <code class="docutils literal notranslate"><span class="pre">--dry-run</span></code></dt><dd><p>Go through all the motions and print statistics on what would be done, but
+don’t actually change any game state.</p>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">-m</span></code>, <code class="docutils literal notranslate"><span class="pre">--marker</span> <span class="pre">&lt;type&gt;[,&lt;type&gt;...]</span></code></dt><dd><p>Apply the given marker(s) to the tiles designated by the <code class="docutils literal notranslate"><span class="pre">#dig</span></code> blueprint
+that you are applying. Valid marker types are: <code class="docutils literal notranslate"><span class="pre">blueprint</span></code> (designate but
+don’t dig), <code class="docutils literal notranslate"><span class="pre">warm</span></code> (dig even if the tiles are warm), and <code class="docutils literal notranslate"><span class="pre">damp</span></code> (dig
+even if the tiles are damp). <code class="docutils literal notranslate"><span class="pre">warm</span></code> and <code class="docutils literal notranslate"><span class="pre">damp</span></code> markers are interpreted
+by the <a class="reference internal" href="dig.html#dig"><span class="std std-ref">dig</span></a> tool for interruption-free digging through warm and damp tiles.</p>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">-p</span></code>, <code class="docutils literal notranslate"><span class="pre">--priority</span> <span class="pre">&lt;num&gt;</span></code></dt><dd><p>Set the priority to the given number (1-7) for tiles designated by the
+<code class="docutils literal notranslate"><span class="pre">#dig</span></code> blueprint that you are applying. That is, tiles that normally have
+a priority of <code class="docutils literal notranslate"><span class="pre">4</span></code> will instead have the priority you specify. If the
+blueprint uses other explicit priorities, they will be shifted up or down
+accordingly.</p>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">--preserve-engravings</span> <span class="pre">&lt;quality&gt;</span></code></dt><dd><p>Don’t designate tiles for digging/carving if they have an engraving with at
+least the specified quality. Valid values for <code class="docutils literal notranslate"><span class="pre">quality</span></code> are: <code class="docutils literal notranslate"><span class="pre">None</span></code>,
+<code class="docutils literal notranslate"><span class="pre">Ordinary</span></code>, <code class="docutils literal notranslate"><span class="pre">WellCrafted</span></code>, <code class="docutils literal notranslate"><span class="pre">FinelyCrafted</span></code>, <code class="docutils literal notranslate"><span class="pre">Superior</span></code>,
+<code class="docutils literal notranslate"><span class="pre">Exceptional</span></code>, and <code class="docutils literal notranslate"><span class="pre">Masterful</span></code>. Specify <code class="docutils literal notranslate"><span class="pre">None</span></code> to ignore engravings
+when designating tiles. Note that if <code class="docutils literal notranslate"><span class="pre">Masterful</span></code> tiles are dug out, the
+dwarf who engraved the masterwork will get negative thoughts. If not
+specified, <code class="docutils literal notranslate"><span class="pre">Masterful</span></code> engravings are preserved by default.</p>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">-q</span></code>, <code class="docutils literal notranslate"><span class="pre">--quiet</span></code></dt><dd><p>Suppress non-error console output.</p>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">-r</span></code>, <code class="docutils literal notranslate"><span class="pre">--repeat</span> <span class="pre">&lt;direction&gt;[,]&lt;num</span> <span class="pre">levels&gt;</span></code></dt><dd><p>Repeats the specified blueprint(s) up or down the requested number of
+z-levels. Direction can be <code class="docutils literal notranslate"><span class="pre">up</span></code> or <code class="docutils literal notranslate"><span class="pre">down</span></code>, and can be abbreviated with
+<code class="docutils literal notranslate"><span class="pre">&lt;</span></code> or <code class="docutils literal notranslate"><span class="pre">&gt;</span></code>. For example, the following options are equivalent:
+<code class="docutils literal notranslate"><span class="pre">--repeat</span> <span class="pre">down,5</span></code>, <code class="docutils literal notranslate"><span class="pre">-rdown5</span></code>, and <code class="docutils literal notranslate"><span class="pre">-r&gt;5</span></code>.</p>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">-s</span></code>, <code class="docutils literal notranslate"><span class="pre">--shift</span> <span class="pre">&lt;x&gt;[,&lt;y&gt;]</span></code></dt><dd><p>Shifts the blueprint by the specified offset before modifying the game map.
+The values for <code class="docutils literal notranslate"><span class="pre">&lt;x&gt;</span></code> and <code class="docutils literal notranslate"><span class="pre">&lt;y&gt;</span></code> can be negative. If both <code class="docutils literal notranslate"><span class="pre">--shift</span></code> and
+<code class="docutils literal notranslate"><span class="pre">--transform</span></code> are specified, the shift is always applied last.</p>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">-t</span></code>, <code class="docutils literal notranslate"><span class="pre">--transform</span> <span class="pre">&lt;transformation&gt;[,&lt;transformation&gt;...]</span></code></dt><dd><p>Applies geometric transformations to the blueprint before modifying the game
+map. See the <a class="reference internal" href="#transformations">Transformations</a> section below for details.</p>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">-v</span></code>, <code class="docutils literal notranslate"><span class="pre">--verbose</span></code></dt><dd><p>Output extra debugging information. This is especially useful if you’re
+trying to figure out why the blueprint isn’t being applied like you expect.</p>
+</dd>
+</dl>
+</section>
+<section id="transformations">
+<h2>Transformations<a class="headerlink" href="#transformations" title="Link to this heading">¶</a></h2>
+<p>All transformations are anchored at the blueprint start cursor position. This is
+the upper left corner by default, but it can be modified if the blueprint has a
+<a class="reference internal" href="../guides/quickfort-user-guide.html#quickfort-start"><span class="std std-ref">start() modeline marker</span></a>. This means that the blueprint tile
+that would normally appear under your cursor will still appear under your
+cursor, regardless of how the blueprint is rotated or flipped.</p>
+<p><code class="docutils literal notranslate"><span class="pre">&lt;transformation&gt;</span></code> is one of:</p>
+<dl class="field-list simple">
+<dt class="field-odd">rotcw or cw<span class="colon">:</span></dt>
+<dd class="field-odd"><p>Rotates the blueprint 90 degrees clockwise.</p>
+</dd>
+<dt class="field-even">rotccw or ccw<span class="colon">:</span></dt>
+<dd class="field-even"><p>Rotates the blueprint 90 degrees counterclockwise.</p>
+</dd>
+<dt class="field-odd">fliph<span class="colon">:</span></dt>
+<dd class="field-odd"><p>Flips the blueprint horizontally (left edge becomes right edge).</p>
+</dd>
+<dt class="field-even">flipv<span class="colon">:</span></dt>
+<dd class="field-even"><p>Flips the blueprint vertically (top edge becomes bottom edge).</p>
+</dd>
+</dl>
+</section>
+<section id="configuration">
+<h2>Configuration<a class="headerlink" href="#configuration" title="Link to this heading">¶</a></h2>
+<p>The quickfort script has a few global configuration options that you can
+customize with the <code class="docutils literal notranslate"><span class="pre">quickfort</span> <span class="pre">set</span></code> command. Modified settings are only kept
+for the current session and will be reset when you restart DF.</p>
+<dl class="simple">
+<dt><code class="docutils literal notranslate"><span class="pre">blueprints_user_dir</span></code> (default: <code class="docutils literal notranslate"><span class="pre">dfhack-config/blueprints</span></code>)</dt><dd><p>Directory tree to search for player-created blueprints. It can be set to an
+absolute or relative path. If set to a relative path, it resolves to a
+directory under the DF folder. Note that if you change this directory, you
+will not see blueprints written by the DFHack <a class="reference internal" href="blueprint.html#blueprint"><span class="std std-ref">blueprint</span></a> plugin (which
+always writes to the <code class="docutils literal notranslate"><span class="pre">dfhack-config/blueprints</span></code> dir).</p>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">blueprints_library_dir</span></code> (default: <code class="docutils literal notranslate"><span class="pre">hack/data/blueprints</span></code>)</dt><dd><p>Directory tree to search for library blueprints.</p>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">force_marker_mode</span></code> (default: <code class="docutils literal notranslate"><span class="pre">false</span></code>)</dt><dd><p>If true, will designate all dig blueprints in marker=blueprint mode. If
+false, only cells with dig codes explicitly prefixed with <code class="docutils literal notranslate"><span class="pre">mb</span></code> in the
+blueprint cell will be designated in marker mode.</p>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">stockpiles_max_barrels</span></code>, <code class="docutils literal notranslate"><span class="pre">stockpiles_max_bins</span></code>, and <code class="docutils literal notranslate"><span class="pre">stockpiles_max_wheelbarrows</span></code> (defaults: <code class="docutils literal notranslate"><span class="pre">-1</span></code>, <code class="docutils literal notranslate"><span class="pre">-1</span></code>, <code class="docutils literal notranslate"><span class="pre">0</span></code>)</dt><dd><p>Set to the maximum number of resources you want assigned to stockpiles of
+the relevant types. Set to <code class="docutils literal notranslate"><span class="pre">-1</span></code> for DF defaults (number of stockpile tiles
+for stockpiles that take barrels and bins, and 1 wheelbarrow for stone
+stockpiles). The default here for wheelbarrows is <code class="docutils literal notranslate"><span class="pre">0</span></code> since using
+wheelbarrows can <em>decrease</em> the efficiency of your fort unless you assign
+an appropriate number of wheelbarrows to the stockpile. Blueprints can
+<a class="reference internal" href="../guides/quickfort-user-guide.html#quickfort-place-containers"><span class="std std-ref">override</span></a> this value for specific stockpiles.</p>
+</dd>
+</dl>
+</section>
+<section id="api">
+<h2>API<a class="headerlink" href="#api" title="Link to this heading">¶</a></h2>
+<p>The quickfort script can be called programmatically by other scripts, either via
+the commandline interface with <code class="docutils literal notranslate"><span class="pre">dfhack.run_script()</span></code> or via the API functions
+defined in <a class="extlink-source-scripts reference external" href="https://github.com/DFHack/scripts/tree/master/quickfort.lua">quickfort.lua</a>, available from the return value of
+<code class="docutils literal notranslate"><span class="pre">reqscript('quickfort)</span></code>:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">quickfort.apply_blueprint(params)</span></code></p></li>
+</ul>
+<p>Applies the specified blueprint data and returns processing statistics. The
+statistics structure is a map of stat ids to <code class="docutils literal notranslate"><span class="pre">{label=string,</span> <span class="pre">value=number}</span></code>.</p>
+<p><code class="docutils literal notranslate"><span class="pre">params</span></code> is a table with the following fields:</p>
+<dl class="simple">
+<dt><code class="docutils literal notranslate"><span class="pre">mode</span></code> (required)</dt><dd><p>The blueprint mode, e.g. <code class="docutils literal notranslate"><span class="pre">dig</span></code>, <code class="docutils literal notranslate"><span class="pre">build</span></code>, etc.</p>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">data</span></code> (required)</dt><dd><p>A sparse map populated such that <code class="docutils literal notranslate"><span class="pre">data[z][y][x]</span></code> yields the blueprint text
+that should be applied to the tile at map coordinate <code class="docutils literal notranslate"><span class="pre">(x,</span> <span class="pre">y,</span> <span class="pre">z)</span></code>. You can
+also just pass a string instead of a table and it will be interpreted as
+the value of <code class="docutils literal notranslate"><span class="pre">data[0][0][0]</span></code>.</p>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">command</span></code></dt><dd><p>The quickfort command to execute, e.g. <code class="docutils literal notranslate"><span class="pre">run</span></code>, <code class="docutils literal notranslate"><span class="pre">orders</span></code>, etc. Defaults to
+<code class="docutils literal notranslate"><span class="pre">run</span></code>.</p>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">pos</span></code></dt><dd><p>A coordinate that serves as the reference point for the coordinates in the
+data map. That is, the text at <code class="docutils literal notranslate"><span class="pre">data[z][y][x]</span></code> will be shifted to be
+applied to coordinate <code class="docutils literal notranslate"><span class="pre">(pos.x</span> <span class="pre">+</span> <span class="pre">x,</span> <span class="pre">pos.y</span> <span class="pre">+</span> <span class="pre">y,</span> <span class="pre">pos.z</span> <span class="pre">+</span> <span class="pre">z)</span></code>. If not
+specified, defaults to <code class="docutils literal notranslate"><span class="pre">{x=0,</span> <span class="pre">y=0,</span> <span class="pre">z=0}</span></code>, which means that the coordinates
+in the <code class="docutils literal notranslate"><span class="pre">data</span></code> map are used without shifting.</p>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">aliases</span></code></dt><dd><p>A map of blueprint alias names to their expansions. If not specified,
+defaults to <code class="docutils literal notranslate"><span class="pre">{}</span></code>.</p>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">marker</span></code></dt><dd><p>A map of strings to booleans indicating which markers should be applied to
+this <code class="docutils literal notranslate"><span class="pre">dig</span></code> mode blueprint. See <a class="reference internal" href="#command-options">Command options</a> above for details. If
+not specified, defaults to <code class="docutils literal notranslate"><span class="pre">{blueprint=false,</span> <span class="pre">warm=false,</span> <span class="pre">damp=false}</span></code>.</p>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">priority</span></code></dt><dd><p>An integer between <code class="docutils literal notranslate"><span class="pre">1</span></code> and <code class="docutils literal notranslate"><span class="pre">7</span></code>, inclusive, indicating the base priority
+for this <code class="docutils literal notranslate"><span class="pre">dig</span></code> blueprint. If not specified, defaults to <code class="docutils literal notranslate"><span class="pre">4</span></code>.</p>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">preserve_engravings</span></code></dt><dd><p>Don’t designate tiles for digging or carving if they have an engraving with
+at least the specified quality. Value is a <code class="docutils literal notranslate"><span class="pre">df.item_quality</span></code> enum name or
+value, or the string <code class="docutils literal notranslate"><span class="pre">None</span></code> (or, equivalently, <code class="docutils literal notranslate"><span class="pre">-1</span></code>) to indicate that no
+engravings should be preserved. Defaults to <code class="docutils literal notranslate"><span class="pre">df.item_quality.Masterful</span></code>.</p>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">dry_run</span></code></dt><dd><p>Just calculate statistics, such as how many tiles are outside the boundaries
+of the map; don’t actually apply the blueprint. Defaults to <code class="docutils literal notranslate"><span class="pre">false</span></code>.</p>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">verbose</span></code></dt><dd><p>Output extra debugging information to the console. Defaults to <code class="docutils literal notranslate"><span class="pre">false</span></code>.</p>
+</dd>
+</dl>
+<p>API usage example:</p>
+<div class="highlight-dfhack notranslate"><div class="highlight"><pre><span></span>local quickfort = reqscript(&#39;quickfort&#39;)
+
+-- dig a 10x10 block at the mouse cursor position
+quickfort.apply_blueprint{mode=&#39;dig&#39;, data=&#39;d(10x10)&#39;,
+                          pos=dfhack.gui.getMousePos()}
+
+-- dig a 10x10 block starting at coordinate x=30, y=40, z=50
+quickfort.apply_blueprint{mode=&#39;dig&#39;, data={[50]={[40]={[30]=&#39;d(10x10)&#39;}}}}
+</pre></div>
+</div>
+</section>
+</section>
+
+
+          </div>
+          
+        </div>
+      </div>
+    <div class="clearer"></div>
+  </div>
+    <div class="footer">
+      &#169;2015-2025, The DFHack Team.
+      
+      |
+      Powered by <a href="https://www.sphinx-doc.org/">Sphinx 8.2.3</a>
+      &amp; <a href="https://alabaster.readthedocs.io">Alabaster 1.0.0</a>
+      
+    </div>
+
+    
+
+    
+  </body>
+</html>
