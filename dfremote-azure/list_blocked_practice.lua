@@ -10,12 +10,46 @@
 
 local args = {...}
 local DETAIL = (args[1] == '--detail')
+local units = dfhack.units
+
+local function call_bool(fn, ...)
+  if type(fn) ~= 'function' then return nil end
+  local ok, res = pcall(fn, ...)
+  if ok then
+    return res and true or false
+  end
+  return nil
+end
 
 local function is_citizen_dwarf(u)
-  if not u or u.flags1.dead or u.flags1.ghostly then return false end
-  local fort = df.global.plotinfo.main.fortress_entity
-  if not fort or u.civ_id ~= fort.id then return false end
-  if u.flags1.merchant or u.flags1.forest then return false end
+  if not u then return false end
+
+  local alive = call_bool(units.isAlive, u)
+  if alive ~= nil then
+    if not alive then return false end
+  else
+    local is_dead = call_bool(units.isDead, u)
+    if is_dead then return false end
+  end
+
+  if call_bool(units.isGhost, u) then return false end
+  if call_bool(units.isMerchant, u) then return false end
+  if call_bool(units.isForest, u) then return false end
+
+  local is_citizen = call_bool(units.isCitizen, u)
+  if is_citizen ~= nil then
+    if not is_citizen then return false end
+  else
+    local fort_entity = df.global.plotinfo.main
+      and df.global.plotinfo.main.fortress_entity
+    if not fort_entity or u.civ_id ~= fort_entity.id then return false end
+  end
+
+  local is_dwarf = call_bool(units.isDwarf, u)
+  if is_dwarf ~= nil then
+    return is_dwarf
+  end
+
   return (u.race == df.global.ui.race_id)
 end
 
@@ -100,14 +134,14 @@ local function run()
       if hit1 or hit2 then
         any = true
         if DETAIL then
-          dfhack.println(('%s — %s  [%s%s%s]'):format(
+          dfhack.println(('%s - %s  [%s%s%s]'):format(
             unit_name(u), prof_name(u),
             hit1 and why1 or '',
             (hit1 and hit2) and ', ' or '',
             hit2 and why2 or ''
           ))
         else
-          dfhack.println(('%s — %s'):format(unit_name(u), prof_name(u)))
+          dfhack.println(('%s - %s'):format(unit_name(u), prof_name(u)))
         end
       end
     end
