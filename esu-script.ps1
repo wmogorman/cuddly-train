@@ -66,11 +66,15 @@ function Invoke-Slmgr {
 
 function Get-WindowsActivation {
   # Filter only Windows OS products that actually have a key
-  $win = Get-CimInstance -ClassName SoftwareLicensingProduct `
-         | Where-Object { $_.PartialProductKey -and $_.Name -match '^Windows' } `
-         | Select-Object -First 1 Name, Description, LicenseStatus, PartialProductKey, ApplicationID, ProductKeyID
+  $filter = "ApplicationID='55c92734-d682-4d71-983e-d6ec3f16059f' AND PartialProductKey IS NOT NULL"
+  $win = Get-CimInstance -ClassName SoftwareLicensingProduct -Filter $filter -ErrorAction Stop |
+         Select-Object -First 1 Name, Description, LicenseStatus, PartialProductKey, ApplicationID, ProductKeyID
 
-  $svc = Get-CimInstance -ClassName SoftwareLicensingService
+  if (-not $win) {
+    throw "Unable to locate Windows licensing details via SoftwareLicensingProduct."
+  }
+
+  $svc = Get-CimInstance -ClassName SoftwareLicensingService -ErrorAction Stop
 
   # Map LicenseStatus to text
   $map = @{
