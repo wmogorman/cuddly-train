@@ -3,10 +3,7 @@
   Check Windows activation, optionally install product key (/ipk) and activate online (/ato).
 
 .PARAMETER ProductKey
-  Optional. If supplied, the script installs this key (slmgr /ipk).
-
-.PARAMETER Ato
-  Optional. If set, the script runs slmgr /ato to activate online.
+  Optional. If supplied, the script installs this key (slmgr /ipk) and activates online with the ESU application ID.
 
 .PARAMETER Json
   Optional. Emit a JSON summary (useful for RMM ingestion).
@@ -16,17 +13,16 @@
   .\Check-Activation.ps1
 
   # Install a key and activate online
-  .\Check-Activation.ps1 -ProductKey XXXXX-XXXXX-XXXXX-XXXXX-XXXXX -Ato -Json
+  .\Check-Activation.ps1 -ProductKey XXXXX-XXXXX-XXXXX-XXXXX-XXXXX -Json
 #>
 
 [CmdletBinding()]
 param(
-  [Parameter(Mandatory=$false)]
-  [ValidatePattern('^[A-Z0-9]{5}(-[A-Z0-9]{5}){4}$')]
-  [string]$ProductKey,
+[Parameter(Mandatory=$false)]
+[ValidatePattern('^[A-Z0-9]{5}(-[A-Z0-9]{5}){4}$')]
+[string]$ProductKey,
 
-  [switch]$Ato,
-  [switch]$Json
+[switch]$Json
 )
 
 # -- Helpers -------------------------------------------------------
@@ -128,17 +124,16 @@ try {
 
   $actions = @()
 
+  $esuApplicationId = 'f520e45e-7413-4a34-a497-d2765967d094'
+
   if ($PSBoundParameters.ContainsKey('ProductKey')) {
     $actions += "Installing product key (slmgr /ipk)"
     $ipk = Invoke-Slmgr "/ipk $ProductKey"
     $actions += "  /ipk exit=$($ipk.ExitCode)"
     if ($ipk.StdOut) { $actions += "  /ipk: $($ipk.StdOut)" }
     if ($ipk.StdErr) { $actions += "  /ipk err: $($ipk.StdErr)" }
-  }
-
-  if ($Ato) {
-    $actions += "Activating online (slmgr /ato)"
-    $ato = Invoke-Slmgr "/ato"
+    $actions += "Activating online (slmgr /ato $esuApplicationId)"
+    $ato = Invoke-Slmgr "/ato $esuApplicationId"
     $actions += "  /ato exit=$($ato.ExitCode)"
     if ($ato.StdOut) { $actions += "  /ato: $($ato.StdOut)" }
     if ($ato.StdErr) { $actions += "  /ato err: $($ato.StdErr)" }
