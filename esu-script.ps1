@@ -50,7 +50,7 @@ function Invoke-Slmgr {
   $psi.RedirectStandardError  = $true
   $psi.UseShellExecute = $false
   $proc = New-Object System.Diagnostics.Process
-  $proc.StartInfo = $psi | Out-Null
+  $proc.StartInfo = $psi
   [void]$proc.Start()
   $stdout = $proc.StandardOutput.ReadToEnd()
   $stderr = $proc.StandardError.ReadToEnd()
