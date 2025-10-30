@@ -116,7 +116,7 @@ function Write-DattoUdf {
 
   # Replace characters that could break Datto RMM parsing
   $sanitized = ($Value -replace '[\r\n|]', ' ').Trim()
-  Write-Host ("UDF|{0}|{1}" -f $Id, $sanitized)
+  Write-Host ("CustomField{0}|{1}" -f $Id, $sanitized)
 }
 
 $shouldReboot = $false
