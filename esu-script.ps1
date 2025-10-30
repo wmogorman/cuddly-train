@@ -116,7 +116,21 @@ function Write-DattoUdf {
 
   # Replace characters that could break Datto RMM parsing
   $sanitized = ($Value -replace '[\r\n|]', ' ').Trim()
-  Write-Host ("CustomField{0}|{1}" -f $Id, $sanitized)
+  $propName = "CustomField{0}" -f $Id
+  $regPath = 'HKLM:\SOFTWARE\CentraStage'
+
+  try {
+    if (-not (Test-Path $regPath)) {
+      New-Item -Path $regPath -Force | Out-Null
+    }
+    New-ItemProperty -Path $regPath -Name $propName -Value $sanitized -PropertyType String -Force | Out-Null
+  }
+  catch {
+    Write-Warning "Failed to update $propName in CentraStage registry: $($_.Exception.Message)"
+  }
+
+  # Still emit to stdout so the component output shows the values
+  Write-Host ("{0}|{1}" -f $propName, $sanitized)
 }
 
 $shouldReboot = $false
