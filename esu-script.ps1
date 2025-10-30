@@ -115,6 +115,27 @@ function Write-DattoUdf {
   Write-Host ("UDF|{0}|{1}" -f $Id, $sanitized)
 }
 
+$shouldReboot = $false
+if ($env:RebootNow) {
+  if ($env:RebootNow -match '^(?i)(1|true|yes)$') {
+    $shouldReboot = $true
+  }
+}
+
+function Invoke-OptionalRestart {
+  param([bool]$ShouldReboot)
+
+  if ($ShouldReboot) {
+    Write-Host "Reboot requested via env:RebootNow"
+    try {
+      Restart-Computer -Force -ErrorAction Stop
+    }
+    catch {
+      Write-Warning "Failed to trigger reboot: $($_.Exception.Message)"
+    }
+  }
+}
+
 # -- Main ----------------------------------------------------------
 
 try {
@@ -173,6 +194,7 @@ try {
 
   Write-DattoUdf -Id 16 -Value $result.FinalStatus
   Write-DattoUdf -Id 17 -Value $result.FinalKeyTail
+  Invoke-OptionalRestart -ShouldReboot $shouldReboot
 
   # Exit 0 if activated, 1 otherwise (handy for RMM success/failure)
   if ($final.LicenseStatus -eq 1) { exit 0 } else { exit 1 }
@@ -185,5 +207,6 @@ catch {
   if ($Json) {
     @{ error = $_.Exception.Message } | ConvertTo-Json
   }
+  Invoke-OptionalRestart -ShouldReboot $shouldReboot
   exit 1
 }
