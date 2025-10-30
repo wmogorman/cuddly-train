@@ -64,6 +64,20 @@ function Invoke-Slmgr {
   }
 }
 
+function Get-LicenseStatusText {
+  param([int]$Code)
+
+  switch ($Code) {
+    0 { 'Unlicensed' }
+    1 { 'Licensed' }
+    2 { 'OOB_Grace' }
+    3 { 'OOT_Grace' }
+    4 { 'NonGenuine_Grace' }
+    5 { 'Notification' }
+    default { 'Unknown' }
+  }
+}
+
 function Get-WindowsActivation {
   # Filter only Windows OS products that actually have a key
   $filter = "ApplicationID='55c92734-d682-4d71-983e-d6ec3f16059f' AND PartialProductKey IS NOT NULL"
@@ -76,23 +90,33 @@ function Get-WindowsActivation {
 
   $svc = Get-CimInstance -ClassName SoftwareLicensingService -ErrorAction Stop
 
-  # Map LicenseStatus to text
-  $map = @{
-    0 = 'Unlicensed'
-    1 = 'Licensed'
-    2 = 'OOB_Grace'
-    3 = 'OOT_Grace'
-    4 = 'NonGenuine_Grace'
-    5 = 'Notification'
-  }
-
   [pscustomobject]@{
     Name              = $win.Name
     Description       = $win.Description
     LicenseStatus     = $win.LicenseStatus
-    LicenseStatusText = $map[[int]$win.LicenseStatus]
+    LicenseStatusText = Get-LicenseStatusText -Code $win.LicenseStatus
     PartialProductKey = $win.PartialProductKey
     RemainingGrace    = $svc.RemainingWindowsReArmCount
+  }
+}
+
+function Get-ActivationByAppId {
+  param(
+    [Parameter(Mandatory=$true)][string]$ApplicationId
+  )
+
+  $filter = "ApplicationID='$ApplicationId' AND PartialProductKey IS NOT NULL"
+  $product = Get-CimInstance -ClassName SoftwareLicensingProduct -Filter $filter -ErrorAction SilentlyContinue |
+             Select-Object -First 1 Name, Description, LicenseStatus, PartialProductKey, ApplicationID, ProductKeyID
+
+  if (-not $product) { return $null }
+
+  [pscustomobject]@{
+    Name              = $product.Name
+    Description       = $product.Description
+    LicenseStatus     = $product.LicenseStatus
+    LicenseStatusText = Get-LicenseStatusText -Code $product.LicenseStatus
+    PartialProductKey = $product.PartialProductKey
   }
 }
 
@@ -159,11 +183,12 @@ function Invoke-OptionalRestart {
 try {
   Require-Admin
 
-  $initial = Get-WindowsActivation
+  $esuApplicationId = 'f520e45e-7413-4a34-a497-d2765967d094'
+
+  $initialWindows = Get-WindowsActivation
+  $initialEsu = Get-ActivationByAppId -ApplicationId $esuApplicationId
 
   $actions = @()
-
-  $esuApplicationId = 'f520e45e-7413-4a34-a497-d2765967d094'
 
   if ($PSBoundParameters.ContainsKey('ProductKey')) {
     $actions += "Installing product key (slmgr /ipk)"
@@ -178,19 +203,58 @@ try {
     if ($ato.StdErr) { $actions += "  /ato err: $($ato.StdErr)" }
   }
 
-  $final = Get-WindowsActivation
+  $finalWindows = Get-WindowsActivation
+  $finalEsu = Get-ActivationByAppId -ApplicationId $esuApplicationId
+
+  if ($initialEsu) {
+    $initialStatusObj = $initialEsu
+  } else {
+    $initialStatusObj = [pscustomobject]@{
+      LicenseStatusText = 'Not installed'
+      LicenseStatus     = -1
+      PartialProductKey = 'N/A'
+    }
+  }
+
+  if ($finalEsu) {
+    $finalStatusObj = $finalEsu
+  } else {
+    $finalStatusObj = [pscustomobject]@{
+      LicenseStatusText = 'Not installed'
+      LicenseStatus     = -1
+      PartialProductKey = 'N/A'
+    }
+  }
+
+  $esuStatusText = 'Not installed'
+  $esuStatusCode = -1
+  $esuKeyTail    = 'N/A'
+  if ($finalEsu) {
+    $esuStatusText = $finalEsu.LicenseStatusText
+    $esuStatusCode = $finalEsu.LicenseStatus
+    $esuKeyTail    = $finalEsu.PartialProductKey
+  }
 
   $result = [pscustomobject]@{
     ComputerName       = $env:COMPUTERNAME
-    InitialStatus      = $initial.LicenseStatusText
-    InitialCode        = $initial.LicenseStatus
-    InitialKeyTail     = $initial.PartialProductKey
+    InitialStatus      = $initialStatusObj.LicenseStatusText
+    InitialCode        = $initialStatusObj.LicenseStatus
+    InitialKeyTail     = $initialStatusObj.PartialProductKey
+    InitialWindowsStatus = $initialWindows.LicenseStatusText
+    InitialWindowsCode   = $initialWindows.LicenseStatus
+    InitialWindowsKeyTail= $initialWindows.PartialProductKey
     Actions            = $actions
-    FinalStatus        = $final.LicenseStatusText
-    FinalCode          = $final.LicenseStatus
-    FinalKeyTail       = $final.PartialProductKey
-    WindowsProductName = $final.Name
-    WindowsDescription = $final.Description
+    FinalStatus        = $finalStatusObj.LicenseStatusText
+    FinalCode          = $finalStatusObj.LicenseStatus
+    FinalKeyTail       = $finalStatusObj.PartialProductKey
+    WindowsProductName = $finalWindows.Name
+    WindowsDescription = $finalWindows.Description
+    WindowsStatus      = $finalWindows.LicenseStatusText
+    WindowsCode        = $finalWindows.LicenseStatus
+    WindowsKeyTail     = $finalWindows.PartialProductKey
+    EsuStatus          = $esuStatusText
+    EsuCode            = $esuStatusCode
+    EsuKeyTail         = $esuKeyTail
   }
 
   if ($Json) {
@@ -207,7 +271,12 @@ try {
     } else {
       Write-Host " Actions      : (none requested)"
     }
-    Write-Host " Final        : $($result.FinalStatus) (code $($result.FinalCode)), key tail: $($result.FinalKeyTail)"
+    Write-Host " Windows      : $($result.WindowsStatus) (code $($result.WindowsCode)), key tail: $($result.WindowsKeyTail)"
+    if ($finalEsu) {
+      Write-Host " ESU          : $($result.EsuStatus) (code $($result.EsuCode)), key tail: $($result.EsuKeyTail)"
+    } else {
+      Write-Host " ESU          : Not installed (code -1), key tail: N/A"
+    }
   }
 
   Write-DattoUdf -Id 16 -Value $result.FinalStatus
