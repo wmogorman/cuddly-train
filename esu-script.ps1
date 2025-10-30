@@ -104,6 +104,21 @@ function Require-Admin {
   }
 }
 
+function Write-DattoUdf {
+  param(
+    [Parameter(Mandatory=$true)][int]$Id,
+    [string]$Value
+  )
+
+  if ([string]::IsNullOrWhiteSpace($Value)) {
+    $Value = 'N/A'
+  }
+
+  # Replace characters that could break Datto RMM parsing
+  $sanitized = ($Value -replace '[\r\n|]', ' ').Trim()
+  Write-Host ("UDF|{0}|{1}" -f $Id, $sanitized)
+}
+
 # -- Main ----------------------------------------------------------
 
 try {
@@ -157,15 +172,20 @@ try {
       $actions | ForEach-Object { Write-Host "  - $_" }
     } else {
       Write-Host " Actions      : (none requested)"
-    end
+    }
     Write-Host " Final        : $($result.FinalStatus) (code $($result.FinalCode)), key tail: $($result.FinalKeyTail)"
   }
+
+  Write-DattoUdf -Id 16 -Value $result.FinalStatus
+  Write-DattoUdf -Id 17 -Value $result.FinalKeyTail
 
   # Exit 0 if activated, 1 otherwise (handy for RMM success/failure)
   if ($final.LicenseStatus -eq 1) { exit 0 } else { exit 1 }
 
 }
 catch {
+  Write-DattoUdf -Id 16 -Value 'Error'
+  Write-DattoUdf -Id 17 -Value 'N/A'
   Write-Error $_.Exception.Message
   if ($Json) {
     @{ error = $_.Exception.Message } | ConvertTo-Json
