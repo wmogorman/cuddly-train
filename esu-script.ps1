@@ -141,13 +141,21 @@ function Write-DattoUdf {
   # Replace characters that could break Datto RMM parsing
   $sanitized = ($Value -replace '[\r\n|]', ' ').Trim()
   $propName = "CustomField{0}" -f $Id
-  $regPath = 'HKLM:\SOFTWARE\CentraStage'
 
   try {
-    if (-not (Test-Path $regPath)) {
-      New-Item -Path $regPath -Force | Out-Null
+    $registryView = if ([Environment]::Is64BitOperatingSystem) {
+      [Microsoft.Win32.RegistryView]::Registry64
+    } else {
+      [Microsoft.Win32.RegistryView]::Default
     }
-    New-ItemProperty -Path $regPath -Name $propName -Value $sanitized -PropertyType String -Force | Out-Null
+    $baseKey = [Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::LocalMachine, $registryView)
+    $subKey = $baseKey.CreateSubKey('SOFTWARE\CentraStage')
+    if ($null -eq $subKey) {
+      throw "Unable to open or create HKLM\SOFTWARE\CentraStage"
+    }
+    $subKey.SetValue($propName, $sanitized, [Microsoft.Win32.RegistryValueKind]::String)
+    $subKey.Dispose()
+    $baseKey.Dispose()
   }
   catch {
     Write-Warning "Failed to update $propName in CentraStage registry: $($_.Exception.Message)"
