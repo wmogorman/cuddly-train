@@ -46,19 +46,60 @@ namespace PuTTYAutoKeys {
         [DllImport("user32.dll")]
         [return: MarshalAs(UnmanagedType.Bool)]
         public static extern bool SetForegroundWindow(IntPtr hWnd);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        public static extern bool SetWindowPos(
+            IntPtr hWnd,
+            IntPtr hWndInsertAfter,
+            int X,
+            int Y,
+            int cx,
+            int cy,
+            uint uFlags);
     }
 }
 "@
     Add-Type -TypeDefinition $typeDefinition
 }
 
+Add-Type -AssemblyName System.Windows.Forms
+
+$targetDisplay = [System.Windows.Forms.Screen]::AllScreens `
+    | Where-Object { $_.DeviceName -eq '\\.\DISPLAY1' } `
+    | Select-Object -First 1
+
+if (-not $targetDisplay) {
+    $targetDisplay = [System.Windows.Forms.Screen]::AllScreens `
+        | Where-Object { -not $_.Primary } `
+        | Select-Object -First 1
+}
+
+if (-not $targetDisplay) {
+    $targetDisplay = [System.Windows.Forms.Screen]::Primary
+}
+
+$targetPoint = $targetDisplay.WorkingArea.Location
+$SWP_NOSIZE = 0x0001
+$SWP_NOZORDER = 0x0004
+$SWP_NOACTIVATE = 0x0010
+$flags = $SWP_NOSIZE -bor $SWP_NOZORDER -bor $SWP_NOACTIVATE
+
+[PuTTYAutoKeys.NativeMethods]::SetWindowPos(
+    $handle,
+    [IntPtr]::Zero,
+    $targetPoint.X,
+    $targetPoint.Y,
+    0,
+    0,
+    [uint32]$flags
+) | Out-Null
+
 [PuTTYAutoKeys.NativeMethods]::SetForegroundWindow($handle) | Out-Null
 
 if ($PostLaunchDelayMilliseconds -gt 0) {
     Start-Sleep -Milliseconds $PostLaunchDelayMilliseconds
 }
-
-Add-Type -AssemblyName System.Windows.Forms
 
 $passwordFile = Join-Path -Path $PSScriptRoot -ChildPath 'nethack-password.txt'
 if (-not (Test-Path -Path $passwordFile)) {
