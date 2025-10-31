@@ -196,6 +196,15 @@ try {
   $initialWindows = Get-WindowsActivation
   $initialEsu = Get-ActivationByAppId -ApplicationId $esuApplicationId
 
+  $initialEsuStatusText = 'Not installed'
+  $initialEsuStatusCode = -1
+  $initialEsuKeyTail    = 'N/A'
+  if ($initialEsu) {
+    $initialEsuStatusText = $initialEsu.LicenseStatusText
+    $initialEsuStatusCode = $initialEsu.LicenseStatus
+    $initialEsuKeyTail    = $initialEsu.PartialProductKey
+  }
+
   $actions = @()
 
   if ($PSBoundParameters.ContainsKey('ProductKey')) {
@@ -214,55 +223,35 @@ try {
   $finalWindows = Get-WindowsActivation
   $finalEsu = Get-ActivationByAppId -ApplicationId $esuApplicationId
 
-  if ($initialEsu) {
-    $initialStatusObj = $initialEsu
-  } else {
-    $initialStatusObj = [pscustomobject]@{
-      LicenseStatusText = 'Not installed'
-      LicenseStatus     = -1
-      PartialProductKey = 'N/A'
-    }
-  }
-
+  $finalEsuStatusText = 'Not installed'
+  $finalEsuStatusCode = -1
+  $finalEsuKeyTail    = 'N/A'
   if ($finalEsu) {
-    $finalStatusObj = $finalEsu
-  } else {
-    $finalStatusObj = [pscustomobject]@{
-      LicenseStatusText = 'Not installed'
-      LicenseStatus     = -1
-      PartialProductKey = 'N/A'
-    }
-  }
-
-  $esuStatusText = 'Not installed'
-  $esuStatusCode = -1
-  $esuKeyTail    = 'N/A'
-  if ($finalEsu) {
-    $esuStatusText = $finalEsu.LicenseStatusText
-    $esuStatusCode = $finalEsu.LicenseStatus
-    $esuKeyTail    = $finalEsu.PartialProductKey
+    $finalEsuStatusText = $finalEsu.LicenseStatusText
+    $finalEsuStatusCode = $finalEsu.LicenseStatus
+    $finalEsuKeyTail    = $finalEsu.PartialProductKey
   }
 
   $result = [pscustomobject]@{
     ComputerName       = $env:COMPUTERNAME
-    InitialStatus      = $initialStatusObj.LicenseStatusText
-    InitialCode        = $initialStatusObj.LicenseStatus
-    InitialKeyTail     = $initialStatusObj.PartialProductKey
-    InitialWindowsStatus = $initialWindows.LicenseStatusText
-    InitialWindowsCode   = $initialWindows.LicenseStatus
-    InitialWindowsKeyTail= $initialWindows.PartialProductKey
+    InitialStatus      = $initialWindows.LicenseStatusText
+    InitialCode        = $initialWindows.LicenseStatus
+    InitialKeyTail     = $initialWindows.PartialProductKey
+    EsuInitialStatus   = $initialEsuStatusText
+    EsuInitialCode     = $initialEsuStatusCode
+    EsuInitialKeyTail  = $initialEsuKeyTail
     Actions            = $actions
-    FinalStatus        = $finalStatusObj.LicenseStatusText
-    FinalCode          = $finalStatusObj.LicenseStatus
-    FinalKeyTail       = $finalStatusObj.PartialProductKey
+    FinalStatus        = $finalWindows.LicenseStatusText
+    FinalCode          = $finalWindows.LicenseStatus
+    FinalKeyTail       = $finalWindows.PartialProductKey
     WindowsProductName = $finalWindows.Name
     WindowsDescription = $finalWindows.Description
     WindowsStatus      = $finalWindows.LicenseStatusText
     WindowsCode        = $finalWindows.LicenseStatus
     WindowsKeyTail     = $finalWindows.PartialProductKey
-    EsuStatus          = $esuStatusText
-    EsuCode            = $esuStatusCode
-    EsuKeyTail         = $esuKeyTail
+    EsuStatus          = $finalEsuStatusText
+    EsuCode            = $finalEsuStatusCode
+    EsuKeyTail         = $finalEsuKeyTail
   }
 
   if ($Json) {
@@ -273,6 +262,7 @@ try {
     Write-Host " Product      : $($result.WindowsProductName)"
     Write-Host " Description  : $($result.WindowsDescription)"
     Write-Host " Initial      : $($result.InitialStatus) (code $($result.InitialCode)), key tail: $($result.InitialKeyTail)"
+    Write-Host " ESU initial  : $($result.EsuInitialStatus) (code $($result.EsuInitialCode)), key tail: $($result.EsuInitialKeyTail)"
     if ($actions.Count) {
       Write-Host " Actions:"
       $actions | ForEach-Object { Write-Host "  - $_" }
@@ -287,12 +277,12 @@ try {
     }
   }
 
-  Write-DattoUdf -Id 16 -Value $result.FinalStatus
-  Write-DattoUdf -Id 17 -Value $result.FinalKeyTail
+  Write-DattoUdf -Id 16 -Value $finalEsuStatusText
+  Write-DattoUdf -Id 17 -Value $finalEsuKeyTail
   Invoke-OptionalRestart -ShouldReboot $shouldReboot
 
-  # Exit 0 if activated, 1 otherwise (handy for RMM success/failure)
-  if ($final.LicenseStatus -eq 1) { exit 0 } else { exit 1 }
+  # Exit 0 if Windows is activated, 1 otherwise (handy for RMM success/failure)
+  if ($finalWindows.LicenseStatus -eq 1) { exit 0 } else { exit 1 }
 
 }
 catch {
