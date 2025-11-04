@@ -43,9 +43,23 @@ using System.Runtime.InteropServices;
 
 namespace PuTTYAutoKeys {
     public static class NativeMethods {
+        [StructLayout(LayoutKind.Sequential)]
+        public struct RECT {
+            public int Left;
+            public int Top;
+            public int Right;
+            public int Bottom;
+        }
+
         [DllImport("user32.dll")]
         [return: MarshalAs(UnmanagedType.Bool)]
         public static extern bool SetForegroundWindow(IntPtr hWnd);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        public static extern bool GetWindowRect(
+            IntPtr hWnd,
+            out RECT lpRect);
 
         [DllImport("user32.dll", SetLastError = true)]
         [return: MarshalAs(UnmanagedType.Bool)]
@@ -79,7 +93,31 @@ if (-not $targetDisplay) {
     $targetDisplay = [System.Windows.Forms.Screen]::Primary
 }
 
-$targetPoint = $targetDisplay.WorkingArea.Location
+$workingArea = $targetDisplay.WorkingArea
+
+$windowRect = New-Object 'PuTTYAutoKeys.NativeMethods+RECT'
+$haveRect = [PuTTYAutoKeys.NativeMethods]::GetWindowRect($handle, [ref]$windowRect)
+
+if ($haveRect) {
+    $windowWidth = $windowRect.Right - $windowRect.Left
+    $windowHeight = $windowRect.Bottom - $windowRect.Top
+} else {
+    $windowWidth = 0
+    $windowHeight = 0
+}
+
+if ($windowWidth -le 0 -or $windowHeight -le 0) {
+    $targetX = $workingArea.Left
+    $targetY = $workingArea.Top
+} else {
+    $offsetX = [System.Math]::Floor(($workingArea.Width - $windowWidth) / 2.0)
+    $offsetY = [System.Math]::Floor(($workingArea.Height - $windowHeight) / 2.0)
+    if ($offsetX -lt 0) { $offsetX = 0 }
+    if ($offsetY -lt 0) { $offsetY = 0 }
+    $targetX = $workingArea.Left + [int]$offsetX
+    $targetY = $workingArea.Top + [int]$offsetY
+}
+
 $SWP_NOSIZE = 0x0001
 $SWP_NOZORDER = 0x0004
 $SWP_NOACTIVATE = 0x0010
@@ -88,8 +126,8 @@ $flags = $SWP_NOSIZE -bor $SWP_NOZORDER -bor $SWP_NOACTIVATE
 [PuTTYAutoKeys.NativeMethods]::SetWindowPos(
     $handle,
     [IntPtr]::Zero,
-    $targetPoint.X,
-    $targetPoint.Y,
+    $targetX,
+    $targetY,
     0,
     0,
     [uint32]$flags
