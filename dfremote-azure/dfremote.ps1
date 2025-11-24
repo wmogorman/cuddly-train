@@ -1,7 +1,7 @@
 <# ======================================================================
 DF Remote Server on Azure VM (Linux, no containers) + Attached Data Disk
 Author: you + ChatGPT
-Last updated: 2025-10-02
+Last updated: 2025-02-03
 Prereqs:
   - Az PowerShell modules installed and logged in (Connect-AzAccount)
   - Admin password available as a SecureString parameter or stored in dfremote-password.txt (DPAPI-protected SecureString)
@@ -70,6 +70,16 @@ $nic = Get-AzNetworkInterface -Name $NicName -ResourceGroupName $ResourceGroupNa
 if (-not $nic) {
   $nic = New-AzNetworkInterface -Name $NicName -ResourceGroupName $ResourceGroupName -Location $Location `
           -SubnetId $subnet.Id -PublicIpAddressId $pip.Id -NetworkSecurityGroupId $nsg.Id
+}
+
+# ---------- Data Disk (create first so cloud-init can see it on first boot) ----------
+$expectedVmId = "/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroupName/providers/Microsoft.Compute/virtualMachines/$VmName"
+$dataDisk = Get-AzDisk -Name $DataDiskName -ResourceGroupName $ResourceGroupName -ErrorAction SilentlyContinue
+if (-not $dataDisk) {
+  $diskConfig = New-AzDiskConfig -SkuName Premium_LRS -Location $Location -CreateOption Empty -DiskSizeGB $DataDiskSizeGB
+  $dataDisk = New-AzDisk -DiskName $DataDiskName -Disk $diskConfig -ResourceGroupName $ResourceGroupName
+} elseif ($dataDisk.ManagedBy -and ($dataDisk.ManagedBy -ne $expectedVmId)) {
+  throw "Data disk $DataDiskName is already attached to another VM ($($dataDisk.ManagedBy)). Choose a different -DataDiskName."
 }
 
 # ---------- Admin Password ----------
@@ -228,6 +238,9 @@ $vmConfig = New-AzVMConfig -VMName $VmName -VMSize $VmSize |
   Set-AzVMSourceImage @ubuntuImage |
   Add-AzVMNetworkInterface -Id $nic.Id
 
+# Attach data disk at creation (LUN0) so cloud-init can format/mount it on first boot
+$vmConfig = Add-AzVMDataDisk -VM $vmConfig -Name $DataDiskName -Lun 0 -CreateOption Attach -ManagedDiskId $dataDisk.Id
+
 # Add cloud-init (custom data)
 $vmConfig.OSProfile.CustomData = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($cloudInit))
 
@@ -236,15 +249,6 @@ $vmConfig = Set-AzVMOSDisk -VM $vmConfig -CreateOption FromImage -StorageAccount
 
 # ---------- Create VM ----------
 $null = New-AzVM -ResourceGroupName $ResourceGroupName -Location $Location -VM $vmConfig
-
-# ---------- Data Disk (managed) ----------
-$diskConfig = New-AzDiskConfig -SkuName Premium_LRS -Location $Location -CreateOption Empty -DiskSizeGB $DataDiskSizeGB
-$dataDisk = New-AzDisk -DiskName $DataDiskName -Disk $diskConfig -ResourceGroupName $ResourceGroupName
-
-# Attach as LUN 0
-$vm = Get-AzVM -ResourceGroupName $ResourceGroupName -Name $VmName
-$vm = Add-AzVMDataDisk -VM $vm -Name $DataDiskName -CreateOption Attach -ManagedDiskId $dataDisk.Id -Lun 0
-$null = Update-AzVM -ResourceGroupName $ResourceGroupName -VM $vm
 
 # ---------- Output ----------
 $pubIp = (Get-AzPublicIpAddress -Name $PublicIpName -ResourceGroupName $ResourceGroupName).IpAddress
