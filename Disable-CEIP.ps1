@@ -4,44 +4,51 @@
     by setting CEIP registry policy values and disabling CEIP-related
     scheduled tasks.
 
-    Run this script as Administrator.
+    Intended for Datto RMM scheduled use. Run as SYSTEM or Administrator.
 #>
+
+[CmdletBinding()]
+param()
 
 # region Admin check
 $principal = New-Object Security.Principal.WindowsPrincipal(
     [Security.Principal.WindowsIdentity]::GetCurrent()
 )
 if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-    Write-Error "This script must be run as Administrator. Please re-run in an elevated PowerShell session."
+    Write-Error "This script must be run as Administrator (or Datto RMM SYSTEM). Re-run in an elevated context."
     exit 1
 }
 # endregion Admin check
 
+$nonFatalIssues = New-Object System.Collections.Generic.List[string]
 
 Write-Host "Disabling Windows Customer Experience Improvement Program (CEIP)..."
 
 
 # region Registry: set CEIPEnable = 0 in relevant locations
-# HKLM policy path is the main control; others are belt-and-suspenders.
+# HKLM policy is authoritative; HKLM/SQM and HKCU paths are belt-and-suspenders.
 
-$registryPaths = @(
-    "HKLM:\SOFTWARE\Policies\Microsoft\SQMClient\Windows",
-    "HKCU:\SOFTWARE\Microsoft\SQMClient",
-    "HKCU:\SOFTWARE\Policies\Microsoft\SQMClient\Windows"
+$registryTargets = @(
+    @{ Path = "HKLM:\SOFTWARE\Policies\Microsoft\SQMClient\Windows"; Name = "CEIPEnable"; Value = 0; Type = "DWord" },
+    @{ Path = "HKLM:\SOFTWARE\Microsoft\SQMClient\Windows";          Name = "CEIPEnable"; Value = 0; Type = "DWord" },
+    @{ Path = "HKCU:\SOFTWARE\Microsoft\SQMClient";                  Name = "CEIPEnable"; Value = 0; Type = "DWord" },
+    @{ Path = "HKCU:\SOFTWARE\Policies\Microsoft\SQMClient\Windows"; Name = "CEIPEnable"; Value = 0; Type = "DWord" }
 )
 
-foreach ($path in $registryPaths) {
+foreach ($target in $registryTargets) {
     try {
-        if (-not (Test-Path -Path $path)) {
-            Write-Host "Creating registry key: $path"
-            New-Item -Path $path -Force | Out-Null
+        if (-not (Test-Path -Path $target.Path)) {
+            Write-Host "Creating registry key: $($target.Path)"
+            New-Item -Path $target.Path -Force | Out-Null
         }
 
-        Write-Host "Setting CEIPEnable=0 at $path"
-        New-ItemProperty -Path $path -Name "CEIPEnable" -Value 0 -PropertyType DWord -Force | Out-Null
+        Write-Host "Setting $($target.Name)=$($target.Value) at $($target.Path)"
+        New-ItemProperty -Path $target.Path -Name $target.Name -Value $target.Value -PropertyType $target.Type -Force | Out-Null
     }
     catch {
-        Write-Warning "Failed to set CEIPEnable at $path. Error: $($_.Exception.Message)"
+        $msg = "Failed to set $($target.Name) at $($target.Path): $($_.Exception.Message)"
+        Write-Warning $msg
+        $nonFatalIssues.Add($msg) | Out-Null
     }
 }
 # endregion Registry
@@ -50,10 +57,10 @@ foreach ($path in $registryPaths) {
 # region Scheduled Tasks: disable CEIP-related tasks (if present)
 
 $ceipTasks = @(
-    @{ Path = "\Microsoft\Windows\Customer Experience Improvement Program\"; Name = "Consolidator"     },
-    @{ Path = "\Microsoft\Windows\Customer Experience Improvement Program\"; Name = "KernelCeipTask"   },
-    @{ Path = "\Microsoft\Windows\Customer Experience Improvement Program\"; Name = "UsbCeip"          },
-    @{ Path = "\Microsoft\Windows\Autochk\";                                 Name = "Proxy"            }  # Autochk CEIP proxy
+    @{ Path = "\Microsoft\Windows\Customer Experience Improvement Program\"; Name = "Consolidator"   },
+    @{ Path = "\Microsoft\Windows\Customer Experience Improvement Program\"; Name = "KernelCeipTask" },
+    @{ Path = "\Microsoft\Windows\Customer Experience Improvement Program\"; Name = "UsbCeip"        },
+    @{ Path = "\Microsoft\Windows\Autochk\";                                 Name = "Proxy"          }  # Autochk CEIP proxy
 )
 
 foreach ($t in $ceipTasks) {
@@ -68,13 +75,23 @@ foreach ($t in $ceipTasks) {
         }
     }
     catch {
-        # Many systems won’t have all of these tasks; that’s fine.
-        Write-Host "Task not found or could not be queried: $($t.Path)$($t.Name) - $($_.Exception.Message)"
+        # Many systems will not have every CEIP task; do not fail the job for absences.
+        $msg = "Task not found or could not be queried: $($t.Path)$($t.Name) - $($_.Exception.Message)"
+        Write-Host $msg
+        $nonFatalIssues.Add($msg) | Out-Null
     }
 }
 # endregion Scheduled Tasks
 
 
 Write-Host ""
-Write-Host "CEIP has been disabled via registry policy and scheduled tasks where present."
+Write-Host "CEIP disable routine completed."
+if ($nonFatalIssues.Count -gt 0) {
+    Write-Warning "Completed with non-fatal issues:"
+    $nonFatalIssues | ForEach-Object { Write-Warning $_ }
+} else {
+    Write-Host "No issues detected."
+}
 Write-Host "A reboot is recommended for all changes to fully take effect."
+
+exit 0
