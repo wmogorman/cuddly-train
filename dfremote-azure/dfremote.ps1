@@ -147,6 +147,20 @@ packages:
   - jq
   - xfsprogs
   - ufw
+  - libgtk2.0-0
+  - libglu1-mesa
+  - libsdl1.2debian
+  - libsdl-image1.2
+  - libsdl-ttf2.0-0
+  - libxcursor1
+  - libxinerama1
+  - libxxf86vm1
+  - libopenal1
+  - libsndfile1
+  - libncurses5
+  - libncursesw5
+  - libtinfo5
+  - libstdc++6
 
 users:
   - name: __ADMIN_USERNAME__
@@ -155,6 +169,23 @@ users:
     shell: /bin/bash
 
 write_files:
+  - path: /usr/local/sbin/dfremote-fix-libs.sh
+    permissions: '0755'
+    content: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+      ROOT="/opt/dfremote"
+      LIB="$ROOT/libs/libstdc++.so.6"
+      if [ -f "$LIB" ]; then
+        mv -f "$LIB" "$LIB.bundled"
+      fi
+
+  - path: /etc/profile.d/dfremote.sh
+    permissions: '0644'
+    content: |
+      # Prefer system libstdc++ over bundled for DFHack/DF Remote
+      export DFHACK_NO_RENAME_LIBSTDCXX=1
+
   - path: /opt/dfremote/README-FIRST.txt
     permissions: '0644'
     content: |
@@ -174,6 +205,9 @@ write_files:
         Use the all-in-one package (DF 0.47.05 + DFHack + Remote Server):
           http://mifki.com/df/update/dfremote-complete-4705-Linux.zip
         Download and extract to /opt/dfremote, ensure dfremote-server is executable.
+        After extraction, run:
+          sudo /usr/local/sbin/dfremote-fix-libs.sh
+        This removes the bundled libstdc++.so.6 so the system lib is used.
 
   - path: /etc/systemd/system/dfremote.service
     permissions: '0644'
@@ -237,6 +271,7 @@ write_files:
 runcmd:
   - mkdir -p /opt/dfremote/bin
   - chmod 0755 /opt/dfremote /opt/dfremote/bin
+  - bash /usr/local/sbin/dfremote-fix-libs.sh
   - ufw allow 22/tcp
   - ufw allow 1235/udp
   - yes | ufw enable
