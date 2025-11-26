@@ -5,11 +5,13 @@ Last updated: 2025-02-03
 Prereqs:
   - Az PowerShell modules installed and logged in (Connect-AzAccount)
   - Admin password available as a SecureString parameter or stored in dfremote-password.txt (DPAPI-protected SecureString)
+  - Optional: GitHub username (public) if you want to auto-populate SSH authorized_keys
 What it does:
   1) Creates/uses a Resource Group, VNet/Subnet, Public IP, NSG (UDP 1235 + SSH)
   2) Builds Ubuntu VM, injects cloud-init to prep /srv/dfremote and systemd unit
   3) Creates & attaches a managed data disk, formats & mounts it persistently
   4) Leaves a systemd service ready to run your DF Remote Server binary
+  5) Optionally fetches SSH public keys from a GitHub user and installs them for the admin account
 ====================================================================== #>
 
 param(
@@ -20,6 +22,8 @@ param(
   [Parameter(Mandatory=$true)] [string] $AdminUsername,             # e.g. "william"
   [SecureString] $AdminPassword,
   [string] $AdminPasswordFile = (Join-Path -Path $PSScriptRoot -ChildPath 'dfremote-password.txt'),
+  [string] $GithubUserForSsh,                                       # e.g. "wmogorman" to pull keys from https://github.com/<user>.keys
+  [string[]] $SshPublicKeyData,                                     # Optional raw SSH public key strings
   [string] $VmSize = "Standard_B2s",                                # tweak as needed
   [int]    $DataDiskSizeGB = 64,                                    # persistence disk
   [string] $VNetName = "$($ResourceGroupName)-vnet",
@@ -103,6 +107,29 @@ if (-not $AdminPassword) {
 }
 
 $adminCredential = New-Object -TypeName PSCredential -ArgumentList $AdminUsername, $AdminPassword
+
+# ---------- SSH Keys (optional) ----------
+$sshPublicKeys = @()
+
+if ($GithubUserForSsh) {
+  $githubKeysUri = "https://github.com/$GithubUserForSsh.keys"
+  # GitHub requires TLS 1.2
+  [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+  try {
+    $githubKeysContent = (Invoke-WebRequest -Uri $githubKeysUri -UseBasicParsing -ErrorAction Stop).Content
+  } catch {
+    throw "Failed to download SSH keys for GitHub user '$GithubUserForSsh' from $githubKeysUri. $($_.Exception.Message)"
+  }
+  $githubKeys = $githubKeysContent -split "`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ }
+  if (-not $githubKeys) {
+    throw "No SSH public keys found for GitHub user '$GithubUserForSsh' at $githubKeysUri."
+  }
+  $sshPublicKeys += $githubKeys
+}
+
+if ($SshPublicKeyData) {
+  $sshPublicKeys += $SshPublicKeyData | ForEach-Object { $_.Trim() } | Where-Object { $_ }
+}
 
 # ---------- Cloud-Init (user-data) ----------
 # Prepares:
@@ -238,6 +265,12 @@ $vmConfig = New-AzVMConfig -VMName $VmName -VMSize $VmSize |
   Set-AzVMSourceImage @ubuntuImage |
   Add-AzVMNetworkInterface -Id $nic.Id
 
+if ($sshPublicKeys.Count -gt 0) {
+  foreach ($key in $sshPublicKeys) {
+    $vmConfig = Add-AzVMSshPublicKey -VM $vmConfig -KeyData $key -Path "/home/$AdminUsername/.ssh/authorized_keys"
+  }
+}
+
 # Attach data disk at creation (LUN0) so cloud-init can format/mount it on first boot
 $vmConfig = Add-AzVMDataDisk -VM $vmConfig -Name $DataDiskName -Lun 0 -CreateOption Attach -ManagedDiskId $dataDisk.Id
 
@@ -259,5 +292,8 @@ Write-Host "UDP Port:   1235 (opened in NSG + UFW)"
 Write-Host "Data dir:   /srv/dfremote (on attached disk, persistent)"
 Write-Host "Binary dir: /opt/dfremote/bin (put 'dfremote-server' here, chmod +x)"
 Write-Host "Service:    sudo systemctl enable --now dfremote"
+if ($sshPublicKeys.Count -gt 0) {
+  Write-Host "SSH Keys:   Added $($sshPublicKeys.Count) key(s) to /home/$AdminUsername/.ssh/authorized_keys"
+}
 Write-Host "IP Address: $pubIp"
 Write-Host "============================================================="
