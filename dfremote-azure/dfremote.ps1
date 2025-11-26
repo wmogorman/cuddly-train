@@ -171,13 +171,9 @@ write_files:
         journalctl -u dfremote -f
 
       NOTE (Dwarf Fortress Remote):
-        DF Remote plugin targets DF 0.47.05 + DFHack.
-        Download DF 0.47.05 (Linux) from Bay12 older versions,
-        add DFHack 0.47.05, then the DF Remote plugin files.
-        See:
-          - DF older versions (Linux tarball): https://www.bay12games.com/dwarves/older_versions.html
-          - DFHack 0.47.05 docs: https://docs.dfhack.org/en/0.47.05-r8/docs/Installing.html
-          - DF Remote server code: https://github.com/mifki/dfremote
+        Use the all-in-one package (DF 0.47.05 + DFHack + Remote Server):
+          http://mifki.com/df/update/dfremote-complete-4705-Linux.zip
+        Download and extract to /opt/dfremote, ensure dfremote-server is executable.
 
   - path: /etc/systemd/system/dfremote.service
     permissions: '0644'
