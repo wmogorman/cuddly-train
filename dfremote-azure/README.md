@@ -10,6 +10,7 @@ Dreamfort resources together.
 | File | Purpose |
 | --- | --- |
 | `dfremote.ps1` | Common PowerShell wrapper for provisioning the Azure VM. Run as `.\dfremote-azure\dfremote.ps1`. |
+| `write-dfremote-password.ps1` | Generates the DPAPI-protected `dfremote-password.txt` on a workstation (current user scope). |
 | `my-deploy-dfremote-vm.ps1` | Personal deployment shortcut that imports `dfremote.ps1`. |
 | `dreamfort_stages.lua` | DFHack script that orchestrates Dreamfort quickfort blueprints. Copy to `/opt/dfremote/hack/scripts/dreamfort-stages.lua`. |
 | `dreamfort.csv` | Dreamfort blueprint workbook. Copy to `/opt/dfremote/hack/data/blueprints/dreamfort.csv`. |
