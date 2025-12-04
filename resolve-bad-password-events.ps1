@@ -1,5 +1,11 @@
 $sourceId = 'BadPasswordWatcher'
 
+function Test-IsAdmin {
+    $id = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $p  = New-Object Security.Principal.WindowsPrincipal($id)
+    return $p.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
 # Subscribe to Security 4625 events (failed logons) in real time
 $query = New-Object System.Diagnostics.Eventing.Reader.EventLogQuery(
     'Security',
@@ -10,6 +16,9 @@ $query = New-Object System.Diagnostics.Eventing.Reader.EventLogQuery(
 $watcher = New-Object System.Diagnostics.Eventing.Reader.EventLogWatcher($query, $null, $true)
 
 Write-Host "Monitoring for 0xC000006A failed logons... Press Ctrl+C to stop." -ForegroundColor Cyan
+if (-not (Test-IsAdmin)) {
+    Write-Warning "Reading the Security log requires elevation or the 'Manage auditing and security log' right. Run PowerShell as Administrator."
+}
 
 Register-ObjectEvent -InputObject $watcher -EventName EventRecordWritten -SourceIdentifier $sourceId -Action {
     $record = $Event.SourceEventArgs.EventRecord
@@ -60,7 +69,14 @@ Register-ObjectEvent -InputObject $watcher -EventName EventRecordWritten -Source
     Write-Host "==================================`n"
 }
 
-$watcher.Enabled = $true
+try {
+    $watcher.Enabled = $true
+}
+catch {
+    Write-Error "Unable to enable the event watcher. This usually means the session lacks rights to read the Security log. Run PowerShell as Administrator or grant the user 'Manage auditing and security log'."
+    $watcher.Dispose()
+    return
+}
 
 try {
     while ($true) {
