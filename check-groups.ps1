@@ -1,25 +1,65 @@
-# Requires Connect-ExchangeOnline already run
-$user = baswayze@alliance-rubber.com
+[CmdletBinding()]
+param(
+    # User principal name (or alias) to check membership for.
+    [Parameter(Mandatory = $true)]
+    [string]$UserPrincipalName,
 
-# Get all DGs where Beau is a member (Exchange Online side)
-$groups = Get-DistributionGroup -ResultSize Unlimited -Filter Members -eq '$user'
+    # Optional path to export the report as CSV.
+    [string]$CsvPath
+)
 
-# Report moderation settings for just those groups
+# This script assumes Connect-ExchangeOnline has already been run.
+
+function Convert-RecipientIdsToName {
+    param(
+        [Parameter()]
+        [object[]]$Ids
+    )
+
+    if (-not $Ids) { return $null }
+
+    $Ids |
+        ForEach-Object {
+            $recipient = Get-Recipient -Identity $_ -ErrorAction SilentlyContinue
+            if ($recipient.PrimarySmtpAddress) {
+                $recipient.PrimarySmtpAddress.ToString()
+            }
+            elseif ($recipient.DisplayName) {
+                $recipient.DisplayName
+            }
+            else {
+                $_.ToString()
+            }
+        } |
+        Sort-Object -Unique
+}
+
+# Resolve the user to a directory object so we can filter on DN (Members stores DNs, not UPNs).
+$userRecipient = Get-Recipient -Identity $UserPrincipalName -ErrorAction Stop
+$escapedDn = $userRecipient.DistinguishedName.Replace("'", "''")
+
+# Get all DGs where the user is a member (Exchange Online side).
+$groups = Get-DistributionGroup -ResultSize Unlimited -Filter "Members -eq '$escapedDn'" -ErrorAction Stop
+
+# Report moderation settings for just those groups.
 $report = foreach ($g in $groups) {
-    $dg = Get-DistributionGroup $g.Identity
+    $dg = Get-DistributionGroup -Identity $g.Identity -ErrorAction Stop
 
     [pscustomobject]@{
         GroupName          = $dg.DisplayName
         PrimarySmtpAddress = $dg.PrimarySmtpAddress
         ModerationEnabled  = $dg.ModerationEnabled
-        ModeratedBy        = if ($dg.ModeratedBy) { ($dg.ModeratedBy -join ; ) } else {  }
+        ModeratedBy        = Convert-RecipientIdsToName -Ids $dg.ModeratedBy
         BypassModerationFromSendersOrMembers =
-            if ($dg.BypassModerationFromSendersOrMembers) { ($dg.BypassModerationFromSendersOrMembers -join ; ) } else {  }
+            Convert-RecipientIdsToName -Ids $dg.BypassModerationFromSendersOrMembers
     }
 }
 
-# Show only moderated ones first
-$report  Sort-Object ModerationEnabled -Descending, GroupName  Format-Table -AutoSize
+# Show only moderated ones first for quick review.
+$report |
+    Sort-Object ModerationEnabled -Descending, GroupName |
+    Format-Table -AutoSize
 
-# Optional export to CSV for ticket notes
-# $report  Export-Csv $envUSERPROFILEDesktopBeau-GroupModerationReport.csv -NoTypeInformation
+if ($CsvPath) {
+    $report | Export-Csv -Path $CsvPath -NoTypeInformation
+}
