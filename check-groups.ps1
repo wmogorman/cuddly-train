@@ -57,7 +57,7 @@ $report = foreach ($g in $groups) {
 
 # Show only moderated ones first for quick review.
 $report |
-    Sort-Object ModerationEnabled -Descending, GroupName |
+    Sort-Object -Property @{Expression='ModerationEnabled';Descending=$true}, @{Expression='GroupName';Descending=$false} |
     Format-Table -AutoSize
 
 if ($CsvPath) {
