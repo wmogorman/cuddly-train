@@ -116,6 +116,10 @@ function Show-StartupError {
 }
 
 try {
+    if ([System.Threading.Thread]::CurrentThread.ApartmentState -ne 'STA') {
+        throw "This script requires STA (SendKeys). Run with powershell.exe -STA or use Start-NetHackPuTTY.cmd."
+    }
+
     $PuTTYPath = Resolve-PuTTYPath -PathOverride $PuTTYPath
     if (-not $PuTTYPath) {
         throw "Unable to find putty.exe. Provide -PuTTYPath with the full path to PuTTY."
