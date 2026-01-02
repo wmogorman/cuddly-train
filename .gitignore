@@ -1,6 +1,7 @@
 .env
 my-deploy-dfremote-vm.ps1
 nethack-password.txt
+nethack-username.txt
 dfremote-password.txt
 users.csv
 users-with-share-links.csv

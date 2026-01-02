@@ -2,11 +2,40 @@
 [CmdletBinding()]
 param(
     [string]$SessionName = "NetHack",
-    [string]$UserName = "mayrwil",
+    [string]$UserName,
+    [string]$UserNameFile = (Join-Path -Path $PSScriptRoot -ChildPath 'nethack-username.txt'),
+    [string]$PasswordFile = (Join-Path -Path $PSScriptRoot -ChildPath 'nethack-password.txt'),
     [string]$PuTTYPath,
     [int]$StartupTimeoutSeconds = 5,
     [int]$PostLaunchDelayMilliseconds = 500
 )
+
+function ConvertTo-SendKeysLiteral {
+    param(
+        [string]$Value
+    )
+
+    if ($null -eq $Value) {
+        return ""
+    }
+
+    $builder = New-Object System.Text.StringBuilder
+    foreach ($ch in $Value.ToCharArray()) {
+        switch ($ch) {
+            '+' { $null = $builder.Append('{+}') }
+            '^' { $null = $builder.Append('{^}') }
+            '%' { $null = $builder.Append('{%}') }
+            '~' { $null = $builder.Append('{~}') }
+            '(' { $null = $builder.Append('{(}') }
+            ')' { $null = $builder.Append('{)}') }
+            '{' { $null = $builder.Append('{{}') }
+            '}' { $null = $builder.Append('{}}') }
+            default { $null = $builder.Append($ch) }
+        }
+    }
+
+    $builder.ToString()
+}
 
 if (-not $PuTTYPath -or -not (Test-Path -Path $PuTTYPath)) {
     $puttyCommand = Get-Command -Name putty.exe -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -15,6 +44,22 @@ if (-not $PuTTYPath -or -not (Test-Path -Path $PuTTYPath)) {
     } else {
         throw "Unable to find putty.exe. Provide -PuTTYPath with the full path to PuTTY."
     }
+}
+
+if (-not $UserName -and (Test-Path -Path $UserNameFile -PathType Leaf -ErrorAction SilentlyContinue)) {
+    $UserName = (Get-Content -Path $UserNameFile -Raw).Trim()
+}
+
+if ($UserName) {
+    $UserName = $UserName.Trim()
+}
+
+if ([string]::IsNullOrWhiteSpace($UserName)) {
+    throw "Username not found. Run Initialize-NetHackPassword.ps1 to save it or pass -UserName."
+}
+
+if (-not (Test-Path -Path $PasswordFile -PathType Leaf -ErrorAction SilentlyContinue)) {
+    throw "Password file not found at $PasswordFile. Run Initialize-NetHackPassword.ps1 to create it."
 }
 
 $sessionArgs = "-load `"$SessionName`""
@@ -139,12 +184,7 @@ if ($PostLaunchDelayMilliseconds -gt 0) {
     Start-Sleep -Milliseconds $PostLaunchDelayMilliseconds
 }
 
-$passwordFile = Join-Path -Path $PSScriptRoot -ChildPath 'nethack-password.txt'
-if (-not (Test-Path -Path $passwordFile)) {
-    throw "Password file not found at $passwordFile. Run the initialization script to create it."
-}
-
-$securePassword = Get-Content -Path $passwordFile | ConvertTo-SecureString
+$securePassword = Get-Content -Path $PasswordFile | ConvertTo-SecureString
 $passwordBstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($securePassword)
 try {
     $plainPassword = [Runtime.InteropServices.Marshal]::PtrToStringUni($passwordBstr)
@@ -152,6 +192,8 @@ try {
     [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($passwordBstr)
 }
 
-$initialKeys = "l$UserName{ENTER}$plainPassword{ENTER}"
+$escapedUserName = ConvertTo-SendKeysLiteral -Value $UserName
+$escapedPassword = ConvertTo-SendKeysLiteral -Value $plainPassword
+$initialKeys = "l$escapedUserName{ENTER}$escapedPassword{ENTER}"
 [System.Windows.Forms.SendKeys]::SendWait($initialKeys)
 $plainPassword = $null
