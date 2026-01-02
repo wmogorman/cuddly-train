@@ -120,7 +120,6 @@ try {
     if (-not $PuTTYPath) {
         throw "Unable to find putty.exe. Provide -PuTTYPath with the full path to PuTTY."
     }
-}
 
     if (-not $UserName -and (Test-Path -Path $UserNameFile -PathType Leaf -ErrorAction SilentlyContinue)) {
         $UserName = (Get-Content -Path $UserNameFile -Raw).Trim()
