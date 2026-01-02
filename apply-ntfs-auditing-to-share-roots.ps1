@@ -156,7 +156,7 @@ function ConvertTo-FileSystemRights {
     "W"    = "Write"
     "D"    = "Delete"
     "DC"   = "DeleteSubdirectoriesAndFiles"
-    "WDAC" = "WritePermissions"
+    "WDAC" = "ChangePermissions"
     "WO"   = "TakeOwnership"
     "RC"   = "ReadPermissions"
     "RD"   = "ReadData"
