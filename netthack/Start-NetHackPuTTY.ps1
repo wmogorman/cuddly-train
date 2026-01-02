@@ -3,8 +3,8 @@
 param(
     [string]$SessionName = "NetHack",
     [string]$UserName,
-    [string]$UserNameFile = (Join-Path -Path $PSScriptRoot -ChildPath 'nethack-username.txt'),
-    [string]$PasswordFile = (Join-Path -Path $PSScriptRoot -ChildPath 'nethack-password.txt'),
+    [string]$UserNameFile,
+    [string]$PasswordFile,
     [string]$PuTTYPath,
     [int]$StartupTimeoutSeconds = 5,
     [int]$PostLaunchDelayMilliseconds = 500,
@@ -15,6 +15,27 @@ param(
 $ErrorActionPreference = "Stop"
 if (-not $PSBoundParameters.ContainsKey('ShowErrorDialog')) {
     $ShowErrorDialog = ($Host.Name -eq 'ConsoleHost' -and -not $env:VSCODE_PID)
+}
+
+if ([string]::IsNullOrWhiteSpace($UserNameFile) -or [string]::IsNullOrWhiteSpace($PasswordFile)) {
+    $scriptRoot = $PSScriptRoot
+    if ([string]::IsNullOrWhiteSpace($scriptRoot)) {
+        if ($PSCommandPath) {
+            $scriptRoot = Split-Path -Path $PSCommandPath -Parent
+        } elseif ($MyInvocation.MyCommand.Path) {
+            $scriptRoot = Split-Path -Path $MyInvocation.MyCommand.Path -Parent
+        } else {
+            $scriptRoot = (Get-Location).Path
+        }
+    }
+
+    if ([string]::IsNullOrWhiteSpace($UserNameFile)) {
+        $UserNameFile = Join-Path -Path $scriptRoot -ChildPath 'nethack-username.txt'
+    }
+
+    if ([string]::IsNullOrWhiteSpace($PasswordFile)) {
+        $PasswordFile = Join-Path -Path $scriptRoot -ChildPath 'nethack-password.txt'
+    }
 }
 
 function Get-ParentProcessName {
