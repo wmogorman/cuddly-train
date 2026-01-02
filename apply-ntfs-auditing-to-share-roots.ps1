@@ -243,9 +243,12 @@ function Set-AuditRulesOnPath {
 
   if ($PSCmdlet.ShouldProcess($Path, $Action)) {
     try {
+      $item = Get-Item -LiteralPath $Path -Force
+      $successRule = if ($item.PSIsContainer) { $AuditSuccessRuleDirectory } else { $AuditSuccessRuleFile }
+      $failureRule = if ($item.PSIsContainer) { $AuditFailureRuleDirectory } else { $AuditFailureRuleFile }
       $acl = Get-Acl -LiteralPath $Path -Audit
-      $null = $acl.SetAuditRule($AuditSuccessRule)
-      $null = $acl.SetAuditRule($AuditFailureRule)
+      $null = $acl.SetAuditRule($successRule)
+      $null = $acl.SetAuditRule($failureRule)
       Set-Acl -LiteralPath $Path -AclObject $acl
     } catch {
       if ($ContinueOnError) {
@@ -322,18 +325,32 @@ if (-not $UseIcacls) {
   $InheritanceFlags = $parsedFlags[0]
   $PropagationFlags = $parsedFlags[1]
   $AuditRights = ConvertTo-FileSystemRights -Rights $Rights
-  $AuditSuccessRule = New-Object System.Security.AccessControl.FileSystemAuditRule(
+  $AuditSuccessRuleDirectory = New-Object System.Security.AccessControl.FileSystemAuditRule(
     $Principal,
     $AuditRights,
     $InheritanceFlags,
     $PropagationFlags,
     [System.Security.AccessControl.AuditFlags]::Success
   )
-  $AuditFailureRule = New-Object System.Security.AccessControl.FileSystemAuditRule(
+  $AuditFailureRuleDirectory = New-Object System.Security.AccessControl.FileSystemAuditRule(
     $Principal,
     $AuditRights,
     $InheritanceFlags,
     $PropagationFlags,
+    [System.Security.AccessControl.AuditFlags]::Failure
+  )
+  $AuditSuccessRuleFile = New-Object System.Security.AccessControl.FileSystemAuditRule(
+    $Principal,
+    $AuditRights,
+    [System.Security.AccessControl.InheritanceFlags]::None,
+    [System.Security.AccessControl.PropagationFlags]::None,
+    [System.Security.AccessControl.AuditFlags]::Success
+  )
+  $AuditFailureRuleFile = New-Object System.Security.AccessControl.FileSystemAuditRule(
+    $Principal,
+    $AuditRights,
+    [System.Security.AccessControl.InheritanceFlags]::None,
+    [System.Security.AccessControl.PropagationFlags]::None,
     [System.Security.AccessControl.AuditFlags]::Failure
   )
 }
