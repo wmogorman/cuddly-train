@@ -43,8 +43,8 @@ $ErrorActionPreference = "Stop"
 #   /success:enable /failure:enable are not icacls flags; for SACL we specify:
 #   (S) success, (F) failure
 # We'll create two ACEs so it's explicit.
-$AuditSuccessAce = "$Inheritance:$Principal:(S):$Rights"
-$AuditFailureAce = "$Inheritance:$Principal:(F):$Rights"
+$AuditSuccessAce = "${Inheritance}:${Principal}:(S):${Rights}"
+$AuditFailureAce = "${Inheritance}:${Principal}:(F):${Rights}"
 
 function Test-IsAdministrator {
   $currentIdentity = [Security.Principal.WindowsIdentity]::GetCurrent()
