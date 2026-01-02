@@ -17,6 +17,23 @@ if (-not $PSBoundParameters.ContainsKey('ShowErrorDialog')) {
     $ShowErrorDialog = ($Host.Name -eq 'ConsoleHost' -and -not $env:VSCODE_PID)
 }
 
+function Get-ParentProcessName {
+    try {
+        $current = Get-CimInstance -ClassName Win32_Process -Filter "ProcessId=$PID"
+        if (-not $current.ParentProcessId) {
+            return $null
+        }
+        $parent = Get-CimInstance -ClassName Win32_Process -Filter "ProcessId=$($current.ParentProcessId)"
+        return $parent.Name
+    } catch {
+        return $null
+    }
+}
+
+if (-not $PSBoundParameters.ContainsKey('PauseOnError')) {
+    $PauseOnError = ((Get-ParentProcessName) -eq 'explorer.exe')
+}
+
 function ConvertTo-SendKeysLiteral {
     param(
         [string]$Value
@@ -117,7 +134,40 @@ function Show-StartupError {
 
 try {
     if ([System.Threading.Thread]::CurrentThread.ApartmentState -ne 'STA') {
-        throw "This script requires STA (SendKeys). Run with powershell.exe -STA or use Start-NetHackPuTTY.cmd."
+        $scriptPath = if ($PSCommandPath) { $PSCommandPath } else { $MyInvocation.MyCommand.Path }
+        if (-not $scriptPath) {
+            throw "This script requires STA (SendKeys). Run with powershell.exe -STA."
+        }
+
+        $powershellExe = Join-Path -Path $env:SystemRoot -ChildPath "System32\\WindowsPowerShell\\v1.0\\powershell.exe"
+        if (-not (Test-Path -Path $powershellExe)) {
+            $powershellExe = "powershell.exe"
+        }
+
+        $argList = @(
+            "-NoProfile",
+            "-ExecutionPolicy", "Bypass",
+            "-STA",
+            "-File", $scriptPath
+        )
+
+        foreach ($entry in $PSBoundParameters.GetEnumerator()) {
+            if ($entry.Value -is [System.Management.Automation.SwitchParameter]) {
+                if ($entry.Value.IsPresent) {
+                    $argList += "-$($entry.Key)"
+                }
+            } elseif ($null -ne $entry.Value) {
+                $argList += "-$($entry.Key)"
+                $argList += $entry.Value
+            }
+        }
+
+        if ($PauseOnError -and -not $PSBoundParameters.ContainsKey('PauseOnError')) {
+            $argList += "-PauseOnError"
+        }
+
+        Start-Process -FilePath $powershellExe -ArgumentList $argList | Out-Null
+        return
     }
 
     $PuTTYPath = Resolve-PuTTYPath -PathOverride $PuTTYPath
