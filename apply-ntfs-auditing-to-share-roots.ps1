@@ -52,6 +52,11 @@ function Test-IsAdministrator {
   return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 }
 
+function Test-IcaclsSetAuditSupported {
+  $helpText = & icacls /? 2>&1
+  return ($helpText | Select-String -SimpleMatch "/setaudit" -Quiet)
+}
+
 function Get-ShareRootPaths {
   [CmdletBinding()]
   param(
@@ -85,6 +90,126 @@ function Get-ShareRootPaths {
   return $shares | Select-Object -ExpandProperty Path -Unique
 }
 
+function Enable-Privilege {
+  [CmdletBinding()]
+  param(
+    [Parameter(Mandatory=$true)][string]$Privilege
+  )
+
+  if (-not ("TokenPrivilege" -as [type])) {
+    $definition = @"
+using System;
+using System.Runtime.InteropServices;
+public class TokenPrivilege {
+  [StructLayout(LayoutKind.Sequential, Pack=1)]
+  public struct LUID { public uint LowPart; public int HighPart; }
+  [StructLayout(LayoutKind.Sequential, Pack=1)]
+  public struct LUID_AND_ATTRIBUTES { public LUID Luid; public uint Attributes; }
+  [StructLayout(LayoutKind.Sequential, Pack=1)]
+  public struct TOKEN_PRIVILEGES { public uint PrivilegeCount; public LUID_AND_ATTRIBUTES Privileges; }
+  [DllImport("advapi32.dll", SetLastError=true)]
+  public static extern bool OpenProcessToken(IntPtr ProcessHandle, uint DesiredAccess, out IntPtr TokenHandle);
+  [DllImport("advapi32.dll", SetLastError=true, CharSet=CharSet.Unicode)]
+  public static extern bool LookupPrivilegeValue(string lpSystemName, string lpName, ref LUID lpLuid);
+  [DllImport("advapi32.dll", SetLastError=true)]
+  public static extern bool AdjustTokenPrivileges(IntPtr TokenHandle, bool DisableAllPrivileges, ref TOKEN_PRIVILEGES NewState, uint BufferLength, IntPtr PreviousState, IntPtr ReturnLength);
+  public const uint SE_PRIVILEGE_ENABLED = 0x00000002;
+  public const uint TOKEN_ADJUST_PRIVILEGES = 0x0020;
+  public const uint TOKEN_QUERY = 0x0008;
+  public static void EnablePrivilege(string privilege) {
+    IntPtr token;
+    if (!OpenProcessToken(System.Diagnostics.Process.GetCurrentProcess().Handle, TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, out token)) {
+      throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+    }
+    LUID luid = new LUID();
+    if (!LookupPrivilegeValue(null, privilege, ref luid)) {
+      throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+    }
+    TOKEN_PRIVILEGES tp = new TOKEN_PRIVILEGES();
+    tp.PrivilegeCount = 1;
+    tp.Privileges = new LUID_AND_ATTRIBUTES();
+    tp.Privileges.Luid = luid;
+    tp.Privileges.Attributes = SE_PRIVILEGE_ENABLED;
+    if (!AdjustTokenPrivileges(token, false, ref tp, 0, IntPtr.Zero, IntPtr.Zero)) {
+      throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+    }
+  }
+}
+"@
+    Add-Type -TypeDefinition $definition -ErrorAction Stop
+  }
+
+  [TokenPrivilege]::EnablePrivilege($Privilege)
+}
+
+function ConvertTo-FileSystemRights {
+  [CmdletBinding()]
+  param(
+    [Parameter(Mandatory=$true)][string]$Rights
+  )
+
+  $map = @{
+    "F"    = "FullControl"
+    "M"    = "Modify"
+    "RX"   = "ReadAndExecute"
+    "R"    = "Read"
+    "W"    = "Write"
+    "D"    = "Delete"
+    "DC"   = "DeleteSubdirectoriesAndFiles"
+    "WDAC" = "WritePermissions"
+    "WO"   = "TakeOwnership"
+    "RC"   = "ReadPermissions"
+    "RD"   = "ReadData"
+    "WD"   = "WriteData"
+    "AD"   = "AppendData"
+    "REA"  = "ReadExtendedAttributes"
+    "WEA"  = "WriteExtendedAttributes"
+    "X"    = "ExecuteFile"
+    "RA"   = "ReadAttributes"
+    "WA"   = "WriteAttributes"
+    "S"    = "Synchronize"
+  }
+
+  $flags = [System.Security.AccessControl.FileSystemRights]0
+  foreach ($token in ($Rights -split ",")) {
+    $trimmed = $token.Trim()
+    if ([string]::IsNullOrWhiteSpace($trimmed)) { continue }
+    $name = if ($map.ContainsKey($trimmed)) { $map[$trimmed] } else { $trimmed }
+    try {
+      $parsed = [System.Enum]::Parse([System.Security.AccessControl.FileSystemRights], $name, $true)
+    } catch {
+      throw "Unsupported rights token '$trimmed'. Use FileSystemRights names or icacls abbreviations."
+    }
+    $flags = $flags -bor $parsed
+  }
+
+  return $flags
+}
+
+function ConvertTo-InheritanceAndPropagationFlags {
+  [CmdletBinding()]
+  param(
+    [Parameter(Mandatory=$true)][string]$Inheritance
+  )
+
+  $inheritanceFlags = [System.Security.AccessControl.InheritanceFlags]::None
+  $propagationFlags = [System.Security.AccessControl.PropagationFlags]::None
+
+  $tokens = [regex]::Matches($Inheritance, "\(([^)]+)\)") | ForEach-Object { $_.Groups[1].Value.ToUpperInvariant() }
+  foreach ($token in $tokens) {
+    switch ($token) {
+      "OI" { $inheritanceFlags = $inheritanceFlags -bor [System.Security.AccessControl.InheritanceFlags]::ObjectInherit }
+      "CI" { $inheritanceFlags = $inheritanceFlags -bor [System.Security.AccessControl.InheritanceFlags]::ContainerInherit }
+      "IO" { $propagationFlags = $propagationFlags -bor [System.Security.AccessControl.PropagationFlags]::InheritOnly }
+      "NP" { $propagationFlags = $propagationFlags -bor [System.Security.AccessControl.PropagationFlags]::NoPropagateInherit }
+      "I"  { }
+      default { Write-Verbose "Ignoring unsupported inheritance token '$token'." }
+    }
+  }
+
+  return @($inheritanceFlags, $propagationFlags)
+}
+
 function Invoke-Icacls {
   [CmdletBinding(SupportsShouldProcess=$true)]
   param(
@@ -108,6 +233,30 @@ function Invoke-Icacls {
   }
 }
 
+function Set-AuditRulesOnPath {
+  [CmdletBinding(SupportsShouldProcess=$true)]
+  param(
+    [Parameter(Mandatory=$true)][string]$Path,
+    [Parameter(Mandatory=$true)][string]$Action,
+    [Parameter()][switch]$ContinueOnError
+  )
+
+  if ($PSCmdlet.ShouldProcess($Path, $Action)) {
+    try {
+      $acl = Get-Acl -LiteralPath $Path -Audit
+      $null = $acl.SetAuditRule($AuditSuccessRule)
+      $null = $acl.SetAuditRule($AuditFailureRule)
+      Set-Acl -LiteralPath $Path -AclObject $acl
+    } catch {
+      if ($ContinueOnError) {
+        Write-Warning ("Set-Acl failed for {0}: {1}" -f $Path, $_.Exception.Message)
+      } else {
+        throw
+      }
+    }
+  }
+}
+
 function Add-Auditing {
   [CmdletBinding(SupportsShouldProcess=$true)]
   param(
@@ -121,20 +270,35 @@ function Add-Auditing {
 
   Write-Host "`n=== Applying auditing to: $Path ===" -ForegroundColor Cyan
 
-  # Add Success auditing
-  Invoke-Icacls -Path $Path -Arguments @("/setaudit", $AuditSuccessAce) -Action "Add Success auditing"
+  if ($UseIcacls) {
+    # Add Success auditing
+    Invoke-Icacls -Path $Path -Arguments @("/setaudit", $AuditSuccessAce) -Action "Add Success auditing"
 
-  # Add Failure auditing
-  Invoke-Icacls -Path $Path -Arguments @("/setaudit", $AuditFailureAce) -Action "Add Failure auditing"
+    # Add Failure auditing
+    Invoke-Icacls -Path $Path -Arguments @("/setaudit", $AuditFailureAce) -Action "Add Failure auditing"
 
-  if (-not $NoPropagate) {
-    # Propagate auditing down the tree (this is the time-consuming part on big shares)
-    # /T = traverse all subfolders
-    # /C = continue on errors (locked files etc.)
-    Invoke-Icacls -Path $Path -Arguments @("/setaudit", $AuditSuccessAce, "/T", "/C") -Action "Propagate Success auditing" -ContinueOnError
-    Invoke-Icacls -Path $Path -Arguments @("/setaudit", $AuditFailureAce, "/T", "/C") -Action "Propagate Failure auditing" -ContinueOnError
+    if (-not $NoPropagate) {
+      # Propagate auditing down the tree (this is the time-consuming part on big shares)
+      # /T = traverse all subfolders
+      # /C = continue on errors (locked files etc.)
+      Invoke-Icacls -Path $Path -Arguments @("/setaudit", $AuditSuccessAce, "/T", "/C") -Action "Propagate Success auditing" -ContinueOnError
+      Invoke-Icacls -Path $Path -Arguments @("/setaudit", $AuditFailureAce, "/T", "/C") -Action "Propagate Failure auditing" -ContinueOnError
+    } else {
+      Write-Verbose "Skipping propagation for $Path"
+    }
   } else {
-    Write-Verbose "Skipping propagation for $Path"
+    Set-AuditRulesOnPath -Path $Path -Action "Add auditing via Set-Acl"
+    if (-not $NoPropagate) {
+      try {
+        Get-ChildItem -LiteralPath $Path -Recurse -Force -Attributes !ReparsePoint -ErrorAction Stop | ForEach-Object {
+          Set-AuditRulesOnPath -Path $_.FullName -Action "Propagate auditing via Set-Acl" -ContinueOnError
+        }
+      } catch {
+        Write-Warning ("Failed to enumerate {0}: {1}" -f $Path, $_.Exception.Message)
+      }
+    } else {
+      Write-Verbose "Skipping propagation for $Path"
+    }
   }
 
   Write-Host "Done: $Path" -ForegroundColor Green
@@ -142,6 +306,36 @@ function Add-Auditing {
 
 if (-not (Test-IsAdministrator)) {
   throw "Run this script in an elevated session (Administrator)."
+}
+
+# Determine whether icacls supports /setaudit; fall back to Set-Acl if not.
+$UseIcacls = Test-IcaclsSetAuditSupported
+if (-not $UseIcacls) {
+  Write-Warning "icacls does not support /setaudit on this OS. Falling back to Set-Acl."
+  try {
+    Enable-Privilege -Privilege "SeSecurityPrivilege"
+  } catch {
+    Write-Warning ("Failed to enable SeSecurityPrivilege: {0}" -f $_.Exception.Message)
+  }
+
+  $parsedFlags = ConvertTo-InheritanceAndPropagationFlags -Inheritance $Inheritance
+  $InheritanceFlags = $parsedFlags[0]
+  $PropagationFlags = $parsedFlags[1]
+  $AuditRights = ConvertTo-FileSystemRights -Rights $Rights
+  $AuditSuccessRule = New-Object System.Security.AccessControl.FileSystemAuditRule(
+    $Principal,
+    $AuditRights,
+    $InheritanceFlags,
+    $PropagationFlags,
+    [System.Security.AccessControl.AuditFlags]::Success
+  )
+  $AuditFailureRule = New-Object System.Security.AccessControl.FileSystemAuditRule(
+    $Principal,
+    $AuditRights,
+    $InheritanceFlags,
+    $PropagationFlags,
+    [System.Security.AccessControl.AuditFlags]::Failure
+  )
 }
 
 # Auto-discover targets when none are provided.
