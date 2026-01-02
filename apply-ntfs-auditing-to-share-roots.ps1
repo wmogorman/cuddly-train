@@ -13,11 +13,8 @@
 
 [CmdletBinding(SupportsShouldProcess=$true)]
 param(
-  [Parameter()][ValidateNotNullOrEmpty()][string[]]$Targets = @(
-    "D:\Shares",
-    "D:\Departments"
-    # "D:\Users"
-  ),
+  # Share root paths to audit. If omitted, the script discovers local file shares.
+  [Parameter()][string[]]$Targets,
   # Principal to audit. "Everyone" is typical for file auditing (filter events later).
   [Parameter()][ValidateNotNullOrEmpty()][string]$Principal = "Everyone",
   # Audit flags:
@@ -34,7 +31,9 @@ param(
   # Skip the audit policy check (useful when it is managed centrally).
   [Parameter()][switch]$SkipAuditPolicyCheck,
   # Do not propagate SACLs through subfolders.
-  [Parameter()][switch]$NoPropagate
+  [Parameter()][switch]$NoPropagate,
+  # Include hidden shares (names ending with $) when auto-discovering targets.
+  [Parameter()][switch]$IncludeHiddenShares
 )
 
 Set-StrictMode -Version Latest
@@ -51,6 +50,39 @@ function Test-IsAdministrator {
   $currentIdentity = [Security.Principal.WindowsIdentity]::GetCurrent()
   $principal = New-Object Security.Principal.WindowsPrincipal($currentIdentity)
   return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
+function Get-ShareRootPaths {
+  [CmdletBinding()]
+  param(
+    [Parameter()][switch]$IncludeHiddenShares
+  )
+
+  $shares = @()
+  $smbShareCmd = Get-Command -Name Get-SmbShare -ErrorAction SilentlyContinue
+  if ($null -ne $smbShareCmd) {
+    $shares = Get-SmbShare
+    if (-not $IncludeHiddenShares) {
+      $shares = $shares | Where-Object { -not $_.Special -and $_.Name -notlike "*$" }
+    } else {
+      $shares = $shares | Where-Object { $_.Name -ne "IPC$" }
+    }
+    $shares = $shares | Where-Object { $_.Path }
+  } else {
+    try {
+      $shares = Get-CimInstance -ClassName Win32_Share -ErrorAction Stop
+    } catch {
+      $shares = Get-WmiObject -Class Win32_Share
+    }
+    $shares = $shares | Where-Object { $_.Type -eq 0 -and $_.Path }
+    if (-not $IncludeHiddenShares) {
+      $shares = $shares | Where-Object { $_.Name -notlike "*$" }
+    } else {
+      $shares = $shares | Where-Object { $_.Name -ne "IPC$" }
+    }
+  }
+
+  return $shares | Select-Object -ExpandProperty Path -Unique
 }
 
 function Invoke-Icacls {
@@ -110,6 +142,16 @@ function Add-Auditing {
 
 if (-not (Test-IsAdministrator)) {
   throw "Run this script in an elevated session (Administrator)."
+}
+
+# Auto-discover targets when none are provided.
+if (-not $Targets -or $Targets.Count -eq 0) {
+  Write-Host "Discovering local file shares..." -ForegroundColor Yellow
+  $Targets = Get-ShareRootPaths -IncludeHiddenShares:$IncludeHiddenShares
+  if (-not $Targets -or $Targets.Count -eq 0) {
+    throw "No local file share paths were discovered."
+  }
+  Write-Verbose ("Discovered targets: {0}" -f ($Targets -join ", "))
 }
 
 # Safety: confirm audit policy is enabled first (output is localized by OS language).
