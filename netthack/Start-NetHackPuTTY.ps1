@@ -3,12 +3,57 @@
 param(
     [string]$SessionName = "NetHack",
     [string]$UserName,
-    [string]$UserNameFile = (Join-Path -Path $PSScriptRoot -ChildPath 'nethack-username.txt'),
-    [string]$PasswordFile = (Join-Path -Path $PSScriptRoot -ChildPath 'nethack-password.txt'),
+    [string]$UserNameFile,
+    [string]$PasswordFile,
     [string]$PuTTYPath,
     [int]$StartupTimeoutSeconds = 5,
-    [int]$PostLaunchDelayMilliseconds = 500
+    [int]$PostLaunchDelayMilliseconds = 500,
+    [switch]$PauseOnError,
+    [switch]$ShowErrorDialog
 )
+
+$ErrorActionPreference = "Stop"
+if (-not $PSBoundParameters.ContainsKey('ShowErrorDialog')) {
+    $ShowErrorDialog = ($Host.Name -eq 'ConsoleHost' -and -not $env:VSCODE_PID)
+}
+
+if ([string]::IsNullOrWhiteSpace($UserNameFile) -or [string]::IsNullOrWhiteSpace($PasswordFile)) {
+    $scriptRoot = $PSScriptRoot
+    if ([string]::IsNullOrWhiteSpace($scriptRoot)) {
+        if ($PSCommandPath) {
+            $scriptRoot = Split-Path -Path $PSCommandPath -Parent
+        } elseif ($MyInvocation.MyCommand.Path) {
+            $scriptRoot = Split-Path -Path $MyInvocation.MyCommand.Path -Parent
+        } else {
+            $scriptRoot = (Get-Location).Path
+        }
+    }
+
+    if ([string]::IsNullOrWhiteSpace($UserNameFile)) {
+        $UserNameFile = Join-Path -Path $scriptRoot -ChildPath 'nethack-username.txt'
+    }
+
+    if ([string]::IsNullOrWhiteSpace($PasswordFile)) {
+        $PasswordFile = Join-Path -Path $scriptRoot -ChildPath 'nethack-password.txt'
+    }
+}
+
+function Get-ParentProcessName {
+    try {
+        $current = Get-CimInstance -ClassName Win32_Process -Filter "ProcessId=$PID"
+        if (-not $current.ParentProcessId) {
+            return $null
+        }
+        $parent = Get-CimInstance -ClassName Win32_Process -Filter "ProcessId=$($current.ParentProcessId)"
+        return $parent.Name
+    } catch {
+        return $null
+    }
+}
+
+if (-not $PSBoundParameters.ContainsKey('PauseOnError')) {
+    $PauseOnError = ((Get-ParentProcessName) -eq 'explorer.exe')
+}
 
 function ConvertTo-SendKeysLiteral {
     param(
@@ -37,52 +82,163 @@ function ConvertTo-SendKeysLiteral {
     $builder.ToString()
 }
 
-if (-not $PuTTYPath -or -not (Test-Path -Path $PuTTYPath)) {
+function Resolve-PuTTYPath {
+    param(
+        [string]$PathOverride
+    )
+
+    if ($PathOverride -and (Test-Path -Path $PathOverride)) {
+        return (Resolve-Path -Path $PathOverride).Path
+    }
+
     $puttyCommand = Get-Command -Name putty.exe -ErrorAction SilentlyContinue | Select-Object -First 1
     if ($puttyCommand) {
-        $PuTTYPath = $puttyCommand.Source
-    } else {
+        return $puttyCommand.Source
+    }
+
+    $candidates = @(
+        (Join-Path -Path $env:ProgramFiles -ChildPath "PuTTY\\putty.exe"),
+        (Join-Path -Path ${env:ProgramFiles(x86)} -ChildPath "PuTTY\\putty.exe")
+    )
+    foreach ($candidate in $candidates) {
+        if ($candidate -and (Test-Path -Path $candidate)) {
+            return $candidate
+        }
+    }
+
+    return $null
+}
+
+function Get-PuTTYSessions {
+    $sessionRoot = "HKCU:\\Software\\SimonTatham\\PuTTY\\Sessions"
+    if (-not (Test-Path -Path $sessionRoot)) {
+        return @()
+    }
+
+    Get-ChildItem -Path $sessionRoot | Select-Object -ExpandProperty PSChildName | ForEach-Object {
+        [System.Uri]::UnescapeDataString($_)
+    }
+}
+
+function Test-PuTTYSessionExists {
+    param(
+        [Parameter(Mandatory = $true)][string]$SessionName
+    )
+
+    $sessionRoot = "HKCU:\\Software\\SimonTatham\\PuTTY\\Sessions"
+    if (-not (Test-Path -Path $sessionRoot)) {
+        Write-Verbose "PuTTY session registry not found; skipping session validation."
+        return $true
+    }
+
+    $encodedName = [System.Uri]::EscapeDataString($SessionName)
+    return (Test-Path -Path (Join-Path -Path $sessionRoot -ChildPath $encodedName))
+}
+
+function Show-StartupError {
+    param(
+        [Parameter(Mandatory = $true)][string]$Message
+    )
+
+    Write-Error $Message
+    if ($ShowErrorDialog) {
+        try {
+            Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop
+            [System.Windows.Forms.MessageBox]::Show($Message, "Start-NetHackPuTTY error") | Out-Null
+        } catch {
+        }
+    }
+    if ($PauseOnError) {
+        Read-Host "Press Enter to exit"
+    }
+}
+
+try {
+    if ([System.Threading.Thread]::CurrentThread.ApartmentState -ne 'STA') {
+        $scriptPath = if ($PSCommandPath) { $PSCommandPath } else { $MyInvocation.MyCommand.Path }
+        if (-not $scriptPath) {
+            throw "This script requires STA (SendKeys). Run with powershell.exe -STA."
+        }
+
+        $powershellExe = Join-Path -Path $env:SystemRoot -ChildPath "System32\\WindowsPowerShell\\v1.0\\powershell.exe"
+        if (-not (Test-Path -Path $powershellExe)) {
+            $powershellExe = "powershell.exe"
+        }
+
+        $argList = @(
+            "-NoProfile",
+            "-ExecutionPolicy", "Bypass",
+            "-STA",
+            "-File", $scriptPath
+        )
+
+        foreach ($entry in $PSBoundParameters.GetEnumerator()) {
+            if ($entry.Value -is [System.Management.Automation.SwitchParameter]) {
+                if ($entry.Value.IsPresent) {
+                    $argList += "-$($entry.Key)"
+                }
+            } elseif ($null -ne $entry.Value) {
+                $argList += "-$($entry.Key)"
+                $argList += $entry.Value
+            }
+        }
+
+        if ($PauseOnError -and -not $PSBoundParameters.ContainsKey('PauseOnError')) {
+            $argList += "-PauseOnError"
+        }
+
+        Start-Process -FilePath $powershellExe -ArgumentList $argList | Out-Null
+        return
+    }
+
+    $PuTTYPath = Resolve-PuTTYPath -PathOverride $PuTTYPath
+    if (-not $PuTTYPath) {
         throw "Unable to find putty.exe. Provide -PuTTYPath with the full path to PuTTY."
     }
-}
 
-if (-not $UserName -and (Test-Path -Path $UserNameFile -PathType Leaf -ErrorAction SilentlyContinue)) {
-    $UserName = (Get-Content -Path $UserNameFile -Raw).Trim()
-}
-
-if ($UserName) {
-    $UserName = $UserName.Trim()
-}
-
-if ([string]::IsNullOrWhiteSpace($UserName)) {
-    throw "Username not found. Run Initialize-NetHackPassword.ps1 to save it or pass -UserName."
-}
-
-if (-not (Test-Path -Path $PasswordFile -PathType Leaf -ErrorAction SilentlyContinue)) {
-    throw "Password file not found at $PasswordFile. Run Initialize-NetHackPassword.ps1 to create it."
-}
-
-$sessionArgs = "-load `"$SessionName`""
-$process = Start-Process -FilePath $PuTTYPath -ArgumentList $sessionArgs -PassThru
-
-$stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
-do {
-    Start-Sleep -Milliseconds 100
-    try {
-        $handle = $process.MainWindowHandle
-    } catch {
-        $handle = 0
+    if (-not $UserName -and (Test-Path -Path $UserNameFile -PathType Leaf -ErrorAction SilentlyContinue)) {
+        $UserName = (Get-Content -Path $UserNameFile -Raw).Trim()
     }
-} while ($handle -eq 0 -and -not $process.HasExited -and $stopwatch.Elapsed.TotalSeconds -lt $StartupTimeoutSeconds)
 
-if ($handle -eq 0 -or $process.HasExited) {
-    throw "PuTTY window not detected. Increase -StartupTimeoutSeconds if the session needs longer to open."
-}
+    if ($UserName) {
+        $UserName = $UserName.Trim()
+    }
 
-$null = $stopwatch.Stop()
+    if ([string]::IsNullOrWhiteSpace($UserName)) {
+        throw "Username not found. Run Initialize-NetHackPassword.ps1 to save it or pass -UserName."
+    }
 
-if (-not ("PuTTYAutoKeys.NativeMethods" -as [type])) {
-    $typeDefinition = @"
+    if (-not (Test-Path -Path $PasswordFile -PathType Leaf -ErrorAction SilentlyContinue)) {
+        throw "Password file not found at $PasswordFile. Run Initialize-NetHackPassword.ps1 to create it."
+    }
+
+    if (-not (Test-PuTTYSessionExists -SessionName $SessionName)) {
+        $availableSessions = Get-PuTTYSessions
+        $availableText = if ($availableSessions.Count -gt 0) { $availableSessions -join ", " } else { "<none>" }
+        throw "PuTTY session '$SessionName' not found. Available sessions: $availableText"
+    }
+
+    $sessionArgs = "-load `"$SessionName`""
+    $process = Start-Process -FilePath $PuTTYPath -ArgumentList $sessionArgs -PassThru
+
+    $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+    do {
+        Start-Sleep -Milliseconds 100
+        try {
+            $handle = $process.MainWindowHandle
+        } catch {
+            $handle = 0
+        }
+    } while ($handle -eq 0 -and -not $process.HasExited -and $stopwatch.Elapsed.TotalSeconds -lt $StartupTimeoutSeconds)
+
+    if ($handle -eq 0 -or $process.HasExited) {
+        throw "PuTTY window not detected. Increase -StartupTimeoutSeconds if the session needs longer to open."
+    }
+
+    $null = $stopwatch.Stop()
+
+    if (-not ("PuTTYAutoKeys.NativeMethods" -as [type])) {
+        $typeDefinition = @"
 using System;
 using System.Runtime.InteropServices;
 
@@ -119,81 +275,89 @@ namespace PuTTYAutoKeys {
     }
 }
 "@
-    Add-Type -TypeDefinition $typeDefinition
-}
+        Add-Type -TypeDefinition $typeDefinition
+    }
 
-Add-Type -AssemblyName System.Windows.Forms
+    Add-Type -AssemblyName System.Windows.Forms
 
-$targetDisplay = [System.Windows.Forms.Screen]::AllScreens `
-    | Where-Object { $_.DeviceName -eq '\\.\DISPLAY1' } `
-    | Select-Object -First 1
-
-if (-not $targetDisplay) {
     $targetDisplay = [System.Windows.Forms.Screen]::AllScreens `
-        | Where-Object { -not $_.Primary } `
+        | Where-Object { $_.DeviceName -eq '\\.\DISPLAY1' } `
         | Select-Object -First 1
+
+    if (-not $targetDisplay) {
+        $targetDisplay = [System.Windows.Forms.Screen]::AllScreens `
+            | Where-Object { -not $_.Primary } `
+            | Select-Object -First 1
+    }
+
+    if (-not $targetDisplay) {
+        $targetDisplay = [System.Windows.Forms.Screen]::Primary
+    }
+
+    $workingArea = $targetDisplay.WorkingArea
+
+    $windowRect = New-Object 'PuTTYAutoKeys.NativeMethods+RECT'
+    $haveRect = [PuTTYAutoKeys.NativeMethods]::GetWindowRect($handle, [ref]$windowRect)
+
+    if ($haveRect) {
+        $windowWidth = $windowRect.Right - $windowRect.Left
+        $windowHeight = $windowRect.Bottom - $windowRect.Top
+    } else {
+        $windowWidth = 0
+        $windowHeight = 0
+    }
+
+    if ($windowWidth -le 0 -or $windowHeight -le 0) {
+        $targetX = $workingArea.Left
+        $targetY = $workingArea.Top
+    } else {
+        $offsetX = [System.Math]::Floor(($workingArea.Width - $windowWidth) / 2.0)
+        $offsetY = [System.Math]::Floor(($workingArea.Height - $windowHeight) / 2.0)
+        if ($offsetX -lt 0) { $offsetX = 0 }
+        if ($offsetY -lt 0) { $offsetY = 0 }
+        $targetX = $workingArea.Left + [int]$offsetX
+        $targetY = $workingArea.Top + [int]$offsetY
+    }
+
+    $SWP_NOSIZE = 0x0001
+    $SWP_NOZORDER = 0x0004
+    $SWP_NOACTIVATE = 0x0010
+    $flags = $SWP_NOSIZE -bor $SWP_NOZORDER -bor $SWP_NOACTIVATE
+
+    [PuTTYAutoKeys.NativeMethods]::SetWindowPos(
+        $handle,
+        [IntPtr]::Zero,
+        $targetX,
+        $targetY,
+        0,
+        0,
+        [uint32]$flags
+    ) | Out-Null
+
+    [PuTTYAutoKeys.NativeMethods]::SetForegroundWindow($handle) | Out-Null
+
+    if ($PostLaunchDelayMilliseconds -gt 0) {
+        Start-Sleep -Milliseconds $PostLaunchDelayMilliseconds
+    }
+
+    $securePassword = Get-Content -Path $PasswordFile | ConvertTo-SecureString
+    $passwordBstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($securePassword)
+    try {
+        $plainPassword = [Runtime.InteropServices.Marshal]::PtrToStringUni($passwordBstr)
+    } finally {
+        [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($passwordBstr)
+    }
+
+    $escapedUserName = ConvertTo-SendKeysLiteral -Value $UserName
+    $escapedPassword = ConvertTo-SendKeysLiteral -Value $plainPassword
+    $initialKeys = "l$escapedUserName{ENTER}$escapedPassword{ENTER}"
+    [System.Windows.Forms.SendKeys]::SendWait($initialKeys)
+    $plainPassword = $null
+} catch {
+    $message = $_.Exception.Message
+    if ($_.ScriptStackTrace) {
+        $message = "$message`n$($_.ScriptStackTrace)"
+    }
+    Show-StartupError -Message $message
+    exit 1
 }
-
-if (-not $targetDisplay) {
-    $targetDisplay = [System.Windows.Forms.Screen]::Primary
-}
-
-$workingArea = $targetDisplay.WorkingArea
-
-$windowRect = New-Object 'PuTTYAutoKeys.NativeMethods+RECT'
-$haveRect = [PuTTYAutoKeys.NativeMethods]::GetWindowRect($handle, [ref]$windowRect)
-
-if ($haveRect) {
-    $windowWidth = $windowRect.Right - $windowRect.Left
-    $windowHeight = $windowRect.Bottom - $windowRect.Top
-} else {
-    $windowWidth = 0
-    $windowHeight = 0
-}
-
-if ($windowWidth -le 0 -or $windowHeight -le 0) {
-    $targetX = $workingArea.Left
-    $targetY = $workingArea.Top
-} else {
-    $offsetX = [System.Math]::Floor(($workingArea.Width - $windowWidth) / 2.0)
-    $offsetY = [System.Math]::Floor(($workingArea.Height - $windowHeight) / 2.0)
-    if ($offsetX -lt 0) { $offsetX = 0 }
-    if ($offsetY -lt 0) { $offsetY = 0 }
-    $targetX = $workingArea.Left + [int]$offsetX
-    $targetY = $workingArea.Top + [int]$offsetY
-}
-
-$SWP_NOSIZE = 0x0001
-$SWP_NOZORDER = 0x0004
-$SWP_NOACTIVATE = 0x0010
-$flags = $SWP_NOSIZE -bor $SWP_NOZORDER -bor $SWP_NOACTIVATE
-
-[PuTTYAutoKeys.NativeMethods]::SetWindowPos(
-    $handle,
-    [IntPtr]::Zero,
-    $targetX,
-    $targetY,
-    0,
-    0,
-    [uint32]$flags
-) | Out-Null
-
-[PuTTYAutoKeys.NativeMethods]::SetForegroundWindow($handle) | Out-Null
-
-if ($PostLaunchDelayMilliseconds -gt 0) {
-    Start-Sleep -Milliseconds $PostLaunchDelayMilliseconds
-}
-
-$securePassword = Get-Content -Path $PasswordFile | ConvertTo-SecureString
-$passwordBstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($securePassword)
-try {
-    $plainPassword = [Runtime.InteropServices.Marshal]::PtrToStringUni($passwordBstr)
-} finally {
-    [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($passwordBstr)
-}
-
-$escapedUserName = ConvertTo-SendKeysLiteral -Value $UserName
-$escapedPassword = ConvertTo-SendKeysLiteral -Value $plainPassword
-$initialKeys = "l$escapedUserName{ENTER}$escapedPassword{ENTER}"
-[System.Windows.Forms.SendKeys]::SendWait($initialKeys)
-$plainPassword = $null
