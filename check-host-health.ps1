@@ -6,6 +6,7 @@ Hyper-V Host Health Quick Check
 #>
 
 param(
+    [ValidateRange(1, 8760)]
     [int]$HoursBack = 24,
     [string]$OutDir = "$env:ProgramData\HyperVHostHealth"
 )
@@ -28,6 +29,15 @@ function Add-Lines($lines) {
     $lines | Out-File -FilePath $reportTxt -Append -Encoding utf8
 }
 
+function Write-TableOrMessage($items, $emptyMessage) {
+    $safeItems = @($items)
+    if ($safeItems.Count -eq 0) {
+        Add-Lines $emptyMessage
+        return
+    }
+    Add-Lines ($safeItems | Format-Table -AutoSize | Out-String)
+}
+
 # Collect objects for JSON too
 $results = [ordered]@{
     ComputerName = $env:COMPUTERNAME
@@ -37,12 +47,22 @@ $results = [ordered]@{
     Hotfixes     = @()
     EventFindings= @()
     Storage      = [ordered]@{}
+    Services     = @()
 }
 
 Write-Section "BASIC SYSTEM INFO"
 $os = Get-CimInstance Win32_OperatingSystem | Select-Object Caption, Version, BuildNumber, LastBootUpTime
 $results.OS = $os
 Add-Lines ($os | Format-List | Out-String)
+
+Write-Section "RECENT HOTFIXES (Latest 20)"
+try {
+    $hotfixes = Get-HotFix | Sort-Object InstalledOn -Descending | Select-Object -First 20 HotFixID, InstalledOn, Description
+    $results.Hotfixes = $hotfixes
+    Write-TableOrMessage $hotfixes "No hotfixes returned."
+} catch {
+    Add-Lines "Get-HotFix failed: $($_.Exception.Message)"
+}
 
 Write-Section "RECENT REBOOTS / UNEXPECTED SHUTDOWNS (System)"
 # Common reboot/shutdown related event IDs
@@ -53,10 +73,10 @@ try {
         StartTime = $since
         Id        = $rebootIds
     } -ErrorAction SilentlyContinue |
-    Select-Object TimeCreated, Id, LevelDisplayName, ProviderName, Message
+    Select-Object @{Name="Category";Expression={"Reboot/Shutdown"}}, @{Name="LogName";Expression={"System"}}, TimeCreated, Id, LevelDisplayName, ProviderName, Message
 
-    $results.EventFindings += $reboots
-    Add-Lines ($reboots | Format-Table -AutoSize | Out-String)
+    if ($reboots) { $results.EventFindings += @($reboots) }
+    Write-TableOrMessage $reboots "No matching events found."
 } catch {
     Add-Lines "Failed to query reboot events: $($_.Exception.Message)"
 }
@@ -70,10 +90,10 @@ try {
             StartTime = $since
         } -ErrorAction SilentlyContinue |
         Where-Object { $_.LevelDisplayName -in @("Critical","Error","Warning") } |
-        Select-Object TimeCreated, Id, LevelDisplayName, ProviderName, Message
+        Select-Object @{Name="Category";Expression={"VMMS"}}, @{Name="LogName";Expression={$vmmsLog}}, TimeCreated, Id, LevelDisplayName, ProviderName, Message
 
-        $results.EventFindings += $vmms
-        Add-Lines ($vmms | Format-Table -AutoSize | Out-String)
+        if ($vmms) { $results.EventFindings += @($vmms) }
+        Write-TableOrMessage $vmms "No matching events found."
     } else {
         Add-Lines "Log not found: $vmmsLog"
     }
@@ -90,10 +110,10 @@ try {
             StartTime = $since
         } -ErrorAction SilentlyContinue |
         Where-Object { $_.LevelDisplayName -in @("Critical","Error","Warning") } |
-        Select-Object TimeCreated, Id, LevelDisplayName, ProviderName, Message
+        Select-Object @{Name="Category";Expression={"Worker"}}, @{Name="LogName";Expression={$workerLog}}, TimeCreated, Id, LevelDisplayName, ProviderName, Message
 
-        $results.EventFindings += $worker
-        Add-Lines ($worker | Format-Table -AutoSize | Out-String)
+        if ($worker) { $results.EventFindings += @($worker) }
+        Write-TableOrMessage $worker "No matching events found."
     } else {
         Add-Lines "Log not found: $workerLog"
     }
@@ -117,10 +137,10 @@ try {
         ($_.LevelDisplayName -in @("Critical","Error","Warning")) -and
         ($storageProviders -contains $_.ProviderName -or $storageProviders -contains ($_.ProviderName.ToLower()))
     } |
-    Select-Object TimeCreated, Id, LevelDisplayName, ProviderName, Message
+    Select-Object @{Name="Category";Expression={"Storage"}}, @{Name="LogName";Expression={"System"}}, TimeCreated, Id, LevelDisplayName, ProviderName, Message
 
-    $results.EventFindings += $storageEvents
-    Add-Lines ($storageEvents | Format-Table -AutoSize | Out-String)
+    if ($storageEvents) { $results.EventFindings += @($storageEvents) }
+    Write-TableOrMessage $storageEvents "No matching events found."
 } catch {
     Add-Lines "Failed to query storage-related events: $($_.Exception.Message)"
 }
@@ -129,7 +149,7 @@ Write-Section "DISK / VOLUME STATUS"
 try {
     $vols = Get-Volume | Sort-Object DriveLetter | Select-Object DriveLetter, FileSystemLabel, FileSystem, HealthStatus, OperationalStatus, SizeRemaining, Size
     $results.Storage.Volumes = $vols
-    Add-Lines ($vols | Format-Table -AutoSize | Out-String)
+    Write-TableOrMessage $vols "No volumes returned."
 } catch {
     Add-Lines "Get-Volume failed (may require newer OS / module): $($_.Exception.Message)"
 }
@@ -137,7 +157,7 @@ try {
 try {
     $disks = Get-Disk | Sort-Object Number | Select-Object Number, FriendlyName, OperationalStatus, HealthStatus, Size, PartitionStyle
     $results.Storage.Disks = $disks
-    Add-Lines ($disks | Format-Table -AutoSize | Out-String)
+    Write-TableOrMessage $disks "No disks returned."
 } catch {
     Add-Lines "Get-Disk failed: $($_.Exception.Message)"
 }
@@ -171,7 +191,7 @@ Write-Section "HYPER-V SERVICE STATUS"
 $svcNames = "vmms","vmcompute"
 $svcs = foreach ($n in $svcNames) { Get-Service -Name $n -ErrorAction SilentlyContinue | Select-Object Name, Status, StartType }
 $results.Services = $svcs
-Add-Lines ($svcs | Format-Table -AutoSize | Out-String)
+Write-TableOrMessage $svcs "No Hyper-V services found."
 
 Write-Section "DONE"
 Add-Lines "Report saved to:"
