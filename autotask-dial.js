@@ -21,6 +21,7 @@
   let cachedLinkTextDecorationColor = "";
   let cachedLinkFontWeight = "";
   let hasReferenceLink = false;
+  let didApplyReferenceToExisting = false;
 
   function normalizeToTel(s) {
     const extMatch = s.match(extRegex);
@@ -77,17 +78,40 @@
       a.setAttribute("style", cachedLinkStyle);
     }
     if (cachedLinkColor) {
-      a.style.color = cachedLinkColor;
+      a.style.setProperty("color", cachedLinkColor, "important");
     }
     if (cachedLinkTextDecoration) {
-      a.style.textDecorationLine = cachedLinkTextDecoration;
+      a.style.setProperty(
+        "text-decoration-line",
+        cachedLinkTextDecoration,
+        "important"
+      );
     }
     if (cachedLinkTextDecorationColor) {
-      a.style.textDecorationColor = cachedLinkTextDecorationColor;
+      a.style.setProperty(
+        "text-decoration-color",
+        cachedLinkTextDecorationColor,
+        "important"
+      );
     }
     if (cachedLinkFontWeight) {
-      a.style.fontWeight = cachedLinkFontWeight;
+      a.style.setProperty("font-weight", cachedLinkFontWeight, "important");
     }
+  }
+
+  function applyReferenceStylesToExistingLinks() {
+    if (didApplyReferenceToExisting) {
+      return;
+    }
+    if (!hasReferenceLink && !updateReferenceLinkInfo()) {
+      return;
+    }
+    const telLinks = document.querySelectorAll("a[data-telified='true']");
+    if (!telLinks.length) {
+      return;
+    }
+    telLinks.forEach((a) => applyReferenceLinkAppearance(a));
+    didApplyReferenceToExisting = true;
   }
 
   function shouldSkipNode(node) {
@@ -177,6 +201,7 @@
 
   // Initial pass
   walkAndLinkify(document.body);
+  applyReferenceStylesToExistingLinks();
 
   // Watch for SPA/dynamic updates
   const obs = new MutationObserver((mutations) => {
@@ -190,6 +215,7 @@
         }
       }
     }
+    applyReferenceStylesToExistingLinks();
   });
   obs.observe(document.body, { childList: true, subtree: true });
 })();
