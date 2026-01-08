@@ -16,6 +16,10 @@
   const extRegex = /\s*(?:x|ext\.?|extension)\s*(\d{1,6})/i;
   let cachedLinkClass = "";
   let cachedLinkStyle = "";
+  let cachedLinkColor = "";
+  let cachedLinkTextDecoration = "";
+  let cachedLinkTextDecorationColor = "";
+  let cachedLinkFontWeight = "";
   let hasReferenceLink = false;
 
   function normalizeToTel(s) {
@@ -50,6 +54,11 @@
       if (a.textContent && a.textContent.trim() === "Site Configuration") {
         cachedLinkClass = a.className || "";
         cachedLinkStyle = a.getAttribute("style") || "";
+        const computed = window.getComputedStyle(a);
+        cachedLinkColor = computed.color || "";
+        cachedLinkTextDecoration = computed.textDecorationLine || "";
+        cachedLinkTextDecorationColor = computed.textDecorationColor || "";
+        cachedLinkFontWeight = computed.fontWeight || "";
         hasReferenceLink = true;
         return true;
       }
@@ -66,6 +75,18 @@
     }
     if (cachedLinkStyle) {
       a.setAttribute("style", cachedLinkStyle);
+    }
+    if (cachedLinkColor) {
+      a.style.color = cachedLinkColor;
+    }
+    if (cachedLinkTextDecoration) {
+      a.style.textDecorationLine = cachedLinkTextDecoration;
+    }
+    if (cachedLinkTextDecorationColor) {
+      a.style.textDecorationColor = cachedLinkTextDecorationColor;
+    }
+    if (cachedLinkFontWeight) {
+      a.style.fontWeight = cachedLinkFontWeight;
     }
   }
 
