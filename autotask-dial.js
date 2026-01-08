@@ -14,6 +14,9 @@
   const phoneRegex =
     /(?:\+?1[\s.-]?)?(?:\(\s*\d{3}\s*\)|\d{3})[\s.-]?\d{3}[\s.-]?\d{4}(?:\s*(?:x|ext\.?|extension)\s*\d{1,6})?/gi;
   const extRegex = /\s*(?:x|ext\.?|extension)\s*(\d{1,6})/i;
+  let cachedLinkClass = "";
+  let cachedLinkStyle = "";
+  let hasReferenceLink = false;
 
   function normalizeToTel(s) {
     const extMatch = s.match(extRegex);
@@ -36,6 +39,34 @@
     }
 
     return ext ? `${normalized};ext=${ext}` : normalized;
+  }
+
+  function updateReferenceLinkInfo() {
+    if (hasReferenceLink) {
+      return true;
+    }
+    const anchors = document.querySelectorAll("a");
+    for (const a of anchors) {
+      if (a.textContent && a.textContent.trim() === "Site Configuration") {
+        cachedLinkClass = a.className || "";
+        cachedLinkStyle = a.getAttribute("style") || "";
+        hasReferenceLink = true;
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function applyReferenceLinkAppearance(a) {
+    if (!updateReferenceLinkInfo()) {
+      return;
+    }
+    if (cachedLinkClass) {
+      a.className = cachedLinkClass;
+    }
+    if (cachedLinkStyle) {
+      a.setAttribute("style", cachedLinkStyle);
+    }
   }
 
   function shouldSkipNode(node) {
@@ -90,6 +121,7 @@
         const a = document.createElement("a");
         a.href = `tel:${tel}`;
         a.textContent = raw;
+        applyReferenceLinkAppearance(a);
         a.setAttribute("data-telified", "true");
         frag.appendChild(a);
       }
