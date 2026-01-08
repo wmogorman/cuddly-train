@@ -10,24 +10,36 @@
 (function () {
   "use strict";
 
-  // Loose US phone matcher: (870) 830-4352, 870-830-4352, 870.830.4352, 8708304352
-  const phoneRegex = /(?:\+?1[\s.-]?)?(?:\(\s*\d{3}\s*\)|\d{3})[\s.-]?\d{3}[\s.-]?\d{4}/g;
+  // Loose US phone matcher: (870) 830-4352, 870-830-4352, 870.830.4352, 8708304352, ext 123
+  const phoneRegex =
+    /(?:\+?1[\s.-]?)?(?:\(\s*\d{3}\s*\)|\d{3})[\s.-]?\d{3}[\s.-]?\d{4}(?:\s*(?:x|ext\.?|extension)\s*\d{1,6})?/gi;
+  const extRegex = /\s*(?:x|ext\.?|extension)\s*(\d{1,6})/i;
 
   function normalizeToTel(s) {
-    const digits = s.replace(/[^\d+]/g, "");
-    // If 10 digits, assume US +1
+    const extMatch = s.match(extRegex);
+    const ext = extMatch ? extMatch[1] : "";
+    const core = extMatch ? s.replace(extRegex, "") : s;
+
+    const digits = core.replace(/[^\d+]/g, "");
     const justDigits = digits.replace(/\D/g, "");
-    if (justDigits.length === 10) return `+1${justDigits}`;
-    if (justDigits.length === 11 && justDigits.startsWith("1")) return `+${justDigits}`;
-    // Fallback: keep whatever digits we got
-    return digits.startsWith("+") ? digits : `+${justDigits}`;
+    if (justDigits.length < 10 || justDigits.length > 15) return null;
+
+    let normalized = "";
+    if (justDigits.length === 10) normalized = `+1${justDigits}`;
+    else if (justDigits.length === 11 && justDigits.startsWith("1"))
+      normalized = `+${justDigits}`;
+    else normalized = digits.startsWith("+") ? `+${justDigits}` : `+${justDigits}`;
+
+    return ext ? `${normalized};ext=${ext}` : normalized;
   }
 
   function shouldSkipNode(node) {
     if (!node || !node.parentElement) return true;
     const p = node.parentElement;
     return (
-      p.closest("a, button, input, textarea, select, code, pre") !== null
+      p.closest(
+        "a, button, input, textarea, select, code, pre, kbd, samp, script, style, noscript, [contenteditable]"
+      ) !== null
     );
   }
 
@@ -46,6 +58,8 @@
     while ((match = phoneRegex.exec(text)) !== null) {
       const start = match.index;
       const end = start + match[0].length;
+      const before = text[start - 1];
+      const after = text[end];
 
       // text before match
       if (start > lastIndex) {
@@ -55,13 +69,21 @@
       const raw = match[0];
       const tel = normalizeToTel(raw);
 
-      const a = document.createElement("a");
-      a.href = `tel:${tel}`;
-      a.textContent = raw;
-      a.style.textDecoration = "underline";
-      a.style.cursor = "pointer";
-
-      frag.appendChild(a);
+      if (
+        !tel ||
+        (before && /\d/.test(before)) ||
+        (after && /\d/.test(after))
+      ) {
+        frag.appendChild(document.createTextNode(raw));
+      } else {
+        const a = document.createElement("a");
+        a.href = `tel:${tel}`;
+        a.textContent = raw;
+        a.style.textDecoration = "underline";
+        a.style.cursor = "pointer";
+        a.setAttribute("data-telified", "true");
+        frag.appendChild(a);
+      }
 
       lastIndex = end;
     }
@@ -75,6 +97,11 @@
   }
 
   function walkAndLinkify(root) {
+    if (!root) return;
+    if (root.nodeType === Node.TEXT_NODE) {
+      linkifyTextNode(root);
+      return;
+    }
     const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null);
     const nodes = [];
     let n;
@@ -89,7 +116,8 @@
   const obs = new MutationObserver((mutations) => {
     for (const m of mutations) {
       for (const node of m.addedNodes) {
-        if (node.nodeType === 1) walkAndLinkify(node);
+        if (node.nodeType === Node.ELEMENT_NODE) walkAndLinkify(node);
+        if (node.nodeType === Node.TEXT_NODE) linkifyTextNode(node);
       }
     }
   });
