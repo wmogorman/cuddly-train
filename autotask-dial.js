@@ -79,8 +79,6 @@
         const a = document.createElement("a");
         a.href = `tel:${tel}`;
         a.textContent = raw;
-        a.style.textDecoration = "underline";
-        a.style.cursor = "pointer";
         a.setAttribute("data-telified", "true");
         frag.appendChild(a);
       }
