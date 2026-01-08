@@ -22,19 +22,26 @@
 
     const digits = core.replace(/[^\d+]/g, "");
     const justDigits = digits.replace(/\D/g, "");
-    if (justDigits.length < 10 || justDigits.length > 15) return null;
+    if (justDigits.length < 10 || justDigits.length > 15) {
+      return null;
+    }
 
     let normalized = "";
-    if (justDigits.length === 10) normalized = `+1${justDigits}`;
-    else if (justDigits.length === 11 && justDigits.startsWith("1"))
+    if (justDigits.length === 10) {
+      normalized = `+1${justDigits}`;
+    } else if (justDigits.length === 11 && justDigits.startsWith("1")) {
       normalized = `+${justDigits}`;
-    else normalized = digits.startsWith("+") ? `+${justDigits}` : `+${justDigits}`;
+    } else {
+      normalized = digits.startsWith("+") ? `+${justDigits}` : `+${justDigits}`;
+    }
 
     return ext ? `${normalized};ext=${ext}` : normalized;
   }
 
   function shouldSkipNode(node) {
-    if (!node || !node.parentElement) return true;
+    if (!node || !node.parentElement) {
+      return true;
+    }
     const p = node.parentElement;
     return (
       p.closest(
@@ -44,9 +51,13 @@
   }
 
   function linkifyTextNode(textNode) {
-    if (shouldSkipNode(textNode)) return;
+    if (shouldSkipNode(textNode)) {
+      return;
+    }
     const text = textNode.nodeValue;
-    if (!text || !phoneRegex.test(text)) return;
+    if (!text || !phoneRegex.test(text)) {
+      return;
+    }
 
     // reset regex state after test()
     phoneRegex.lastIndex = 0;
@@ -95,7 +106,9 @@
   }
 
   function walkAndLinkify(root) {
-    if (!root) return;
+    if (!root) {
+      return;
+    }
     if (root.nodeType === Node.TEXT_NODE) {
       linkifyTextNode(root);
       return;
@@ -103,7 +116,9 @@
     const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null);
     const nodes = [];
     let n;
-    while ((n = walker.nextNode())) nodes.push(n);
+    while ((n = walker.nextNode())) {
+      nodes.push(n);
+    }
     nodes.forEach(linkifyTextNode);
   }
 
@@ -114,8 +129,12 @@
   const obs = new MutationObserver((mutations) => {
     for (const m of mutations) {
       for (const node of m.addedNodes) {
-        if (node.nodeType === Node.ELEMENT_NODE) walkAndLinkify(node);
-        if (node.nodeType === Node.TEXT_NODE) linkifyTextNode(node);
+        if (node.nodeType === Node.ELEMENT_NODE) {
+          walkAndLinkify(node);
+        }
+        if (node.nodeType === Node.TEXT_NODE) {
+          linkifyTextNode(node);
+        }
       }
     }
   });
