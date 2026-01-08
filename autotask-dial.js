@@ -14,13 +14,9 @@
   const phoneRegex =
     /(?:\+?1[\s.-]?)?(?:\(\s*\d{3}\s*\)|\d{3})[\s.-]?\d{3}[\s.-]?\d{4}(?:\s*(?:x|ext\.?|extension)\s*\d{1,6})?/gi;
   const extRegex = /\s*(?:x|ext\.?|extension)\s*(\d{1,6})/i;
-  let cachedLinkClass = "";
-  let cachedLinkStyle = "";
-  let cachedLinkColor = "";
-  let cachedLinkTextDecoration = "";
-  let cachedLinkTextDecorationColor = "";
-  let cachedLinkFontWeight = "";
-  let hasReferenceLink = false;
+  const TEL_LINK_COLOR = "#199ed9";
+  const TEL_LINK_FONT_SIZE = "12px";
+  const TEL_LINK_LINE_HEIGHT = "20px";
   let didApplyReferenceToExisting = false;
 
   function normalizeToTel(s) {
@@ -46,64 +42,14 @@
     return ext ? `${normalized};ext=${ext}` : normalized;
   }
 
-  function updateReferenceLinkInfo() {
-    if (hasReferenceLink) {
-      return true;
-    }
-    const anchors = document.querySelectorAll("a");
-    for (const a of anchors) {
-      if (a.textContent && a.textContent.trim() === "Site Configuration") {
-        cachedLinkClass = a.className || "";
-        cachedLinkStyle = a.getAttribute("style") || "";
-        const computed = window.getComputedStyle(a);
-        cachedLinkColor = computed.color || "";
-        cachedLinkTextDecoration = computed.textDecorationLine || "";
-        cachedLinkTextDecorationColor = computed.textDecorationColor || "";
-        cachedLinkFontWeight = computed.fontWeight || "";
-        hasReferenceLink = true;
-        return true;
-      }
-    }
-    return false;
-  }
-
   function applyReferenceLinkAppearance(a) {
-    if (!updateReferenceLinkInfo()) {
-      return;
-    }
-    if (cachedLinkClass) {
-      a.className = cachedLinkClass;
-    }
-    if (cachedLinkStyle) {
-      a.setAttribute("style", cachedLinkStyle);
-    }
-    if (cachedLinkColor) {
-      a.style.setProperty("color", cachedLinkColor, "important");
-    }
-    if (cachedLinkTextDecoration) {
-      a.style.setProperty(
-        "text-decoration-line",
-        cachedLinkTextDecoration,
-        "important"
-      );
-    }
-    if (cachedLinkTextDecorationColor) {
-      a.style.setProperty(
-        "text-decoration-color",
-        cachedLinkTextDecorationColor,
-        "important"
-      );
-    }
-    if (cachedLinkFontWeight) {
-      a.style.setProperty("font-weight", cachedLinkFontWeight, "important");
-    }
+    a.style.setProperty("color", TEL_LINK_COLOR, "important");
+    a.style.setProperty("font-size", TEL_LINK_FONT_SIZE, "important");
+    a.style.setProperty("line-height", TEL_LINK_LINE_HEIGHT, "important");
   }
 
   function applyReferenceStylesToExistingLinks() {
     if (didApplyReferenceToExisting) {
-      return;
-    }
-    if (!hasReferenceLink && !updateReferenceLinkInfo()) {
       return;
     }
     const telLinks = document.querySelectorAll("a[data-telified='true']");
