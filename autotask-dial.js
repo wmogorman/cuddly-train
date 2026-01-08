@@ -17,6 +17,8 @@
   const TEL_LINK_COLOR = "#199ed9";
   const TEL_LINK_FONT_SIZE = "12px";
   const TEL_LINK_LINE_HEIGHT = "20px";
+  const TEL_LINK_CLASS = "tel-linkified";
+  const TEL_LINK_STYLE_ID = "tel-linkified-style";
   let didApplyReferenceToExisting = false;
 
   function normalizeToTel(s) {
@@ -42,7 +44,22 @@
     return ext ? `${normalized};ext=${ext}` : normalized;
   }
 
+  function ensureTelLinkStyles() {
+    if (document.getElementById(TEL_LINK_STYLE_ID)) {
+      return;
+    }
+    const style = document.createElement("style");
+    style.id = TEL_LINK_STYLE_ID;
+    style.textContent = `
+.${TEL_LINK_CLASS} { text-decoration: none !important; }
+.${TEL_LINK_CLASS}:hover { text-decoration: underline !important; }
+`;
+    document.head.appendChild(style);
+  }
+
   function applyReferenceLinkAppearance(a) {
+    ensureTelLinkStyles();
+    a.classList.add(TEL_LINK_CLASS);
     a.style.setProperty("color", TEL_LINK_COLOR, "important");
     a.style.setProperty("font-size", TEL_LINK_FONT_SIZE, "important");
     a.style.setProperty("line-height", TEL_LINK_LINE_HEIGHT, "important");
