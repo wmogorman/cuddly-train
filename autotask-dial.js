@@ -13,6 +13,7 @@
   // Loose US phone matcher: (870) 830-4352, 870-830-4352, 870.830.4352, 8708304352, ext 123
   const phoneRegex =
     /(?:\+?1[\s.-]?)?(?:\(\s*\d{3}\s*\)|\d{3})[\s.-]?\d{3}[\s.-]?\d{4}(?:\s*(?:x|ext\.?|extension)\s*\d{1,6})?/gi;
+  const ticketRegex = /T\d{8}\.\d{4}/g;
   const extRegex = /\s*(?:x|ext\.?|extension)\s*(\d{1,6})/i;
   const TEL_LINK_COLOR = "#199ed9";
   const TEL_LINK_FONT_SIZE = "12px";
@@ -110,6 +111,7 @@
       const end = start + match[0].length;
       const before = text[start - 1];
       const after = text[end];
+      const insideTicket = isWithinTicketNumber(text, start, end);
 
       // text before match
       if (start > lastIndex) {
@@ -120,6 +122,7 @@
       const tel = normalizeToTel(raw);
 
       if (
+        insideTicket ||
         !tel ||
         (before && /\d/.test(before)) ||
         (after && /\d/.test(after))
@@ -160,6 +163,19 @@
       nodes.push(n);
     }
     nodes.forEach(linkifyTextNode);
+  }
+
+  function isWithinTicketNumber(text, start, end) {
+    ticketRegex.lastIndex = 0;
+    let match;
+    while ((match = ticketRegex.exec(text)) !== null) {
+      const ticketStart = match.index;
+      const ticketEnd = ticketStart + match[0].length;
+      if (start < ticketEnd && end > ticketStart) {
+        return true;
+      }
+    }
+    return false;
   }
 
   // Initial pass
