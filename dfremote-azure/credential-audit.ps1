@@ -1,21 +1,26 @@
 <#
-Alliance Rubber - Credential Audit
+Credential Audit
 Finds:
   - Services running under specific user accounts
   - Scheduled tasks configured to run as specific user accounts
 
 Designed for Datto RMM deployment:
+  - Supports component variable TargetAccountsCsv or TargetAccounts (CSV/semicolon/newline)
   - Writes CSVs to ProgramData
   - Prints summary to StdOut
 #>
 
 [CmdletBinding()]
 param(
-    # Account names to search for (case-insensitive). You can add/remove as needed.
-    [string[]]$TargetAccounts = @("Administrator", "allservice", "sonicwall_service"),
+    # Optional CSV/semicolon/newline list of target accounts.
+    # If set, overrides TargetAccounts. Useful for Datto RMM component variables.
+    [string]$TargetAccountsCsv = $null,
+
+    # Account names to search for (case-insensitive). Used when TargetAccountsCsv is empty.
+    [string[]]$TargetAccounts = @("Administrator"),
 
     # Output folder (Datto-safe location)
-    [string]$OutputRoot = "$env:ProgramData\DattoRMM\AllianceCredentialAudit"
+    [string]$OutputRoot = "$env:ProgramData\DattoRMM\CredentialAudit"
 )
 
 Set-StrictMode -Version Latest
@@ -82,6 +87,20 @@ function Matches-TargetAccount {
 
 # ---- Main ----
 $Errors = @()
+
+$targetAccountsCsvCandidate = $null
+if ($PSBoundParameters.ContainsKey("TargetAccountsCsv")) {
+    $targetAccountsCsvCandidate = $TargetAccountsCsv
+} elseif (-not [string]::IsNullOrWhiteSpace($env:TargetAccountsCsv)) {
+    $targetAccountsCsvCandidate = $env:TargetAccountsCsv
+} elseif (-not [string]::IsNullOrWhiteSpace($env:TargetAccounts)) {
+    $targetAccountsCsvCandidate = $env:TargetAccounts
+}
+
+if (-not [string]::IsNullOrWhiteSpace($targetAccountsCsvCandidate)) {
+    $TargetAccounts = $targetAccountsCsvCandidate -split '[,;\r\n]+' | ForEach-Object { $_.Trim() }
+}
+
 $TargetAccounts = $TargetAccounts | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
 if (-not $TargetAccounts -or $TargetAccounts.Count -eq 0) {
     Write-Output "No target accounts configured. Exiting."
@@ -145,8 +164,8 @@ $servicesMatched = $servicesAll | Where-Object {
 $servicesMatched | Sort-Object StartName, Name | Export-Csv -NoTypeInformation -Encoding UTF8 -Path $svcOut
 
 # --- Scheduled Tasks (schtasks for broad compatibility) ---
-# schtasks /query /v /fo csv returns localized column names on non-English systems,
-# but Alliance endpoints are almost certainly English. If not, we still attempt best-effort parsing.
+# schtasks /query /v /fo csv returns localized column names on non-English systems.
+# We still attempt best-effort parsing.
 
 $tasksAll = @()
 $tasksMatched = @()
@@ -251,7 +270,7 @@ $meta = [pscustomobject]@{
 $meta | ConvertTo-Json -Depth 4 | Out-File -FilePath $metaOut -Encoding UTF8
 
 # Print useful StdOut for Datto component output
-Write-Output "Alliance Credential Audit - $($env:COMPUTERNAME)"
+Write-Output "Credential Audit - $($env:COMPUTERNAME)"
 Write-Output "Targets: $($TargetAccounts -join ', ')"
 Write-Output "Output Folder: $OutputRoot"
 Write-Output "Services matched: $($meta.ServicesFound)"
