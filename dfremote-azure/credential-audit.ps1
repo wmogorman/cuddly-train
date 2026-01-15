@@ -6,6 +6,7 @@ Finds:
 
 Designed for Datto RMM deployment:
   - Supports component variable TargetAccountsCsv or TargetAccounts (CSV/semicolon/newline)
+  - Optional TargetDomain to qualify accounts (e.g., ALLIANCE0)
   - Writes CSVs to ProgramData
   - Prints summary to StdOut
 #>
@@ -15,6 +16,10 @@ param(
     # Optional CSV/semicolon/newline list of target accounts.
     # If set, overrides TargetAccounts. Useful for Datto RMM component variables.
     [string]$TargetAccountsCsv = $null,
+
+    # Optional domain to qualify unqualified accounts (e.g., ALLIANCE0).
+    # If set, "administrator" becomes "ALLIANCE0\administrator".
+    [string]$TargetDomain = $null,
 
     # Account names to search for (case-insensitive). Used when TargetAccountsCsv is empty.
     [string[]]$TargetAccounts = @("Administrator"),
@@ -101,7 +106,28 @@ if (-not [string]::IsNullOrWhiteSpace($targetAccountsCsvCandidate)) {
     $TargetAccounts = $targetAccountsCsvCandidate -split '[,;\r\n]+' | ForEach-Object { $_.Trim() }
 }
 
+$targetDomainCandidate = $null
+if ($PSBoundParameters.ContainsKey("TargetDomain")) {
+    $targetDomainCandidate = $TargetDomain
+} elseif (-not [string]::IsNullOrWhiteSpace($env:TargetDomain)) {
+    $targetDomainCandidate = $env:TargetDomain
+}
+
+if (-not [string]::IsNullOrWhiteSpace($targetDomainCandidate)) {
+    $TargetDomain = $targetDomainCandidate.Trim().TrimEnd("\")
+} else {
+    $TargetDomain = $null
+}
+
 $TargetAccounts = $TargetAccounts | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+if ($TargetDomain) {
+    $TargetAccounts = $TargetAccounts | ForEach-Object {
+        $a = $_.Trim()
+        if ($a -match '\\') { return $a }
+        return "$TargetDomain\$a"
+    }
+}
+
 if (-not $TargetAccounts -or $TargetAccounts.Count -eq 0) {
     Write-Output "No target accounts configured. Exiting."
     exit 0
@@ -258,6 +284,7 @@ $meta = [pscustomobject]@{
     ComputerName      = $env:COMPUTERNAME
     Timestamp         = (Get-Date).ToString("o")
     TargetAccounts    = $TargetAccounts
+    TargetDomain      = $TargetDomain
     ServicesFound     = ($servicesMatched | Measure-Object).Count
     TasksFound        = ($tasksMatched | Measure-Object).Count
     ServiceQueryOk    = $serviceQueryOk
@@ -272,6 +299,9 @@ $meta | ConvertTo-Json -Depth 4 | Out-File -FilePath $metaOut -Encoding UTF8
 # Print useful StdOut for Datto component output
 Write-Output "Credential Audit - $($env:COMPUTERNAME)"
 Write-Output "Targets: $($TargetAccounts -join ', ')"
+if ($TargetDomain) {
+    Write-Output "Target Domain: $TargetDomain"
+}
 Write-Output "Output Folder: $OutputRoot"
 Write-Output "Services matched: $($meta.ServicesFound)"
 Write-Output "Tasks matched:    $($meta.TasksFound)"
