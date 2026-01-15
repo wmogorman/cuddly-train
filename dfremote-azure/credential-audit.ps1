@@ -23,9 +23,17 @@ $ErrorActionPreference = "Stop"
 
 function Ensure-Folder {
     param([Parameter(Mandatory)][string]$Path)
+    if (Test-Path -LiteralPath $Path -PathType Leaf) {
+        throw "OutputRoot path points to a file: $Path"
+    }
     if (-not (Test-Path -LiteralPath $Path)) {
         New-Item -Path $Path -ItemType Directory -Force | Out-Null
     }
+}
+
+function Add-Error {
+    param([Parameter(Mandatory)][string]$Message)
+    $script:Errors += $Message
 }
 
 function New-RegexForAccounts {
@@ -73,6 +81,13 @@ function Matches-TargetAccount {
 }
 
 # ---- Main ----
+$Errors = @()
+$TargetAccounts = $TargetAccounts | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+if (-not $TargetAccounts -or $TargetAccounts.Count -eq 0) {
+    Write-Output "No target accounts configured. Exiting."
+    exit 0
+}
+
 $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
 Ensure-Folder -Path $OutputRoot
 
@@ -83,16 +98,41 @@ $taskOut = Join-Path $OutputRoot "ScheduledTasks_CredentialAudit_$timestamp.csv"
 $metaOut = Join-Path $OutputRoot "AuditMeta_$timestamp.json"
 
 # --- Services ---
-$servicesAll = Get-CimInstance Win32_Service | ForEach-Object {
-    [pscustomobject]@{
-        ComputerName = $env:COMPUTERNAME
-        Type        = "Service"
-        Name        = $_.Name
-        DisplayName = $_.DisplayName
-        StartName   = $_.StartName
-        State       = $_.State
-        StartMode   = $_.StartMode
-        PathName    = $_.PathName
+$servicesAll = @()
+$servicesMatched = @()
+$serviceQueryOk = $false
+try {
+    $servicesAll = Get-CimInstance Win32_Service -ErrorAction Stop | ForEach-Object {
+        [pscustomobject]@{
+            ComputerName = $env:COMPUTERNAME
+            Type        = "Service"
+            Name        = $_.Name
+            DisplayName = $_.DisplayName
+            StartName   = $_.StartName
+            State       = $_.State
+            StartMode   = $_.StartMode
+            PathName    = $_.PathName
+        }
+    }
+    $serviceQueryOk = $true
+} catch {
+    try {
+        $servicesAll = Get-WmiObject Win32_Service -ErrorAction Stop | ForEach-Object {
+            [pscustomobject]@{
+                ComputerName = $env:COMPUTERNAME
+                Type        = "Service"
+                Name        = $_.Name
+                DisplayName = $_.DisplayName
+                StartName   = $_.StartName
+                State       = $_.State
+                StartMode   = $_.StartMode
+                PathName    = $_.PathName
+            }
+        }
+        $serviceQueryOk = $true
+    } catch {
+        Add-Error ("Services query failed: " + $_.Exception.Message)
+        $servicesAll = @()
     }
 }
 
@@ -108,29 +148,29 @@ $servicesMatched | Sort-Object StartName, Name | Export-Csv -NoTypeInformation -
 # schtasks /query /v /fo csv returns localized column names on non-English systems,
 # but Alliance endpoints are almost certainly English. If not, we still attempt best-effort parsing.
 
+$tasksAll = @()
+$tasksMatched = @()
+$taskQueryOk = $false
 $rawCsv = & schtasks.exe /query /v /fo csv 2>$null
-if (-not $rawCsv -or $rawCsv.Count -lt 2) {
-    # If schtasks is blocked or fails, fallback to Get-ScheduledTask
-    $tasksAll = @()
+$parsed = $null
+if ($rawCsv -and $rawCsv.Count -ge 2) {
     try {
-        $tasksAll = Get-ScheduledTask | ForEach-Object {
-            $p = $_.Principal
-            [pscustomobject]@{
-                ComputerName = $env:COMPUTERNAME
-                Type         = "ScheduledTask"
-                TaskName     = $_.TaskName
-                TaskPath     = $_.TaskPath
-                RunAsUser    = $p.UserId
-                LogonType    = $p.LogonType
-                Author       = $_.Author
-                Description  = $_.Description
-            }
-        }
+        $parsed = $rawCsv | ConvertFrom-Csv
     } catch {
-        $tasksAll = @()
+        $parsed = $null
     }
-} else {
-    $parsed = $rawCsv | ConvertFrom-Csv
+}
+
+$useSchtasks = $false
+if ($parsed -and $parsed.Count -gt 0) {
+    $props = $parsed[0].PSObject.Properties.Name
+    if ($props -contains "TaskName" -and $props -contains "Run As User") {
+        $useSchtasks = $true
+    }
+}
+
+if ($useSchtasks) {
+    $taskQueryOk = $true
 
     # Common column names in English output:
     # "TaskName","Run As User","Task To Run","Author","Start In","Comment","Scheduled Task State",...
@@ -163,6 +203,27 @@ if (-not $rawCsv -or $rawCsv.Count -lt 2) {
             NextRunTime  = $_."Next Run Time"
         }
     }
+} else {
+    # If schtasks is blocked or fails, fallback to Get-ScheduledTask
+    try {
+        $tasksAll = Get-ScheduledTask -ErrorAction Stop | ForEach-Object {
+            $p = $_.Principal
+            [pscustomobject]@{
+                ComputerName = $env:COMPUTERNAME
+                Type         = "ScheduledTask"
+                TaskName     = $_.TaskName
+                TaskPath     = $_.TaskPath
+                RunAsUser    = $p.UserId
+                LogonType    = $p.LogonType
+                Author       = $_.Author
+                Description  = $_.Description
+            }
+        }
+        $taskQueryOk = $true
+    } catch {
+        Add-Error ("Scheduled tasks query failed: " + $_.Exception.Message)
+        $tasksAll = @()
+    }
 }
 
 $tasksMatched = $tasksAll | Where-Object {
@@ -180,33 +241,43 @@ $meta = [pscustomobject]@{
     TargetAccounts    = $TargetAccounts
     ServicesFound     = ($servicesMatched | Measure-Object).Count
     TasksFound        = ($tasksMatched | Measure-Object).Count
+    ServiceQueryOk    = $serviceQueryOk
+    TaskQueryOk       = $taskQueryOk
     ServicesCsv       = $svcOut
     TasksCsv          = $taskOut
+    Errors            = $Errors
 }
 
 $meta | ConvertTo-Json -Depth 4 | Out-File -FilePath $metaOut -Encoding UTF8
 
 # Print useful StdOut for Datto component output
-Write-Host "Alliance Credential Audit - $($env:COMPUTERNAME)"
-Write-Host "Targets: $($TargetAccounts -join ', ')"
-Write-Host "Output Folder: $OutputRoot"
-Write-Host "Services matched: $($meta.ServicesFound)"
-Write-Host "Tasks matched:    $($meta.TasksFound)"
-Write-Host "Services CSV:     $svcOut"
-Write-Host "Tasks CSV:        $taskOut"
-Write-Host "Meta JSON:        $metaOut"
+Write-Output "Alliance Credential Audit - $($env:COMPUTERNAME)"
+Write-Output "Targets: $($TargetAccounts -join ', ')"
+Write-Output "Output Folder: $OutputRoot"
+Write-Output "Services matched: $($meta.ServicesFound)"
+Write-Output "Tasks matched:    $($meta.TasksFound)"
+Write-Output "Services CSV:     $svcOut"
+Write-Output "Tasks CSV:        $taskOut"
+Write-Output "Meta JSON:        $metaOut"
+if ($Errors.Count -gt 0) {
+    Write-Output "Warnings:"
+    $Errors | ForEach-Object { Write-Output ("- " + $_) }
+}
 
 if ($meta.ServicesFound -gt 0) {
-    Write-Host "`nTop Services (first 10):"
+    Write-Output "`nTop Services (first 10):"
     $servicesMatched | Select-Object -First 10 Name, DisplayName, StartName, State, StartMode |
-        Format-Table -AutoSize | Out-String | Write-Host
+        Format-Table -AutoSize | Out-String | Write-Output
 }
 
 if ($meta.TasksFound -gt 0) {
-    Write-Host "`nTop Scheduled Tasks (first 10):"
+    Write-Output "`nTop Scheduled Tasks (first 10):"
     $tasksMatched | Select-Object -First 10 TaskPath, TaskName, RunAsUser, State, NextRunTime |
-        Format-Table -AutoSize | Out-String | Write-Host
+        Format-Table -AutoSize | Out-String | Write-Output
 }
 
-# Exit code: 0 = success. (Don’t fail the job just because findings exist.)
+# Exit code: 0 = success. (Don't fail the job just because findings exist.)
+if (-not $serviceQueryOk -and -not $taskQueryOk) {
+    exit 1
+}
 exit 0
