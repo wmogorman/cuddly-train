@@ -111,6 +111,17 @@ function Invoke-ITGlueRequest {
   }
   catch {
     $message = $_.Exception.Message
+    try {
+      if ($_.Exception.Response -and $_.Exception.Response.GetResponseStream) {
+        $reader = New-Object System.IO.StreamReader($_.Exception.Response.GetResponseStream())
+        $bodyText = $reader.ReadToEnd()
+        if (-not [string]::IsNullOrWhiteSpace($bodyText)) {
+          $message = "{0} Response: {1}" -f $message, $bodyText
+        }
+      }
+    }
+    catch {
+    }
     if ($_.Exception.Response -and $_.Exception.Response.ResponseUri) {
       $message = "{0} (URI: {1})" -f $message, $_.Exception.Response.ResponseUri
     }
@@ -273,7 +284,8 @@ function Update-ITGlueContactLocation {
     [string]$ApiKey,
     [string]$BaseUri,
     [string]$ContactId,
-    [string]$LocationId
+    [string]$LocationId,
+    [string]$LocationName
   )
 
   $headers = @{
@@ -282,20 +294,28 @@ function Update-ITGlueContactLocation {
     'Content-Type' = 'application/vnd.api+json'
   }
 
+  $locationIdValue = $LocationId
+  try {
+    $locationIdValue = [long]$LocationId
+  }
+  catch {
+    $locationIdValue = [string]$LocationId
+  }
+
+  $attributes = @{
+    'location-id' = $locationIdValue
+  }
+
+  if (-not [string]::IsNullOrWhiteSpace($LocationName)) {
+    $attributes['location-name'] = [string]$LocationName
+  }
+
   $body = @{
     data = @{
-      type = 'contacts'
-      id   = [string]$ContactId
-      relationships = @{
-        location = @{
-          data = @{
-            type = 'locations'
-            id   = [string]$LocationId
-          }
-        }
-      }
+      type       = 'contacts'
+      attributes = $attributes
     }
-  } | ConvertTo-Json -Depth 6
+  } | ConvertTo-Json -Depth 5
 
   $uri = '{0}/contacts/{1}' -f $BaseUri, [System.Uri]::EscapeDataString([string]$ContactId)
   Invoke-ITGlueRequest -Uri $uri -Method 'PATCH' -Headers $headers -Body $body -ContentType 'application/vnd.api+json'
@@ -405,7 +425,7 @@ foreach ($org in $organizations) {
 
     if ($PSCmdlet.ShouldProcess($target, "Update contact location to '$($targetLocation.attributes.name)'")) {
       try {
-        Update-ITGlueContactLocation -ApiKey $ApiKey -BaseUri $BaseUri -ContactId $contact.id -LocationId $targetLocation.id
+        Update-ITGlueContactLocation -ApiKey $ApiKey -BaseUri $BaseUri -ContactId $contact.id -LocationId $targetLocation.id -LocationName $targetLocation.attributes.name
         $updates += [PSCustomObject]@{
           OrgId        = $org.Id
           OrgName      = $org.Name
