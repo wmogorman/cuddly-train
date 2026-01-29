@@ -12,6 +12,9 @@
 .PARAMETER OrgId
   One or more IT Glue organization IDs to process.
 
+.PARAMETER OrgName
+  One or more IT Glue organization names to process (case-insensitive exact match).
+
 .PARAMETER SourceLocationPrefix
   Location name prefix to match (case-insensitive). Contacts whose location name
   starts with this value will be updated.
@@ -27,16 +30,19 @@
 
 .EXAMPLE
   PowerShell (no profile), 64-bit:
-    -Command "& { . .\change-contact-location.ps1 -OrgId 12345 -SourceLocationPrefix 'HQ' -TargetLocationName 'Headquarters' -WhatIf }"
+    -Command "& { . .\change-contact-location.ps1 -OrgName 'Acme Corp' -SourceLocationPrefix 'HQ' -TargetLocationName 'Headquarters' -WhatIf }"
 #>
 
-[CmdletBinding(SupportsShouldProcess=$true)]
+[CmdletBinding(SupportsShouldProcess=$true, DefaultParameterSetName='ById')]
 param(
   [Parameter(Mandatory=$false)]
   [string]$ApiKey = $env:ITGlueKey,
 
-  [Parameter(Mandatory=$true)]
+  [Parameter(Mandatory=$true, ParameterSetName='ById')]
   [string[]]$OrgId,
+
+  [Parameter(Mandatory=$true, ParameterSetName='ByName')]
+  [string[]]$OrgName,
 
   [Parameter(Mandatory=$true)]
   [string]$SourceLocationPrefix,
@@ -65,6 +71,13 @@ if ([string]::IsNullOrWhiteSpace($SourceLocationPrefix)) {
 
 if ([string]::IsNullOrWhiteSpace($TargetLocationName)) {
   throw 'TargetLocationName cannot be empty.'
+}
+
+if ($PSCmdlet.ParameterSetName -eq 'ByName') {
+  $OrgName = $OrgName | ForEach-Object { $_.Trim() } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+  if (-not $OrgName -or $OrgName.Count -eq 0) {
+    throw 'OrgName cannot be empty.'
+  }
 }
 
 $BaseUri = $BaseUri.TrimEnd('/')
@@ -133,6 +146,57 @@ function Get-ITGlueOrganizations {
     catch {
       Write-Warning ("Failed to retrieve organization {0}: {1}" -f $id, $_.Exception.Message)
     }
+  }
+
+  return $results | Sort-Object -Property Id -Unique
+}
+
+function Get-ITGlueOrganizationsByName {
+  param(
+    [string]$ApiKey,
+    [string]$BaseUri,
+    [string[]]$OrgNames
+  )
+
+  $headers = @{
+    'x-api-key' = $ApiKey
+    'Accept'    = 'application/vnd.api+json'
+  }
+
+  $allOrgs = @()
+  $uri = '{0}/organizations?page[size]=1000' -f $BaseUri
+  while ($true) {
+    $response = Invoke-ITGlueRequest -Uri $uri -Method 'GET' -Headers $headers
+    if ($response.data) {
+      foreach ($org in $response.data) {
+        $allOrgs += [PSCustomObject]@{
+          Id   = [string]$org.id
+          Name = [string]$org.attributes.name
+        }
+      }
+    }
+
+    if (-not $response.links -or [string]::IsNullOrWhiteSpace([string]$response.links.next)) {
+      break
+    }
+
+    $uri = [string]$response.links.next
+  }
+
+  $results = @()
+  foreach ($name in $OrgNames) {
+    $matches = $allOrgs | Where-Object { $_.Name.Equals($name, [System.StringComparison]::OrdinalIgnoreCase) }
+    if (-not $matches -or $matches.Count -eq 0) {
+      Write-Warning ("No organization found matching name '{0}'." -f $name)
+      continue
+    }
+
+    if ($matches.Count -gt 1) {
+      Write-Warning ("Multiple organizations found matching name '{0}'. Skipping to avoid ambiguity." -f $name)
+      continue
+    }
+
+    $results += $matches
   }
 
   return $results | Sort-Object -Property Id -Unique
@@ -253,7 +317,12 @@ function Get-ContactDisplayName {
   return [string]$Contact.id
 }
 
-$organizations = Get-ITGlueOrganizations -ApiKey $ApiKey -BaseUri $BaseUri -OrgIds $OrgId
+$organizations = if ($PSCmdlet.ParameterSetName -eq 'ByName') {
+  Get-ITGlueOrganizationsByName -ApiKey $ApiKey -BaseUri $BaseUri -OrgNames $OrgName
+}
+else {
+  Get-ITGlueOrganizations -ApiKey $ApiKey -BaseUri $BaseUri -OrgIds $OrgId
+}
 if (-not $organizations) {
   Write-Warning 'No organizations found to process.'
   return
