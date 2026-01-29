@@ -313,6 +313,7 @@ function Update-ITGlueContactLocation {
   $body = @{
     data = @{
       type       = 'contacts'
+      id         = [string]$ContactId
       attributes = $attributes
     }
   } | ConvertTo-Json -Depth 5
@@ -349,6 +350,8 @@ if (-not $organizations) {
 }
 
 $updates = @()
+$attemptedUpdates = 0
+$failedUpdates = 0
 
 foreach ($org in $organizations) {
   Write-Verbose "Processing organization $($org.Id) - $($org.Name)"
@@ -424,6 +427,7 @@ foreach ($org in $organizations) {
     $target = "{0} ({1})" -f $contactName, $org.Name
 
     if ($PSCmdlet.ShouldProcess($target, "Update contact location to '$($targetLocation.attributes.name)'")) {
+      $attemptedUpdates++
       try {
         Update-ITGlueContactLocation -ApiKey $ApiKey -BaseUri $BaseUri -ContactId $contact.id -LocationId $targetLocation.id -LocationName $targetLocation.attributes.name
         $updates += [PSCustomObject]@{
@@ -436,6 +440,7 @@ foreach ($org in $organizations) {
         }
       }
       catch {
+        $failedUpdates++
         Write-Warning ("Failed to update contact {0} ({1}): {2}" -f $contact.id, $contactName, $_.Exception.Message)
       }
     }
@@ -445,8 +450,21 @@ foreach ($org in $organizations) {
 if ($updates.Count -gt 0) {
   $exportPath = 'C:\itglue-contact-location-changes.csv'
   $updates | Export-Csv -Path $exportPath -NoTypeInformation
-  Write-Host ("Updated {0} contact(s). Report: {1}" -f $updates.Count, $exportPath)
+  if ($failedUpdates -gt 0) {
+    Write-Host ("Updated {0} contact(s), {1} failed. Report: {2}" -f $updates.Count, $failedUpdates, $exportPath)
+  }
+  else {
+    Write-Host ("Updated {0} contact(s). Report: {1}" -f $updates.Count, $exportPath)
+  }
 }
 else {
-  Write-Host 'No contacts required updates.'
+  if ($failedUpdates -gt 0) {
+    Write-Host ("No contacts updated. {0} update(s) failed; see warnings for details." -f $failedUpdates)
+  }
+  elseif ($attemptedUpdates -gt 0) {
+    Write-Host 'No contacts updated.'
+  }
+  else {
+    Write-Host 'No contacts required updates.'
+  }
 }
