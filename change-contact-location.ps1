@@ -111,6 +111,9 @@ function Invoke-ITGlueRequest {
   }
   catch {
     $message = $_.Exception.Message
+    if ($_.ErrorDetails -and -not [string]::IsNullOrWhiteSpace($_.ErrorDetails.Message)) {
+      $message = "{0} Response: {1}" -f $message, $_.ErrorDetails.Message
+    }
     try {
       if ($_.Exception.Response -and $_.Exception.Response.GetResponseStream) {
         $reader = New-Object System.IO.StreamReader($_.Exception.Response.GetResponseStream())
@@ -284,8 +287,7 @@ function Update-ITGlueContactLocation {
     [string]$ApiKey,
     [string]$BaseUri,
     [string]$ContactId,
-    [string]$LocationId,
-    [string]$LocationName
+    [string]$LocationId
   )
 
   $headers = @{
@@ -294,32 +296,44 @@ function Update-ITGlueContactLocation {
     'Content-Type' = 'application/vnd.api+json'
   }
 
-  $locationIdValue = $LocationId
-  try {
-    $locationIdValue = [long]$LocationId
-  }
-  catch {
-    $locationIdValue = [string]$LocationId
-  }
-
-  $attributes = @{
-    'location-id' = $locationIdValue
-  }
-
-  if (-not [string]::IsNullOrWhiteSpace($LocationName)) {
-    $attributes['location-name'] = [string]$LocationName
-  }
-
-  $body = @{
+  $relationshipsBody = @{
     data = @{
       type       = 'contacts'
       id         = [string]$ContactId
-      attributes = $attributes
+      relationships = @{
+        location = @{
+          data = @{
+            type = 'locations'
+            id   = [string]$LocationId
+          }
+        }
+      }
     }
   } | ConvertTo-Json -Depth 5
 
   $uri = '{0}/contacts/{1}' -f $BaseUri, [System.Uri]::EscapeDataString([string]$ContactId)
-  Invoke-ITGlueRequest -Uri $uri -Method 'PATCH' -Headers $headers -Body $body -ContentType 'application/vnd.api+json'
+  try {
+    Invoke-ITGlueRequest -Uri $uri -Method 'PATCH' -Headers $headers -Body $relationshipsBody -ContentType 'application/vnd.api+json'
+    return
+  }
+  catch {
+    if ($_.Exception.Message -notmatch '\(422\)|\b422\b') {
+      throw
+    }
+  }
+
+  $locationIdValue = [string]$LocationId
+  $attributesBody = @{
+    data = @{
+      type       = 'contacts'
+      id         = [string]$ContactId
+      attributes = @{
+        'location-id' = $locationIdValue
+      }
+    }
+  } | ConvertTo-Json -Depth 5
+
+  Invoke-ITGlueRequest -Uri $uri -Method 'PATCH' -Headers $headers -Body $attributesBody -ContentType 'application/vnd.api+json'
 }
 
 function Get-ContactDisplayName {
@@ -338,6 +352,31 @@ function Get-ContactDisplayName {
   return [string]$Contact.id
 }
 
+function Test-ContactIsSynced {
+  param($Contact)
+
+  if (-not $Contact -or -not $Contact.attributes) {
+    return $false
+  }
+
+  foreach ($prop in $Contact.attributes.PSObject.Properties) {
+    $name = [string]$prop.Name
+    if ($name -notmatch 'sync|psa') {
+      continue
+    }
+
+    if ($prop.Value -is [bool] -and -not $prop.Value) {
+      continue
+    }
+
+    if ($null -ne $prop.Value -and -not [string]::IsNullOrWhiteSpace([string]$prop.Value)) {
+      return $true
+    }
+  }
+
+  return $false
+}
+
 $organizations = if ($PSCmdlet.ParameterSetName -eq 'ByName') {
   Get-ITGlueOrganizationsByName -ApiKey $ApiKey -BaseUri $BaseUri -OrgNames $OrgName
 }
@@ -352,6 +391,7 @@ if (-not $organizations) {
 $updates = @()
 $attemptedUpdates = 0
 $failedUpdates = 0
+$skippedSynced = 0
 
 foreach ($org in $organizations) {
   Write-Verbose "Processing organization $($org.Id) - $($org.Name)"
@@ -425,11 +465,16 @@ foreach ($org in $organizations) {
     $fromLocationName = $locationsById[$locationId]
     $contactName = Get-ContactDisplayName -Contact $contact
     $target = "{0} ({1})" -f $contactName, $org.Name
+    if (Test-ContactIsSynced -Contact $contact) {
+      $skippedSynced++
+      Write-Verbose ("Skipping synced contact {0} ({1})." -f $contact.id, $contactName)
+      continue
+    }
 
     if ($PSCmdlet.ShouldProcess($target, "Update contact location to '$($targetLocation.attributes.name)'")) {
       $attemptedUpdates++
       try {
-        Update-ITGlueContactLocation -ApiKey $ApiKey -BaseUri $BaseUri -ContactId $contact.id -LocationId $targetLocation.id -LocationName $targetLocation.attributes.name
+        Update-ITGlueContactLocation -ApiKey $ApiKey -BaseUri $BaseUri -ContactId $contact.id -LocationId $targetLocation.id
         $updates += [PSCustomObject]@{
           OrgId        = $org.Id
           OrgName      = $org.Name
@@ -440,8 +485,14 @@ foreach ($org in $organizations) {
         }
       }
       catch {
-        $failedUpdates++
-        Write-Warning ("Failed to update contact {0} ({1}): {2}" -f $contact.id, $contactName, $_.Exception.Message)
+        if ($_.Exception.Message -match 'synced resource') {
+          $skippedSynced++
+          Write-Warning ("Skipping synced contact {0} ({1}). Update blocked by IT Glue sync rules." -f $contact.id, $contactName)
+        }
+        else {
+          $failedUpdates++
+          Write-Warning ("Failed to update contact {0} ({1}): {2}" -f $contact.id, $contactName, $_.Exception.Message)
+        }
       }
     }
   }
@@ -450,8 +501,8 @@ foreach ($org in $organizations) {
 if ($updates.Count -gt 0) {
   $exportPath = 'C:\itglue-contact-location-changes.csv'
   $updates | Export-Csv -Path $exportPath -NoTypeInformation
-  if ($failedUpdates -gt 0) {
-    Write-Host ("Updated {0} contact(s), {1} failed. Report: {2}" -f $updates.Count, $failedUpdates, $exportPath)
+  if ($failedUpdates -gt 0 -or $skippedSynced -gt 0) {
+    Write-Host ("Updated {0} contact(s), {1} failed, {2} synced skipped. Report: {3}" -f $updates.Count, $failedUpdates, $skippedSynced, $exportPath)
   }
   else {
     Write-Host ("Updated {0} contact(s). Report: {1}" -f $updates.Count, $exportPath)
@@ -459,9 +510,9 @@ if ($updates.Count -gt 0) {
 }
 else {
   if ($failedUpdates -gt 0) {
-    Write-Host ("No contacts updated. {0} update(s) failed; see warnings for details." -f $failedUpdates)
+    Write-Host ("No contacts updated. {0} update(s) failed, {1} synced skipped; see warnings for details." -f $failedUpdates, $skippedSynced)
   }
-  elseif ($attemptedUpdates -gt 0) {
+  elseif ($attemptedUpdates -gt 0 -or $skippedSynced -gt 0) {
     Write-Host 'No contacts updated.'
   }
   else {
