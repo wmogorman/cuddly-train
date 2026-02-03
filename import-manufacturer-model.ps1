@@ -1,10 +1,10 @@
 <#
 .SYNOPSIS
-  Import manufacturer/model values from CSV into IT Glue configurations by UUID (or RMM ID).
+  Import manufacturer/model values from CSV into IT Glue configurations by asset tag (or RMM).
 
 .DESCRIPTION
   Reads a CSV with columns such as DeviceUID, Manufacturer, and Device Model (or Model).
-  For each row, finds the configuration by filter[asset_tag], filter[uuid], or
+  For each row, finds the configuration by filter[asset_tag] or
   filter[rmm_id] + filter[rmm_integration_type] (controlled by -MatchMode),
   then updates manufacturer/model. Missing manufacturers/models can be created.
 
@@ -15,15 +15,32 @@
   Path to the CSV file to import.
 
 .PARAMETER MatchMode
-  How to match DeviceUID to IT Glue configuration: AssetTag, Uuid, Rmm,
-  AssetTagThenUuid, AssetTagThenRmm, UuidThenRmm, or RmmThenUuid.
+  How to match DeviceUID to IT Glue configuration: AssetTag, Rmm, or AssetTagThenRmm.
   Default: AssetTag.
 
 .PARAMETER RmmIntegrationType
   RMM integration type for filter[rmm_integration_type]. Default: aem (Datto RMM).
 
+.PARAMETER Diagnostics
+  When set, prints diagnostic lookup results for a sample of CSV rows.
+
+.PARAMETER DiagnosticsSample
+  Number of rows to sample for diagnostics. Default: 5.
+
+.PARAMETER LogUpdates
+  When set, prints a line for each configuration that would be updated.
+
+.PARAMETER ManufacturerMatchMode
+  How to resolve manufacturer names: Exact or Normalize. Normalize attempts a
+  suffix/punctuation-insensitive match against existing IT Glue manufacturers.
+  Default: Normalize.
+
+.PARAMETER ManufacturerAliasCsv
+  Optional CSV mapping manufacturer names to IT Glue manufacturer names.
+  Columns: Source, Target.
+
 .PARAMETER CreateMissingManufacturers
-  When true, create manufacturers that do not exist. Default: $true.
+  When true, create manufacturers that do not exist. Default: $false.
 
 .PARAMETER CreateMissingModels
   When true, create models that do not exist for a manufacturer. Default: $true.
@@ -55,14 +72,31 @@ param(
   [string]$CsvPath,
 
   [Parameter(Mandatory=$false)]
-  [ValidateSet('AssetTag','Uuid','Rmm','AssetTagThenUuid','AssetTagThenRmm','UuidThenRmm','RmmThenUuid')]
+  [ValidateSet('AssetTag','Rmm','AssetTagThenRmm')]
   [string]$MatchMode = 'AssetTag',
 
   [Parameter(Mandatory=$false)]
   [string]$RmmIntegrationType = 'aem',
 
   [Parameter(Mandatory=$false)]
-  [bool]$CreateMissingManufacturers = $true,
+  [switch]$Diagnostics,
+
+  [Parameter(Mandatory=$false)]
+  [ValidateRange(1,50)]
+  [int]$DiagnosticsSample = 5,
+
+  [Parameter(Mandatory=$false)]
+  [switch]$LogUpdates,
+
+  [Parameter(Mandatory=$false)]
+  [ValidateSet('Exact','Normalize')]
+  [string]$ManufacturerMatchMode = 'Normalize',
+
+  [Parameter(Mandatory=$false)]
+  [string]$ManufacturerAliasCsv,
+
+  [Parameter(Mandatory=$false)]
+  [bool]$CreateMissingManufacturers = $false,
 
   [Parameter(Mandatory=$false)]
   [bool]$CreateMissingModels = $true,
@@ -150,12 +184,66 @@ function Resolve-ColumnName {
 
   foreach ($candidate in $Candidates) {
     $match = $Headers | Where-Object { $_.Equals($candidate, [System.StringComparison]::OrdinalIgnoreCase) }
-    if ($match -and $match.Count -gt 0) {
-      return [string]$match[0]
+    if ($null -ne $match) {
+      if ($match -is [array]) {
+        return [string]$match[0]
+      }
+      return [string]$match
     }
   }
 
   return $null
+}
+
+function Write-Diag {
+  param(
+    [string]$Message
+  )
+
+  if ($Diagnostics) {
+    Write-Host ("DIAG: {0}" -f $Message)
+  }
+}
+
+function Normalize-Name {
+  param(
+    [string]$Name
+  )
+
+  if ([string]::IsNullOrWhiteSpace($Name)) {
+    return $null
+  }
+
+  $upper = $Name.ToUpperInvariant()
+  $upper = $upper -replace '[^A-Z0-9]+', ' '
+  $tokens = $upper -split '\s+' | Where-Object { $_ -ne '' }
+
+  $dropTokens = @(
+    'INC','INCORPORATED','CORPORATION','CORP','CO','COMPANY','LLC','LTD','LIMITED','PLC',
+    'TECHNOLOGIES','TECHNOLOGY','SYSTEMS','SYSTEM','GROUP','HOLDINGS'
+  )
+
+  $filtered = $tokens | Where-Object { $dropTokens -notcontains $_ }
+  if (-not $filtered -or $filtered.Count -eq 0) {
+    return $tokens -join ' '
+  }
+
+  return $filtered -join ' '
+}
+
+function Normalize-NameTight {
+  param(
+    [string]$Name
+  )
+
+  if ([string]::IsNullOrWhiteSpace($Name)) {
+    return $null
+  }
+
+  $upper = $Name.ToUpperInvariant()
+  $upper = $upper -replace '[^A-Z0-9]+', ' '
+  $tokens = $upper -split '\s+' | Where-Object { $_ -ne '' }
+  return $tokens -join ' '
 }
 
 function Get-ITGlueConfigurationByRmmId {
@@ -175,26 +263,6 @@ function Get-ITGlueConfigurationByRmmId {
   $encodedRmmId = [System.Uri]::EscapeDataString([string]$RmmId)
   $encodedType = [System.Uri]::EscapeDataString([string]$RmmIntegrationType)
   $uri = '{0}/configurations?filter[rmm_id]={1}&filter[rmm_integration_type]={2}&page[size]={3}' -f $BaseUri, $encodedRmmId, $encodedType, $PageSize
-
-  $response = Invoke-ITGlueRequest -Uri $uri -Method 'GET' -Headers $headers
-  return $response.data
-}
-
-function Get-ITGlueConfigurationByUuid {
-  param(
-    [string]$ApiKey,
-    [string]$BaseUri,
-    [string]$Uuid,
-    [int]$PageSize
-  )
-
-  $headers = @{
-    'x-api-key' = $ApiKey
-    'Accept'    = 'application/vnd.api+json'
-  }
-
-  $encodedUuid = [System.Uri]::EscapeDataString([string]$Uuid)
-  $uri = '{0}/configurations?filter[uuid]={1}&page[size]={2}' -f $BaseUri, $encodedUuid, $PageSize
 
   $response = Invoke-ITGlueRequest -Uri $uri -Method 'GET' -Headers $headers
   return $response.data
@@ -223,6 +291,35 @@ function Get-ITGlueConfigurationByAssetTag {
   $uriAlt = '{0}/configurations?filter[asset-tag]={1}&page[size]={2}' -f $BaseUri, $encodedTag, $PageSize
   $responseAlt = Invoke-ITGlueRequest -Uri $uriAlt -Method 'GET' -Headers $headers
   return $responseAlt.data
+}
+
+function Get-ITGlueManufacturersAll {
+  param(
+    [string]$ApiKey,
+    [string]$BaseUri
+  )
+
+  $headers = @{
+    'x-api-key' = $ApiKey
+    'Accept'    = 'application/vnd.api+json'
+  }
+
+  $results = @()
+  $uri = '{0}/manufacturers?page[size]=1000' -f $BaseUri
+  while ($true) {
+    $response = Invoke-ITGlueRequest -Uri $uri -Method 'GET' -Headers $headers
+    if ($response.data) {
+      $results += $response.data
+    }
+
+    if (-not $response.links -or [string]::IsNullOrWhiteSpace([string]$response.links.next)) {
+      break
+    }
+
+    $uri = [string]$response.links.next
+  }
+
+  return $results
 }
 
 function Get-ITGlueManufacturerByName {
@@ -364,6 +461,7 @@ if (-not $csvRows -or $csvRows.Count -eq 0) {
   throw 'CSV file is empty.'
 }
 
+$rawRowCount = $csvRows.Count
 $headers = $csvRows[0].PSObject.Properties.Name
 $deviceIdColumn = Resolve-ColumnName -Headers $headers -Candidates @('DeviceUID','Device UID','Device Id','DeviceID','UID')
 $manufacturerColumn = Resolve-ColumnName -Headers $headers -Candidates @('Manufacturer','Make','Vendor')
@@ -379,7 +477,89 @@ if (-not $modelColumn) {
   throw "Missing Device Model/Model column. Found columns: $($headers -join ', ')"
 }
 
+$csvRows = @($csvRows | Where-Object {
+  -not [string]::IsNullOrWhiteSpace([string]$_.${deviceIdColumn}) -or
+  -not [string]::IsNullOrWhiteSpace([string]$_.${manufacturerColumn}) -or
+  -not [string]::IsNullOrWhiteSpace([string]$_.${modelColumn})
+})
+
+if (-not $csvRows -or $csvRows.Count -eq 0) {
+  throw 'CSV rows are empty after filtering blank rows.'
+}
+
+$manufacturerAliasMap = New-Object System.Collections.Hashtable ([System.StringComparer]::OrdinalIgnoreCase)
+if ($ManufacturerAliasCsv) {
+  if (-not (Test-Path -Path $ManufacturerAliasCsv)) {
+    throw "ManufacturerAliasCsv not found: $ManufacturerAliasCsv"
+  }
+  $aliasRows = Import-Csv -Path $ManufacturerAliasCsv
+  foreach ($alias in $aliasRows) {
+    $source = [string]$alias.Source
+    $target = [string]$alias.Target
+    if ([string]::IsNullOrWhiteSpace($source) -or [string]::IsNullOrWhiteSpace($target)) {
+      continue
+    }
+    $manufacturerAliasMap[$source.Trim()] = $target.Trim()
+  }
+}
+
+if ($Diagnostics) {
+  Write-Diag ("CSV columns: {0}" -f ($headers -join ', '))
+  Write-Diag ("Detected columns - DeviceUID: {0} | Manufacturer: {1} | Model: {2}" -f $deviceIdColumn, $manufacturerColumn, $modelColumn)
+  Write-Diag ("MatchMode: {0} | RmmIntegrationType: {1} | PageSize: {2}" -f $MatchMode, $RmmIntegrationType, $PageSize)
+  Write-Diag ("CSV rows: {0} (filtered to {1})" -f $rawRowCount, $csvRows.Count)
+  Write-Diag ("ManufacturerMatchMode: {0} | ManufacturerAliasCsv: {1} ({2} mappings)" -f $ManufacturerMatchMode, ($(if ($ManufacturerAliasCsv) { $ManufacturerAliasCsv } else { '<none>' })), $manufacturerAliasMap.Count)
+
+  $sampleRows = $csvRows |
+    Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_.${deviceIdColumn}) } |
+    Select-Object -First $DiagnosticsSample
+
+  $diagHeaders = @{
+    'x-api-key' = $ApiKey
+    'Accept'    = 'application/vnd.api+json'
+  }
+  $encodedType = [System.Uri]::EscapeDataString([string]$RmmIntegrationType)
+
+  $sampleIndex = 0
+  foreach ($row in $sampleRows) {
+    $sampleIndex++
+    $deviceUid = [string]$row.$deviceIdColumn
+    $deviceUid = $deviceUid.Trim()
+    if ([string]::IsNullOrWhiteSpace($deviceUid)) {
+      continue
+    }
+
+    Write-Diag ("Sample {0} DeviceUID: {1}" -f $sampleIndex, $deviceUid)
+    $encodedUid = [System.Uri]::EscapeDataString([string]$deviceUid)
+    $diagLookups = @(
+      @{ Label = 'asset_tag'; Uri = '{0}/configurations?filter[asset_tag]={1}&page[size]={2}' -f $BaseUri, $encodedUid, $PageSize },
+      @{ Label = 'asset-tag'; Uri = '{0}/configurations?filter[asset-tag]={1}&page[size]={2}' -f $BaseUri, $encodedUid, $PageSize },
+      @{ Label = "rmm_id ($RmmIntegrationType)"; Uri = '{0}/configurations?filter[rmm_id]={1}&filter[rmm_integration_type]={2}&page[size]={3}' -f $BaseUri, $encodedUid, $encodedType, $PageSize }
+    )
+
+    foreach ($lookup in $diagLookups) {
+      Write-Diag ("Lookup {0} URL: {1}" -f $lookup.Label, $lookup.Uri)
+      try {
+        $response = Invoke-ITGlueRequest -Uri $lookup.Uri -Method 'GET' -Headers $diagHeaders
+        $count = if ($response.data) { $response.data.Count } else { 0 }
+        Write-Diag ("Lookup {0} count: {1}" -f $lookup.Label, $count)
+        if ($count -gt 0) {
+          $first = $response.data[0]
+          $attrs = $first.attributes
+          $assetTagValue = if ($attrs) { [string]$attrs.'asset-tag' } else { '' }
+          $rmmIdValue = if ($attrs -and $attrs.PSObject.Properties['rmm-id']) { [string]$attrs.'rmm-id' } else { '' }
+          Write-Diag ("Lookup {0} first: id={1} name={2} asset-tag={3} rmm-id={4}" -f $lookup.Label, $first.id, $attrs.name, $assetTagValue, $rmmIdValue)
+        }
+      }
+      catch {
+        Write-Diag ("Lookup {0} error: {1}" -f $lookup.Label, $_.Exception.Message)
+      }
+    }
+  }
+}
+
 $manufacturerCache = New-Object System.Collections.Hashtable ([System.StringComparer]::OrdinalIgnoreCase)
+$manufacturerNormalizedLookup = $null
 $modelsByManufacturer = @{}
 $configurationCache = New-Object System.Collections.Hashtable ([System.StringComparer]::OrdinalIgnoreCase)
 
@@ -430,23 +610,9 @@ foreach ($row in $csvRows) {
         $configData = Get-ITGlueConfigurationByAssetTag -ApiKey $ApiKey -BaseUri $BaseUri -AssetTag $deviceUid -PageSize $PageSize
         if ($configData -and $configData.Count -gt 0) { $matchSource = 'AssetTag' }
       }
-      'Uuid' {
-        $configData = Get-ITGlueConfigurationByUuid -ApiKey $ApiKey -BaseUri $BaseUri -Uuid $deviceUid -PageSize $PageSize
-        if ($configData -and $configData.Count -gt 0) { $matchSource = 'Uuid' }
-      }
       'Rmm' {
         $configData = Get-ITGlueConfigurationByRmmId -ApiKey $ApiKey -BaseUri $BaseUri -RmmId $deviceUid -RmmIntegrationType $RmmIntegrationType -PageSize $PageSize
         if ($configData -and $configData.Count -gt 0) { $matchSource = 'Rmm' }
-      }
-      'AssetTagThenUuid' {
-        $configData = Get-ITGlueConfigurationByAssetTag -ApiKey $ApiKey -BaseUri $BaseUri -AssetTag $deviceUid -PageSize $PageSize
-        if ($configData -and $configData.Count -gt 0) {
-          $matchSource = 'AssetTag'
-        }
-        else {
-          $configData = Get-ITGlueConfigurationByUuid -ApiKey $ApiKey -BaseUri $BaseUri -Uuid $deviceUid -PageSize $PageSize
-          if ($configData -and $configData.Count -gt 0) { $matchSource = 'Uuid' }
-        }
       }
       'AssetTagThenRmm' {
         $configData = Get-ITGlueConfigurationByAssetTag -ApiKey $ApiKey -BaseUri $BaseUri -AssetTag $deviceUid -PageSize $PageSize
@@ -456,26 +622,6 @@ foreach ($row in $csvRows) {
         else {
           $configData = Get-ITGlueConfigurationByRmmId -ApiKey $ApiKey -BaseUri $BaseUri -RmmId $deviceUid -RmmIntegrationType $RmmIntegrationType -PageSize $PageSize
           if ($configData -and $configData.Count -gt 0) { $matchSource = 'Rmm' }
-        }
-      }
-      'UuidThenRmm' {
-        $configData = Get-ITGlueConfigurationByUuid -ApiKey $ApiKey -BaseUri $BaseUri -Uuid $deviceUid -PageSize $PageSize
-        if ($configData -and $configData.Count -gt 0) {
-          $matchSource = 'Uuid'
-        }
-        else {
-          $configData = Get-ITGlueConfigurationByRmmId -ApiKey $ApiKey -BaseUri $BaseUri -RmmId $deviceUid -RmmIntegrationType $RmmIntegrationType -PageSize $PageSize
-          if ($configData -and $configData.Count -gt 0) { $matchSource = 'Rmm' }
-        }
-      }
-      'RmmThenUuid' {
-        $configData = Get-ITGlueConfigurationByRmmId -ApiKey $ApiKey -BaseUri $BaseUri -RmmId $deviceUid -RmmIntegrationType $RmmIntegrationType -PageSize $PageSize
-        if ($configData -and $configData.Count -gt 0) {
-          $matchSource = 'Rmm'
-        }
-        else {
-          $configData = Get-ITGlueConfigurationByUuid -ApiKey $ApiKey -BaseUri $BaseUri -Uuid $deviceUid -PageSize $PageSize
-          if ($configData -and $configData.Count -gt 0) { $matchSource = 'Uuid' }
         }
       }
     }
@@ -518,15 +664,79 @@ foreach ($row in $csvRows) {
   $configName = [string]$config.attributes.name
   $configId = [string]$config.id
 
+  $manufacturerLookupName = $manufacturerName
+  if ($manufacturerAliasMap.Count -gt 0 -and $manufacturerAliasMap.ContainsKey($manufacturerName)) {
+    $manufacturerLookupName = [string]$manufacturerAliasMap[$manufacturerName]
+  }
+
   $manufacturerId = $null
-  if ($manufacturerCache.ContainsKey($manufacturerName)) {
-    $manufacturerId = $manufacturerCache[$manufacturerName]
+  if ($manufacturerCache.ContainsKey($manufacturerLookupName)) {
+    $manufacturerId = $manufacturerCache[$manufacturerLookupName]
   }
   else {
-    $existingManufacturer = Get-ITGlueManufacturerByName -ApiKey $ApiKey -BaseUri $BaseUri -Name $manufacturerName
+    $existingManufacturer = Get-ITGlueManufacturerByName -ApiKey $ApiKey -BaseUri $BaseUri -Name $manufacturerLookupName
     if ($existingManufacturer -and $existingManufacturer.Count -gt 0) {
       $manufacturerId = [string]$existingManufacturer[0].id
-      $manufacturerCache[$manufacturerName] = $manufacturerId
+      $manufacturerCache[$manufacturerLookupName] = $manufacturerId
+    }
+  }
+
+  if (-not $manufacturerId -and $ManufacturerMatchMode -eq 'Normalize') {
+    if (-not $manufacturerNormalizedLookup) {
+      $manufacturerNormalizedLookup = New-Object System.Collections.Hashtable ([System.StringComparer]::OrdinalIgnoreCase)
+      $allManufacturers = Get-ITGlueManufacturersAll -ApiKey $ApiKey -BaseUri $BaseUri
+      foreach ($manu in $allManufacturers) {
+        $manuName = [string]$manu.attributes.name
+        $normalized = Normalize-Name -Name $manuName
+        if ([string]::IsNullOrWhiteSpace($normalized)) {
+          continue
+        }
+        if (-not $manufacturerNormalizedLookup.ContainsKey($normalized)) {
+          $manufacturerNormalizedLookup[$normalized] = New-Object System.Collections.Generic.List[object]
+        }
+        $manufacturerNormalizedLookup[$normalized].Add([PSCustomObject]@{
+          Id   = [string]$manu.id
+          Name = $manuName
+        })
+      }
+    }
+
+    $normalizedInput = Normalize-Name -Name $manufacturerLookupName
+    if (-not [string]::IsNullOrWhiteSpace($normalizedInput) -and $manufacturerNormalizedLookup.ContainsKey($normalizedInput)) {
+      $matches = $manufacturerNormalizedLookup[$normalizedInput]
+      if ($matches.Count -eq 1) {
+        $manufacturerId = [string]$matches[0].Id
+        $manufacturerCache[$manufacturerLookupName] = $manufacturerId
+      }
+      else {
+        $tightInput = Normalize-NameTight -Name $manufacturerLookupName
+        $tightMatches = @($matches | Where-Object { (Normalize-NameTight -Name $_.Name) -eq $tightInput })
+        if ($tightMatches.Count -eq 1) {
+          $manufacturerId = [string]$tightMatches[0].Id
+          $manufacturerCache[$manufacturerLookupName] = $manufacturerId
+        }
+        else {
+          $exactMatch = @($matches | Where-Object { $_.Name.Equals($manufacturerLookupName, [System.StringComparison]::OrdinalIgnoreCase) })
+          if ($exactMatch.Count -eq 1) {
+            $manufacturerId = [string]$exactMatch[0].Id
+            $manufacturerCache[$manufacturerLookupName] = $manufacturerId
+          }
+          else {
+            $skipped++
+            $matchNames = ($matches | ForEach-Object { $_.Name }) -join ', '
+            $report.Add([PSCustomObject]@{
+              DeviceUID         = $deviceUid
+              Manufacturer      = $manufacturerName
+              Model             = $modelName
+              ConfigurationId   = $configId
+              ConfigurationName = $configName
+              Status            = 'Skipped'
+              Message           = "Manufacturer normalization for '$manufacturerLookupName' matched multiple: $matchNames"
+            })
+            continue
+          }
+        }
+      }
     }
   }
 
@@ -569,7 +779,7 @@ foreach ($row in $csvRows) {
       ConfigurationId   = $configId
       ConfigurationName = $configName
       Status            = 'Skipped'
-      Message           = $(if ($manufacturerCreatePrevented) { 'WhatIf/Confirm prevented manufacturer creation.' } else { "Manufacturer '$manufacturerName' not found." })
+      Message           = $(if ($manufacturerCreatePrevented) { 'WhatIf/Confirm prevented manufacturer creation.' } else { "Manufacturer '$manufacturerLookupName' not found." })
     })
     continue
   }
@@ -665,6 +875,11 @@ foreach ($row in $csvRows) {
   }
 
   $target = '{0} ({1})' -f $configName, $configId
+  if ($LogUpdates) {
+    $currentManufacturerLabel = if ([string]::IsNullOrWhiteSpace($currentManufacturerId)) { '<blank>' } else { $currentManufacturerId }
+    $currentModelLabel = if ([string]::IsNullOrWhiteSpace($currentModelId)) { '<blank>' } else { $currentModelId }
+    Write-Host ("UPDATE CANDIDATE: {0} | manufacturer-id: {1} -> {2} | model-id: {3} -> {4}" -f $target, $currentManufacturerLabel, $manufacturerId, $currentModelLabel, $modelId)
+  }
   if ($PSCmdlet.ShouldProcess($target, "Update manufacturer/model")) {
     try {
       Update-ITGlueConfiguration -ApiKey $ApiKey -BaseUri $BaseUri -ItemId $configId -Attributes $attributesToUpdate
@@ -676,8 +891,8 @@ foreach ($row in $csvRows) {
         ConfigurationId   = $configId
         ConfigurationName = $configName
         Status            = 'Updated'
-      Message           = $(if ($matchSource) { "Manufacturer/model updated (matched by $matchSource)." } else { 'Manufacturer/model updated.' })
-    })
+        Message           = $(if ($matchSource) { "Manufacturer/model updated (matched by $matchSource)." } else { 'Manufacturer/model updated.' })
+      })
     }
     catch {
       $message = $_.Exception.Message
