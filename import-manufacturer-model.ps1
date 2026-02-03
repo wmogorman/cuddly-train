@@ -4,8 +4,9 @@
 
 .DESCRIPTION
   Reads a CSV with columns such as DeviceUID, Manufacturer, and Device Model (or Model).
-  For each row, finds the configuration by filter[uuid] or filter[rmm_id] + filter[rmm_integration_type]
-  (controlled by -MatchMode), then updates manufacturer/model. Missing manufacturers/models can be created.
+  For each row, finds the configuration by filter[asset_tag], filter[uuid], or
+  filter[rmm_id] + filter[rmm_integration_type] (controlled by -MatchMode),
+  then updates manufacturer/model. Missing manufacturers/models can be created.
 
 .PARAMETER ApiKey
   IT Glue API key. Defaults to $env:ITGlueKey for Datto RMM compatibility.
@@ -14,8 +15,9 @@
   Path to the CSV file to import.
 
 .PARAMETER MatchMode
-  How to match DeviceUID to IT Glue configuration: Uuid, Rmm, UuidThenRmm, or RmmThenUuid.
-  Default: Uuid.
+  How to match DeviceUID to IT Glue configuration: AssetTag, Uuid, Rmm,
+  AssetTagThenUuid, AssetTagThenRmm, UuidThenRmm, or RmmThenUuid.
+  Default: AssetTag.
 
 .PARAMETER RmmIntegrationType
   RMM integration type for filter[rmm_integration_type]. Default: aem (Datto RMM).
@@ -41,7 +43,7 @@
 
 .EXAMPLE
   PowerShell (no profile), 64-bit:
-    -Command "& { . .\import-manufacturer-model.ps1 -CsvPath C:\temp\devices.csv -MatchMode Uuid -Verbose }"
+    -Command "& { . .\import-manufacturer-model.ps1 -CsvPath C:\temp\devices.csv -MatchMode AssetTag -Verbose }"
 #>
 
 [CmdletBinding(SupportsShouldProcess=$true)]
@@ -53,8 +55,8 @@ param(
   [string]$CsvPath,
 
   [Parameter(Mandatory=$false)]
-  [ValidateSet('Uuid','Rmm','UuidThenRmm','RmmThenUuid')]
-  [string]$MatchMode = 'Uuid',
+  [ValidateSet('AssetTag','Uuid','Rmm','AssetTagThenUuid','AssetTagThenRmm','UuidThenRmm','RmmThenUuid')]
+  [string]$MatchMode = 'AssetTag',
 
   [Parameter(Mandatory=$false)]
   [string]$RmmIntegrationType = 'aem',
@@ -196,6 +198,31 @@ function Get-ITGlueConfigurationByUuid {
 
   $response = Invoke-ITGlueRequest -Uri $uri -Method 'GET' -Headers $headers
   return $response.data
+}
+
+function Get-ITGlueConfigurationByAssetTag {
+  param(
+    [string]$ApiKey,
+    [string]$BaseUri,
+    [string]$AssetTag,
+    [int]$PageSize
+  )
+
+  $headers = @{
+    'x-api-key' = $ApiKey
+    'Accept'    = 'application/vnd.api+json'
+  }
+
+  $encodedTag = [System.Uri]::EscapeDataString([string]$AssetTag)
+  $uri = '{0}/configurations?filter[asset_tag]={1}&page[size]={2}' -f $BaseUri, $encodedTag, $PageSize
+  $response = Invoke-ITGlueRequest -Uri $uri -Method 'GET' -Headers $headers
+  if ($response.data -and $response.data.Count -gt 0) {
+    return $response.data
+  }
+
+  $uriAlt = '{0}/configurations?filter[asset-tag]={1}&page[size]={2}' -f $BaseUri, $encodedTag, $PageSize
+  $responseAlt = Invoke-ITGlueRequest -Uri $uriAlt -Method 'GET' -Headers $headers
+  return $responseAlt.data
 }
 
 function Get-ITGlueManufacturerByName {
@@ -399,6 +426,10 @@ foreach ($row in $csvRows) {
   }
   else {
     switch ($MatchMode) {
+      'AssetTag' {
+        $configData = Get-ITGlueConfigurationByAssetTag -ApiKey $ApiKey -BaseUri $BaseUri -AssetTag $deviceUid -PageSize $PageSize
+        if ($configData -and $configData.Count -gt 0) { $matchSource = 'AssetTag' }
+      }
       'Uuid' {
         $configData = Get-ITGlueConfigurationByUuid -ApiKey $ApiKey -BaseUri $BaseUri -Uuid $deviceUid -PageSize $PageSize
         if ($configData -and $configData.Count -gt 0) { $matchSource = 'Uuid' }
@@ -406,6 +437,26 @@ foreach ($row in $csvRows) {
       'Rmm' {
         $configData = Get-ITGlueConfigurationByRmmId -ApiKey $ApiKey -BaseUri $BaseUri -RmmId $deviceUid -RmmIntegrationType $RmmIntegrationType -PageSize $PageSize
         if ($configData -and $configData.Count -gt 0) { $matchSource = 'Rmm' }
+      }
+      'AssetTagThenUuid' {
+        $configData = Get-ITGlueConfigurationByAssetTag -ApiKey $ApiKey -BaseUri $BaseUri -AssetTag $deviceUid -PageSize $PageSize
+        if ($configData -and $configData.Count -gt 0) {
+          $matchSource = 'AssetTag'
+        }
+        else {
+          $configData = Get-ITGlueConfigurationByUuid -ApiKey $ApiKey -BaseUri $BaseUri -Uuid $deviceUid -PageSize $PageSize
+          if ($configData -and $configData.Count -gt 0) { $matchSource = 'Uuid' }
+        }
+      }
+      'AssetTagThenRmm' {
+        $configData = Get-ITGlueConfigurationByAssetTag -ApiKey $ApiKey -BaseUri $BaseUri -AssetTag $deviceUid -PageSize $PageSize
+        if ($configData -and $configData.Count -gt 0) {
+          $matchSource = 'AssetTag'
+        }
+        else {
+          $configData = Get-ITGlueConfigurationByRmmId -ApiKey $ApiKey -BaseUri $BaseUri -RmmId $deviceUid -RmmIntegrationType $RmmIntegrationType -PageSize $PageSize
+          if ($configData -and $configData.Count -gt 0) { $matchSource = 'Rmm' }
+        }
       }
       'UuidThenRmm' {
         $configData = Get-ITGlueConfigurationByUuid -ApiKey $ApiKey -BaseUri $BaseUri -Uuid $deviceUid -PageSize $PageSize
