@@ -1,7 +1,8 @@
-[CmdletBinding()]
+[CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'Medium')]
 param(
     [string]$LogPath = 'C:\ProgramData\AV_Removal.log',
-    [string[]]$TargetPatterns = @('AVG', 'Bitdefender')
+    [string[]]$TargetPatterns = @('AVG', 'Bitdefender'),
+    [switch]$DryRun
 )
 
 Set-StrictMode -Version Latest
@@ -9,6 +10,44 @@ $ErrorActionPreference = 'Stop'
 
 $script:SuccessExitCodes = @(0, 1641, 3010)
 $script:RebootRequired = $false
+$script:VendorSilentSwitchProfiles = @(
+    [pscustomobject]@{
+        Name                    = 'AVG Consumer'
+        DisplayNamePattern      = '(?i)^AVG (AntiVirus|Internet Security|Ultimate|Free|Driver Updater|Secure VPN|BreachGuard|TuneUp)'
+        PreferredSilentSwitch   = '/silent'
+        PreferredNoRestartSwitch = '/norestart'
+    },
+    [pscustomobject]@{
+        Name                    = 'AVG Business'
+        DisplayNamePattern      = '(?i)^AVG (Business|File Server|Email Server|CloudCare|Managed Workplace)'
+        PreferredSilentSwitch   = '/silent'
+        PreferredNoRestartSwitch = '/norestart'
+    },
+    [pscustomobject]@{
+        Name                    = 'Bitdefender Consumer'
+        DisplayNamePattern      = '(?i)^Bitdefender (Antivirus Plus|Internet Security|Total Security|Family Pack|Premium Security|VPN)'
+        PreferredSilentSwitch   = '/silent'
+        PreferredNoRestartSwitch = '/norestart'
+    },
+    [pscustomobject]@{
+        Name                    = 'Bitdefender Endpoint'
+        DisplayNamePattern      = '(?i)^Bitdefender (Endpoint Security Tools|Agent|GravityZone|BEST)'
+        PreferredSilentSwitch   = '/quiet'
+        PreferredNoRestartSwitch = '/norestart'
+    },
+    [pscustomobject]@{
+        Name                    = 'AVG Generic'
+        DisplayNamePattern      = '(?i)\bAVG\b'
+        PreferredSilentSwitch   = '/silent'
+        PreferredNoRestartSwitch = '/norestart'
+    },
+    [pscustomobject]@{
+        Name                    = 'Bitdefender Generic'
+        DisplayNamePattern      = '(?i)\bBitdefender\b'
+        PreferredSilentSwitch   = '/quiet'
+        PreferredNoRestartSwitch = '/norestart'
+    }
+)
 
 function Write-Log {
     param(
@@ -23,6 +62,10 @@ function Write-Log {
         New-Item -Path $logDirectory -ItemType Directory -Force | Out-Null
     }
 
+    if ($WhatIfPreference -and -not $DryRun) {
+        return
+    }
+
     Add-Content -Path $LogPath -Value "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') [$Level] $Message"
 }
 
@@ -30,6 +73,55 @@ function Test-IsAdministrator {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
     $principal = [Security.Principal.WindowsPrincipal]::new($identity)
     return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
+function Get-OptionalPropertyValue {
+    param(
+        [Parameter(Mandatory = $true)]
+        [psobject]$InputObject,
+        [Parameter(Mandatory = $true)]
+        [string]$Name
+    )
+
+    $property = $InputObject.PSObject.Properties[$Name]
+    if ($null -ne $property) {
+        return [string]$property.Value
+    }
+
+    return $null
+}
+
+function Get-VendorSilentSwitchProfile {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$DisplayName
+    )
+
+    foreach ($profile in $script:VendorSilentSwitchProfiles) {
+        if ($DisplayName -match $profile.DisplayNamePattern) {
+            return $profile
+        }
+    }
+
+    return $null
+}
+
+function Test-AnyArgumentPresent {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Arguments,
+        [Parameter(Mandatory = $true)]
+        [string[]]$Candidates
+    )
+
+    foreach ($candidate in $Candidates) {
+        $escaped = [regex]::Escape($candidate)
+        if ($Arguments -match "(?i)(^|\s)$escaped(\s|$)") {
+            return $true
+        }
+    }
+
+    return $false
 }
 
 function Get-LegacyAVUninstallEntries {
@@ -44,11 +136,19 @@ function Get-LegacyAVUninstallEntries {
     )
 
     Get-ItemProperty -Path $registryPaths -ErrorAction SilentlyContinue |
-        Where-Object { -not [string]::IsNullOrWhiteSpace($_.DisplayName) } |
-        Sort-Object DisplayName, UninstallString -Unique |
         Where-Object {
+            $displayName = Get-OptionalPropertyValue -InputObject $_ -Name 'DisplayName'
+            return -not [string]::IsNullOrWhiteSpace($displayName)
+        } |
+        Sort-Object -Property @{
+            Expression = { Get-OptionalPropertyValue -InputObject $_ -Name 'DisplayName' }
+        }, @{
+            Expression = { Get-OptionalPropertyValue -InputObject $_ -Name 'UninstallString' }
+        } -Unique |
+        Where-Object {
+            $displayName = Get-OptionalPropertyValue -InputObject $_ -Name 'DisplayName'
             foreach ($pattern in $Patterns) {
-                if ($_.DisplayName -match $pattern) {
+                if ($displayName -match $pattern) {
                     return $true
                 }
             }
@@ -95,6 +195,8 @@ function ConvertTo-ProcessInvocation {
 function Add-SilentUninstallArguments {
     param(
         [Parameter(Mandatory = $true)]
+        [string]$DisplayName,
+        [Parameter(Mandatory = $true)]
         [string]$FilePath,
         [Parameter(Mandatory = $true)]
         [string]$Arguments
@@ -123,22 +225,37 @@ function Add-SilentUninstallArguments {
         return $updated.Trim()
     }
 
-    if ($updated -notmatch '(?i)(^|\s)(/quiet|/qn|/s|/silent|/verysilent|--quiet|--silent)(\s|$)') {
-        $updated = "$updated /quiet"
+    $profile = Get-VendorSilentSwitchProfile -DisplayName $DisplayName
+    if ($null -ne $profile) {
+        Write-Log -Message "Using silent-switch profile [$($profile.Name)] for [$DisplayName]"
     }
-    if ($updated -notmatch '(?i)(^|\s)(/norestart|/nr)(\s|$)') {
-        $updated = "$updated /norestart"
+
+    $preferredSilentSwitch = if ($null -ne $profile) { $profile.PreferredSilentSwitch } else { '/quiet' }
+    $preferredNoRestartSwitch = if ($null -ne $profile) { $profile.PreferredNoRestartSwitch } else { '/norestart' }
+
+    $acceptedSilentSwitches = @('/quiet', '/qn', '/s', '/silent', '/verysilent', '--quiet', '--silent')
+    if ($acceptedSilentSwitches -notcontains $preferredSilentSwitch) {
+        $acceptedSilentSwitches += $preferredSilentSwitch
+    }
+
+    if (-not (Test-AnyArgumentPresent -Arguments $updated -Candidates $acceptedSilentSwitches)) {
+        $updated = "$updated $preferredSilentSwitch"
+    }
+    if (-not (Test-AnyArgumentPresent -Arguments $updated -Candidates @('/norestart', '/nr'))) {
+        $updated = "$updated $preferredNoRestartSwitch"
     }
 
     return $updated.Trim()
 }
 
 function Invoke-LegacyAVUninstall {
+    [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'Medium')]
     param(
         [Parameter(Mandatory = $true)]
         [string]$DisplayName,
         [Parameter(Mandatory = $true)]
-        [string]$CommandLine
+        [string]$CommandLine,
+        [switch]$DryRun
     )
 
     $invocation = ConvertTo-ProcessInvocation -CommandLine $CommandLine
@@ -147,9 +264,19 @@ function Invoke-LegacyAVUninstall {
         return $false
     }
 
-    $arguments = Add-SilentUninstallArguments -FilePath $invocation.FilePath -Arguments ([string]$invocation.Arguments)
+    $arguments = Add-SilentUninstallArguments -DisplayName $DisplayName -FilePath $invocation.FilePath -Arguments ([string]$invocation.Arguments)
     $displayCommand = if ([string]::IsNullOrWhiteSpace($arguments)) { $invocation.FilePath } else { "$($invocation.FilePath) $arguments" }
-    Write-Log -Message "Executing uninstall for [$DisplayName]: $displayCommand"
+    Write-Log -Message "Prepared uninstall command for [$DisplayName]: $displayCommand"
+
+    if ($DryRun) {
+        Write-Log -Message "DryRun enabled; would uninstall [$DisplayName] with: $displayCommand"
+        return $true
+    }
+
+    if (-not $PSCmdlet.ShouldProcess($DisplayName, "Run uninstall command: $displayCommand")) {
+        Write-Log -Message "WhatIf: would uninstall [$DisplayName] with: $displayCommand"
+        return $true
+    }
 
     try {
         $process = Start-Process -FilePath $invocation.FilePath -ArgumentList $arguments -Wait -PassThru -WindowStyle Hidden -ErrorAction Stop
@@ -177,12 +304,23 @@ function Invoke-LegacyAVUninstall {
 }
 
 if (-not (Test-IsAdministrator)) {
-    Write-Log -Message 'Script must run elevated (administrator). Exiting.' -Level ERROR
-    throw 'Administrator privileges are required.'
+    if ($DryRun -or $WhatIfPreference) {
+        Write-Log -Message 'Not running elevated, but continuing because DryRun/WhatIf mode is active.' -Level WARN
+    }
+    else {
+        Write-Log -Message 'Script must run elevated (administrator). Exiting.' -Level ERROR
+        throw 'Administrator privileges are required.'
+    }
 }
 
 Write-Log -Message '=== Starting Legacy AV Removal ==='
 Write-Log -Message "Target patterns: $($TargetPatterns -join ', ')"
+if ($DryRun) {
+    Write-Log -Message 'DryRun mode active. No uninstall commands will be executed.' -Level WARN
+}
+elseif ($WhatIfPreference) {
+    Write-Log -Message 'WhatIf mode active. No uninstall commands will be executed.' -Level WARN
+}
 
 $apps = Get-LegacyAVUninstallEntries -Patterns $TargetPatterns
 
@@ -195,22 +333,30 @@ if (-not $apps) {
 $failedCount = 0
 
 foreach ($app in $apps) {
-    Write-Log -Message "Detected uninstall candidate: $($app.DisplayName)"
+    $displayName = Get-OptionalPropertyValue -InputObject $app -Name 'DisplayName'
+    if ([string]::IsNullOrWhiteSpace($displayName)) {
+        $displayName = '<Unknown Product>'
+    }
 
-    $commandLine = if (-not [string]::IsNullOrWhiteSpace($app.QuietUninstallString)) {
-        [string]$app.QuietUninstallString
+    Write-Log -Message "Detected uninstall candidate: $displayName"
+
+    $quietUninstall = Get-OptionalPropertyValue -InputObject $app -Name 'QuietUninstallString'
+    $regularUninstall = Get-OptionalPropertyValue -InputObject $app -Name 'UninstallString'
+
+    $commandLine = if (-not [string]::IsNullOrWhiteSpace($quietUninstall)) {
+        $quietUninstall
     }
     else {
-        [string]$app.UninstallString
+        $regularUninstall
     }
 
     if ([string]::IsNullOrWhiteSpace($commandLine)) {
-        Write-Log -Message "No uninstall command found for [$($app.DisplayName)]. Skipping." -Level WARN
+        Write-Log -Message "No uninstall command found for [$displayName]. Skipping." -Level WARN
         $failedCount++
         continue
     }
 
-    $success = Invoke-LegacyAVUninstall -DisplayName $app.DisplayName -CommandLine $commandLine
+    $success = Invoke-LegacyAVUninstall -DisplayName $displayName -CommandLine $commandLine -DryRun:$DryRun -WhatIf:$WhatIfPreference
     if (-not $success) {
         $failedCount++
     }
