@@ -13,7 +13,8 @@
 param(
   [string]$LogPath = 'C:\ProgramData\BD_Removal.log',
   [switch]$IncludeLegacyVBDADrivers,   # also handle bxvbda/evbda
-  [switch]$DryRun
+  [switch]$DryRun,
+  [switch]$FixPermissions
 )
 
 Set-StrictMode -Version Latest
@@ -43,6 +44,254 @@ function Test-IsAdministrator {
   $id = [Security.Principal.WindowsIdentity]::GetCurrent()
   $p  = [Security.Principal.WindowsPrincipal]::new($id)
   return $p.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
+function Enable-Privilege {
+  param(
+    [Parameter(Mandatory)]
+    [string]$Privilege
+  )
+
+  if (-not ("NativeMethods" -as [type])) {
+    $definition = @'
+using System;
+using System.Runtime.InteropServices;
+public static class NativeMethods {
+  [DllImport("advapi32.dll", ExactSpelling=true, SetLastError=true)]
+  public static extern bool OpenProcessToken(IntPtr ProcessHandle, uint DesiredAccess, out IntPtr TokenHandle);
+  [DllImport("advapi32.dll", SetLastError=true)]
+  public static extern bool LookupPrivilegeValue(string lpSystemName, string lpName, out LUID lpLuid);
+  [DllImport("advapi32.dll", ExactSpelling=true, SetLastError=true)]
+  public static extern bool AdjustTokenPrivileges(IntPtr TokenHandle, bool DisableAllPrivileges, ref TOKEN_PRIVILEGES NewState, uint BufferLength, IntPtr PreviousState, IntPtr ReturnLength);
+  public const uint TOKEN_ADJUST_PRIVILEGES = 0x20;
+  public const uint TOKEN_QUERY = 0x8;
+  public const uint SE_PRIVILEGE_ENABLED = 0x2;
+  [StructLayout(LayoutKind.Sequential)]
+  public struct LUID { public uint LowPart; public int HighPart; }
+  [StructLayout(LayoutKind.Sequential)]
+  public struct TOKEN_PRIVILEGES { public uint PrivilegeCount; public LUID Luid; public uint Attributes; }
+}
+'@
+    Add-Type -TypeDefinition $definition -ErrorAction Stop
+  }
+
+  $token = [IntPtr]::Zero
+  $desired = [NativeMethods]::TOKEN_ADJUST_PRIVILEGES -bor [NativeMethods]::TOKEN_QUERY
+  if (-not [NativeMethods]::OpenProcessToken([System.Diagnostics.Process]::GetCurrentProcess().Handle, $desired, [ref]$token)) {
+    return $false
+  }
+
+  $luid = New-Object NativeMethods+LUID
+  if (-not [NativeMethods]::LookupPrivilegeValue($null, $Privilege, [ref]$luid)) {
+    return $false
+  }
+
+  $tp = New-Object NativeMethods+TOKEN_PRIVILEGES
+  $tp.PrivilegeCount = 1
+  $tp.Luid = $luid
+  $tp.Attributes = [NativeMethods]::SE_PRIVILEGE_ENABLED
+  return [NativeMethods]::AdjustTokenPrivileges($token, $false, [ref]$tp, 0, [IntPtr]::Zero, [IntPtr]::Zero)
+}
+
+function Convert-ToRegistryProviderPath {
+  param(
+    [Parameter(Mandatory)]
+    [string]$RegistryPath
+  )
+
+  if ($RegistryPath -match '^(?i)HKLM\\') {
+    return "HKLM:\$($RegistryPath.Substring(5))"
+  }
+
+  if ($RegistryPath -match '^(?i)HKCU\\') {
+    return "HKCU:\$($RegistryPath.Substring(5))"
+  }
+
+  return $RegistryPath
+}
+
+function Invoke-RegCommand {
+  param(
+    [Parameter(Mandatory)]
+    [string[]]$Arguments
+  )
+
+  $stdout = [IO.Path]::GetTempFileName()
+  $stderr = [IO.Path]::GetTempFileName()
+
+  try {
+    $process = Start-Process -FilePath 'reg.exe' -ArgumentList $Arguments -Wait -PassThru -NoNewWindow `
+      -RedirectStandardOutput $stdout -RedirectStandardError $stderr -ErrorAction Stop
+
+    $output = @()
+    if (Test-Path -LiteralPath $stdout) {
+      $output += Get-Content -LiteralPath $stdout -Raw
+    }
+    if (Test-Path -LiteralPath $stderr) {
+      $output += Get-Content -LiteralPath $stderr -Raw
+    }
+
+    $text = ($output | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }) -join "`n"
+
+    [pscustomobject]@{
+      ExitCode = $process.ExitCode
+      Output   = $text.Trim()
+    }
+  }
+  finally {
+    if (Test-Path -LiteralPath $stdout) { Remove-Item -LiteralPath $stdout -Force -ErrorAction SilentlyContinue }
+    if (Test-Path -LiteralPath $stderr) { Remove-Item -LiteralPath $stderr -Force -ErrorAction SilentlyContinue }
+  }
+}
+
+function Test-RegAccessDenied {
+  param(
+    [Parameter(Mandatory)]
+    [pscustomobject]$Result
+  )
+
+  if ($Result.ExitCode -eq 5) {
+    return $true
+  }
+
+  if (-not [string]::IsNullOrWhiteSpace($Result.Output) -and $Result.Output -match '(?i)access is denied') {
+    return $true
+  }
+
+  return $false
+}
+
+function Grant-RegistryKeyFullControl {
+  param(
+    [Parameter(Mandatory)]
+    [string]$RegistryPath
+  )
+
+  Enable-Privilege -Privilege 'SeTakeOwnershipPrivilege' | Out-Null
+  Enable-Privilege -Privilege 'SeRestorePrivilege' | Out-Null
+
+  $providerPath = Convert-ToRegistryProviderPath -RegistryPath $RegistryPath
+  $adminSid = New-Object Security.Principal.SecurityIdentifier('S-1-5-32-544')
+  $acl = Get-Acl -Path $providerPath -ErrorAction Stop
+  $acl.SetOwner($adminSid)
+  $rule = New-Object Security.AccessControl.RegistryAccessRule($adminSid, 'FullControl', 'ContainerInherit', 'None', 'Allow')
+  $acl.SetAccessRule($rule)
+  Set-Acl -Path $providerPath -AclObject $acl -ErrorAction Stop
+}
+
+function Try-RepairRegistryPermissions {
+  param(
+    [Parameter(Mandatory)]
+    [string]$RegistryPath,
+    [Parameter(Mandatory)]
+    [string]$Reason
+  )
+
+  if (-not $FixPermissions) {
+    return $false
+  }
+
+  if ($DryRun -or $WhatIfPreference) {
+    Write-Log -Message "DryRun/WhatIf enabled; would repair registry permissions for: $RegistryPath ($Reason)" -Level WARN
+    return $false
+  }
+
+  if (-not $PSCmdlet.ShouldProcess($RegistryPath, "Repair registry permissions ($Reason)")) {
+    Write-Log -Message "WhatIf: would repair registry permissions for: $RegistryPath ($Reason)"
+    return $false
+  }
+
+  try {
+    Grant-RegistryKeyFullControl -RegistryPath $RegistryPath
+    Write-Log -Message "Repaired registry permissions for: $RegistryPath ($Reason)"
+    return $true
+  }
+  catch {
+    Write-Log -Message "Failed to repair registry permissions for [$RegistryPath]: $($_.Exception.Message)" -Level WARN
+    return $false
+  }
+}
+
+function Grant-FileFullControl {
+  param(
+    [Parameter(Mandatory)]
+    [string]$Path
+  )
+
+  Enable-Privilege -Privilege 'SeTakeOwnershipPrivilege' | Out-Null
+  Enable-Privilege -Privilege 'SeRestorePrivilege' | Out-Null
+
+  $adminSid = New-Object Security.Principal.SecurityIdentifier('S-1-5-32-544')
+  $acl = Get-Acl -Path $Path -ErrorAction Stop
+  $acl.SetOwner($adminSid)
+  $rule = New-Object Security.AccessControl.FileSystemAccessRule($adminSid, 'FullControl', 'Allow')
+  $acl.SetAccessRule($rule)
+  Set-Acl -Path $Path -AclObject $acl -ErrorAction Stop
+}
+
+function Take-OwnershipAndGrantAdminFileFullControl {
+  param(
+    [Parameter(Mandatory)]
+    [string]$Path
+  )
+
+  $takeown = & takeown.exe /F $Path /A /D Y 2>&1
+  $takeownExit = $LASTEXITCODE
+  $icacls = & icacls.exe $Path /grant "*S-1-5-32-544:(F)" /C 2>&1
+  $icaclsExit = $LASTEXITCODE
+
+  if ($takeownExit -ne 0) {
+    Write-Log -Message "takeown.exe failed for [$Path] (exit code $takeownExit)." -Level WARN
+  }
+  if ($icaclsExit -ne 0) {
+    Write-Log -Message "icacls.exe failed for [$Path] (exit code $icaclsExit)." -Level WARN
+  }
+
+  return ($takeownExit -eq 0 -and $icaclsExit -eq 0)
+}
+
+function Try-RepairFilePermissions {
+  param(
+    [Parameter(Mandatory)]
+    [string]$Path,
+    [Parameter(Mandatory)]
+    [string]$Reason
+  )
+
+  if (-not $FixPermissions) {
+    return $false
+  }
+
+  if ($DryRun -or $WhatIfPreference) {
+    Write-Log -Message "DryRun/WhatIf enabled; would repair file permissions for: $Path ($Reason)" -Level WARN
+    return $false
+  }
+
+  if (-not $PSCmdlet.ShouldProcess($Path, "Repair file permissions ($Reason)")) {
+    Write-Log -Message "WhatIf: would repair file permissions for: $Path ($Reason)"
+    return $false
+  }
+
+  try {
+    Grant-FileFullControl -Path $Path
+    Write-Log -Message "Repaired file permissions for: $Path ($Reason)"
+    return $true
+  }
+  catch {
+    Write-Log -Message "Failed to repair file permissions via Set-Acl for [$Path]: $($_.Exception.Message)" -Level WARN
+  }
+
+  try {
+    if (Take-OwnershipAndGrantAdminFileFullControl -Path $Path) {
+      Write-Log -Message "Repaired file permissions via takeown/icacls for: $Path ($Reason)"
+      return $true
+    }
+  }
+  catch {
+    Write-Log -Message "Failed to repair file permissions via takeown/icacls for [$Path]: $($_.Exception.Message)" -Level WARN
+  }
+
+  return $false
 }
 
 if (-not (Test-IsAdministrator)) {
@@ -114,6 +363,9 @@ if ($DryRun) {
 elseif ($WhatIfPreference) {
   Write-Log -Message 'WhatIf mode active. No cleanup actions will be executed.' -Level WARN
 }
+if ($FixPermissions) {
+  Write-Log -Message 'FixPermissions mode active. The script will attempt to take ownership and grant Administrators full control when access is denied.' -Level WARN
+}
 
 # 1) Export and delete service registry keys
 $backupDir = Join-Path $env:TEMP "BD_ServiceKeyBackup_$timestamp"
@@ -123,8 +375,14 @@ foreach ($svc in $svcNames) {
   $regFile = Join-Path $backupDir "$svc.reg"
 
   # Export if present
-  $exists = & reg.exe query $regPath 2>$null
-  if ($LASTEXITCODE -eq 0) {
+  $query = Invoke-RegCommand -Arguments @('query', $regPath)
+  if (Test-RegAccessDenied -Result $query) {
+    if (Try-RepairRegistryPermissions -RegistryPath $regPath -Reason 'query access denied') {
+      $query = Invoke-RegCommand -Arguments @('query', $regPath)
+    }
+  }
+
+  if ($query.ExitCode -eq 0) {
     if ($DryRun) {
       Write-Log -Message "DryRun enabled; would export registry key: $regPath -> $regFile"
     }
@@ -133,9 +391,16 @@ foreach ($svc in $svcNames) {
         New-Item -ItemType Directory -Path $backupDir -Force | Out-Null
       }
 
-      & reg.exe export $regPath $regFile /y | Out-Null
-      if ($LASTEXITCODE -ne 0) {
-        Write-Log -Message "Failed to export registry key: $regPath (exit code $LASTEXITCODE)." -Level ERROR
+      $export = Invoke-RegCommand -Arguments @('export', $regPath, $regFile, '/y')
+      if (Test-RegAccessDenied -Result $export) {
+        if (Try-RepairRegistryPermissions -RegistryPath $regPath -Reason 'export access denied') {
+          $export = Invoke-RegCommand -Arguments @('export', $regPath, $regFile, '/y')
+        }
+      }
+
+      if ($export.ExitCode -ne 0) {
+        $detail = if ([string]::IsNullOrWhiteSpace($export.Output)) { '' } else { " Output: $($export.Output)" }
+        Write-Log -Message "Failed to export registry key: $regPath (exit code $($export.ExitCode)).$detail" -Level ERROR
         $script:FailureCount++
       }
     }
@@ -147,9 +412,16 @@ foreach ($svc in $svcNames) {
       Write-Log -Message "DryRun enabled; would delete registry key: $regPath"
     }
     elseif ($PSCmdlet.ShouldProcess($regPath, "Delete registry key")) {
-      & reg.exe delete $regPath /f | Out-Null
-      if ($LASTEXITCODE -ne 0) {
-        Write-Log -Message "Failed to delete registry key: $regPath (exit code $LASTEXITCODE)." -Level ERROR
+      $delete = Invoke-RegCommand -Arguments @('delete', $regPath, '/f')
+      if (Test-RegAccessDenied -Result $delete) {
+        if (Try-RepairRegistryPermissions -RegistryPath $regPath -Reason 'delete access denied') {
+          $delete = Invoke-RegCommand -Arguments @('delete', $regPath, '/f')
+        }
+      }
+
+      if ($delete.ExitCode -ne 0) {
+        $detail = if ([string]::IsNullOrWhiteSpace($delete.Output)) { '' } else { " Output: $($delete.Output)" }
+        Write-Log -Message "Failed to delete registry key: $regPath (exit code $($delete.ExitCode)).$detail" -Level ERROR
         $script:FailureCount++
       }
       else {
@@ -160,8 +432,13 @@ foreach ($svc in $svcNames) {
       Write-Log -Message "WhatIf: would delete registry key: $regPath"
     }
   }
-  else {
+  elseif ($query.ExitCode -eq 2 -or ($query.Output -match '(?i)unable to find|not found')) {
     Write-Log -Message "Not found (ok): $regPath"
+  }
+  else {
+    $detail = if ([string]::IsNullOrWhiteSpace($query.Output)) { '' } else { " Output: $($query.Output)" }
+    Write-Log -Message "Failed to query registry key: $regPath (exit code $($query.ExitCode)).$detail" -Level WARN
+    $script:FailureCount++
   }
 }
 
@@ -210,6 +487,18 @@ foreach ($file in $driverFiles) {
     }
   }
   catch {
+    $isAccessDenied = $_.Exception -is [System.UnauthorizedAccessException] -or $_.Exception.Message -match '(?i)access is denied'
+    if ($isAccessDenied -and (Try-RepairFilePermissions -Path $full -Reason 'rename access denied')) {
+      try {
+        Rename-Item -Path $full -NewName ([IO.Path]::GetFileName($new)) -Force
+        Write-Log -Message "Renamed after permission repair: $full -> $new"
+        continue
+      }
+      catch {
+        Write-Log -Message "Rename still failed after permission repair: $full" -Level WARN
+      }
+    }
+
     Write-Log -Message "Rename failed (likely in use): $full" -Level WARN
     Write-Log -Message "Queueing rename on reboot instead..."
 
