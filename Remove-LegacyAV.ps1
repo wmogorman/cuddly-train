@@ -15,13 +15,13 @@ $script:VendorSilentSwitchProfiles = @(
         Name                    = 'AVG Consumer'
         DisplayNamePattern      = '(?i)^AVG (AntiVirus|Internet Security|Ultimate|Free|Driver Updater|Secure VPN|BreachGuard|TuneUp)'
         PreferredSilentSwitch   = '/silent'
-        PreferredNoRestartSwitch = '/norestart'
+        PreferredNoRestartSwitch = $null
     },
     [pscustomobject]@{
         Name                    = 'AVG Business'
         DisplayNamePattern      = '(?i)^AVG (Business|File Server|Email Server|CloudCare|Managed Workplace)'
         PreferredSilentSwitch   = '/silent'
-        PreferredNoRestartSwitch = '/norestart'
+        PreferredNoRestartSwitch = $null
     },
     [pscustomobject]@{
         Name                    = 'Bitdefender Consumer'
@@ -39,7 +39,7 @@ $script:VendorSilentSwitchProfiles = @(
         Name                    = 'AVG Generic'
         DisplayNamePattern      = '(?i)\bAVG\b'
         PreferredSilentSwitch   = '/silent'
-        PreferredNoRestartSwitch = '/norestart'
+        PreferredNoRestartSwitch = $null
     },
     [pscustomobject]@{
         Name                    = 'Bitdefender Generic'
@@ -89,6 +89,123 @@ function Get-OptionalPropertyValue {
     }
 
     return $null
+}
+
+function Get-MsiProductCodeFromUninstallEntry {
+    param(
+        [Parameter(Mandatory = $true)]
+        [psobject]$InputObject
+    )
+
+    $guidPattern = '(?i)\{[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}\}'
+
+    $windowsInstaller = Get-OptionalPropertyValue -InputObject $InputObject -Name 'WindowsInstaller'
+    $psChildName = Get-OptionalPropertyValue -InputObject $InputObject -Name 'PSChildName'
+    if ($windowsInstaller -eq '1' -and $psChildName -match "^$guidPattern$") {
+        return $Matches[0]
+    }
+
+    $quietUninstall = Get-OptionalPropertyValue -InputObject $InputObject -Name 'QuietUninstallString'
+    if (-not [string]::IsNullOrWhiteSpace($quietUninstall) -and $quietUninstall -match $guidPattern) {
+        return $Matches[0]
+    }
+
+    $regularUninstall = Get-OptionalPropertyValue -InputObject $InputObject -Name 'UninstallString'
+    if (-not [string]::IsNullOrWhiteSpace($regularUninstall) -and $regularUninstall -match $guidPattern) {
+        return $Matches[0]
+    }
+
+    return $null
+}
+
+function Invoke-AvgPreUninstallCleanup {
+    $attempted = $false
+
+    $avgServices = Get-Service -Name 'AVG*' -ErrorAction SilentlyContinue
+    foreach ($service in $avgServices) {
+        if ($service.Status -eq [System.ServiceProcess.ServiceControllerStatus]::Running) {
+            try {
+                Stop-Service -Name $service.Name -Force -ErrorAction Stop
+                Write-Log -Message "Stopped AVG service [$($service.Name)] before retry."
+                $attempted = $true
+            }
+            catch {
+                Write-Log -Message "Could not stop AVG service [$($service.Name)]: $($_.Exception.Message)" -Level WARN
+            }
+        }
+    }
+
+    $avgProcesses = Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.ProcessName -match '^(?i)avg' }
+    foreach ($process in $avgProcesses) {
+        try {
+            Stop-Process -Id $process.Id -Force -ErrorAction Stop
+            Write-Log -Message "Stopped AVG process [$($process.ProcessName)] (PID $($process.Id)) before retry."
+            $attempted = $true
+        }
+        catch {
+            Write-Log -Message "Could not stop AVG process [$($process.ProcessName)] (PID $($process.Id)): $($_.Exception.Message)" -Level WARN
+        }
+    }
+
+    return $attempted
+}
+
+function Enable-AvgSilentUninstallInStatsIni {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$UninstallerPath
+    )
+
+    try {
+        $setupDirectory = Split-Path -Path $UninstallerPath -Parent
+        if ([string]::IsNullOrWhiteSpace($setupDirectory) -or -not (Test-Path -LiteralPath $setupDirectory)) {
+            return $false
+        }
+
+        $statsIniPath = Join-Path -Path $setupDirectory -ChildPath 'Stats.ini'
+        if (-not (Test-Path -LiteralPath $statsIniPath)) {
+            return $false
+        }
+
+        $content = [System.IO.File]::ReadAllText($statsIniPath)
+        if ($content -match '(?im)^\s*SilentUninstallEnabled\s*=\s*1\s*$') {
+            Write-Log -Message "AVG silent uninstall flag already enabled in [$statsIniPath]."
+            return $true
+        }
+
+        [System.IO.File]::AppendAllText($statsIniPath, "`r`n[Common]`r`nSilentUninstallEnabled=1`r`n", [System.Text.Encoding]::ASCII)
+        Write-Log -Message "Enabled AVG silent uninstall flag in [$statsIniPath]."
+        return $true
+    }
+    catch {
+        Write-Log -Message "Failed to adjust AVG Stats.ini for silent uninstall: $($_.Exception.Message)" -Level WARN
+        return $false
+    }
+}
+
+function Start-HiddenProcessAndWait {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$FilePath,
+        [Parameter(Mandatory = $true)]
+        [string]$ArgumentList
+    )
+
+    $parameters = @{
+        FilePath    = $FilePath
+        ArgumentList = $ArgumentList
+        Wait        = $true
+        PassThru    = $true
+        WindowStyle = 'Hidden'
+        ErrorAction = 'Stop'
+    }
+
+    $workingDirectory = Split-Path -Path $FilePath -Parent
+    if (-not [string]::IsNullOrWhiteSpace($workingDirectory) -and (Test-Path -LiteralPath $workingDirectory)) {
+        $parameters['WorkingDirectory'] = $workingDirectory
+    }
+
+    return Start-Process @parameters
 }
 
 function Get-VendorSilentSwitchProfile {
@@ -204,6 +321,8 @@ function Add-SilentUninstallArguments {
 
     $updated = $Arguments.Trim()
     $isMsiExec = $FilePath -match '^(?i)msiexec(?:\.exe)?$'
+    $fileName = [System.IO.Path]::GetFileName($FilePath)
+    $isAvgInstup = ($DisplayName -match '(?i)\bAVG\b') -and ($fileName -match '^(?i)instup\.exe$')
 
     if ($isMsiExec) {
         $updated = [regex]::Replace($updated, '(?i)(^|\s)/I(?=\s*[{])', '$1/X')
@@ -238,10 +357,22 @@ function Add-SilentUninstallArguments {
         $acceptedSilentSwitches += $preferredSilentSwitch
     }
 
+    if ($isAvgInstup -and $updated -match '(?i)(^|\s)/control_panel(\s|$)') {
+        $updated = [regex]::Replace($updated, '(?i)(^|\s)/control_panel(\s|$)', ' ')
+        $updated = [regex]::Replace($updated, '\s+', ' ').Trim()
+        Write-Log -Message "Removed AVG Instup control-panel switch for [$DisplayName] in silent mode."
+    }
+
+    if ($isAvgInstup -and $updated -notmatch '(?i)(^|\s)(/instop:uninstall|/uninstall)(\s|$)') {
+        $updated = "$updated /instop:uninstall"
+        Write-Log -Message "Added AVG Instup uninstall action switch for [$DisplayName]."
+    }
+
     if (-not (Test-AnyArgumentPresent -Arguments $updated -Candidates $acceptedSilentSwitches)) {
         $updated = "$updated $preferredSilentSwitch"
     }
-    if (-not (Test-AnyArgumentPresent -Arguments $updated -Candidates @('/norestart', '/nr'))) {
+
+    if ($null -ne $preferredNoRestartSwitch -and -not [string]::IsNullOrWhiteSpace($preferredNoRestartSwitch) -and -not (Test-AnyArgumentPresent -Arguments $updated -Candidates @('/norestart', '/nr'))) {
         $updated = "$updated $preferredNoRestartSwitch"
     }
 
@@ -255,6 +386,7 @@ function Invoke-LegacyAVUninstall {
         [string]$DisplayName,
         [Parameter(Mandatory = $true)]
         [string]$CommandLine,
+        [string]$FallbackMsiProductCode,
         [switch]$DryRun
     )
 
@@ -279,7 +411,7 @@ function Invoke-LegacyAVUninstall {
     }
 
     try {
-        $process = Start-Process -FilePath $invocation.FilePath -ArgumentList $arguments -Wait -PassThru -WindowStyle Hidden -ErrorAction Stop
+        $process = Start-HiddenProcessAndWait -FilePath $invocation.FilePath -ArgumentList $arguments
         $exitCode = $process.ExitCode
 
         if ($script:SuccessExitCodes -contains $exitCode) {
@@ -295,6 +427,95 @@ function Invoke-LegacyAVUninstall {
         }
 
         Write-Log -Message "[$DisplayName] uninstall failed with exit code $exitCode." -Level ERROR
+
+        if ($exitCode -eq 5 -and $DisplayName -match '(?i)\bAVG\b') {
+            $statsUpdated = Enable-AvgSilentUninstallInStatsIni -UninstallerPath $invocation.FilePath
+            if ($statsUpdated) {
+                Write-Log -Message "[$DisplayName] retrying primary command after enabling SilentUninstall in Stats.ini." -Level WARN
+                try {
+                    $statsRetry = Start-HiddenProcessAndWait -FilePath $invocation.FilePath -ArgumentList $arguments
+                    $statsRetryExitCode = $statsRetry.ExitCode
+
+                    if ($script:SuccessExitCodes -contains $statsRetryExitCode) {
+                        if ($statsRetryExitCode -in @(1641, 3010)) {
+                            $script:RebootRequired = $true
+                            Write-Log -Message "[$DisplayName] removed after Stats.ini retry. Reboot required (exit code $statsRetryExitCode)." -Level WARN
+                        }
+                        else {
+                            Write-Log -Message "[$DisplayName] removed successfully after Stats.ini retry (exit code $statsRetryExitCode)."
+                        }
+
+                        return $true
+                    }
+
+                    Write-Log -Message "[$DisplayName] Stats.ini retry failed with exit code $statsRetryExitCode." -Level WARN
+                }
+                catch {
+                    Write-Log -Message "[$DisplayName] Stats.ini retry failed to start: $($_.Exception.Message)" -Level WARN
+                }
+            }
+
+            $cleanupAttempted = Invoke-AvgPreUninstallCleanup
+            if ($cleanupAttempted) {
+                Write-Log -Message "[$DisplayName] retrying primary command after AVG service/process cleanup." -Level WARN
+                try {
+                    $retry = Start-HiddenProcessAndWait -FilePath $invocation.FilePath -ArgumentList $arguments
+                    $retryExitCode = $retry.ExitCode
+
+                    if ($script:SuccessExitCodes -contains $retryExitCode) {
+                        if ($retryExitCode -in @(1641, 3010)) {
+                            $script:RebootRequired = $true
+                            Write-Log -Message "[$DisplayName] removed after cleanup retry. Reboot required (exit code $retryExitCode)." -Level WARN
+                        }
+                        else {
+                            Write-Log -Message "[$DisplayName] removed successfully after cleanup retry (exit code $retryExitCode)."
+                        }
+
+                        return $true
+                    }
+
+                    Write-Log -Message "[$DisplayName] cleanup retry failed with exit code $retryExitCode." -Level WARN
+                }
+                catch {
+                    Write-Log -Message "[$DisplayName] cleanup retry failed to start: $($_.Exception.Message)" -Level WARN
+                }
+            }
+
+            if (-not [string]::IsNullOrWhiteSpace($FallbackMsiProductCode)) {
+                $fallbackArgs = "/x $FallbackMsiProductCode /qn /norestart REBOOT=ReallySuppress"
+                Write-Log -Message "[$DisplayName] returned exit code 5. Retrying with MSI product code fallback: msiexec.exe $fallbackArgs" -Level WARN
+
+                try {
+                    $fallback = Start-HiddenProcessAndWait -FilePath 'msiexec.exe' -ArgumentList $fallbackArgs
+                    $fallbackExitCode = $fallback.ExitCode
+
+                    if ($script:SuccessExitCodes -contains $fallbackExitCode) {
+                        if ($fallbackExitCode -in @(1641, 3010)) {
+                            $script:RebootRequired = $true
+                            Write-Log -Message "[$DisplayName] removed by MSI fallback. Reboot required (exit code $fallbackExitCode)." -Level WARN
+                        }
+                        else {
+                            Write-Log -Message "[$DisplayName] removed successfully by MSI fallback (exit code $fallbackExitCode)."
+                        }
+
+                        return $true
+                    }
+
+                    Write-Log -Message "[$DisplayName] MSI fallback failed with exit code $fallbackExitCode." -Level ERROR
+                }
+                catch {
+                    Write-Log -Message "[$DisplayName] MSI fallback failed to start: $($_.Exception.Message)" -Level ERROR
+                }
+            }
+            else {
+                Write-Log -Message "[$DisplayName] no MSI product code was found, so MSI fallback was skipped." -Level WARN
+            }
+        }
+
+        if ($exitCode -eq 5 -and $DisplayName -match '(?i)\bAVG\b') {
+            Write-Log -Message "[$DisplayName] exit code 5 usually indicates tamper/self-protection or uninstall policy restrictions." -Level WARN
+        }
+
         return $false
     }
     catch {
@@ -342,6 +563,10 @@ foreach ($app in $apps) {
 
     $quietUninstall = Get-OptionalPropertyValue -InputObject $app -Name 'QuietUninstallString'
     $regularUninstall = Get-OptionalPropertyValue -InputObject $app -Name 'UninstallString'
+    $fallbackMsiProductCode = Get-MsiProductCodeFromUninstallEntry -InputObject $app
+    if (-not [string]::IsNullOrWhiteSpace($fallbackMsiProductCode)) {
+        Write-Log -Message "MSI fallback product code discovered for [$displayName]: $fallbackMsiProductCode"
+    }
 
     $commandLine = if (-not [string]::IsNullOrWhiteSpace($quietUninstall)) {
         $quietUninstall
@@ -356,7 +581,7 @@ foreach ($app in $apps) {
         continue
     }
 
-    $success = Invoke-LegacyAVUninstall -DisplayName $displayName -CommandLine $commandLine -DryRun:$DryRun -WhatIf:$WhatIfPreference
+    $success = Invoke-LegacyAVUninstall -DisplayName $displayName -CommandLine $commandLine -FallbackMsiProductCode $fallbackMsiProductCode -DryRun:$DryRun -WhatIf:$WhatIfPreference
     if (-not $success) {
         $failedCount++
     }
