@@ -276,6 +276,17 @@ while ($true) {
     goto ContinueLoop
   }
 
+  if (-not [string]::IsNullOrWhiteSpace($cloud.onPremisesImmutableId)) {
+    Write-Warn "Cloud user already has onPremisesImmutableId set."
+    $confirm = Read-Host "Type OVERWRITE to replace it, or press Enter to skip"
+    if ($confirm -ne "OVERWRITE") {
+      $msg = "Skipped: onPremisesImmutableId already set (no overwrite confirmation)."
+      Write-Warn $msg
+      Add-ResultRow -Outcome "SKIPPED" -Details $msg -AdDisplayName $adDisplay -AdSam $adSam -AdUPN $adUpn -CloudUPN $cloudUpn -CloudId $cloudId -AnchorBase64 $anchor
+      goto ContinueLoop
+    }
+  }
+
   try {
     Update-MgUser -UserId $cloudUpn -OnPremisesImmutableId $anchor -ErrorAction Stop
     Start-Sleep -Milliseconds 300
