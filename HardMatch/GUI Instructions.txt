@@ -1,0 +1,5 @@
+1. Open Windows PowerShell (x64) or PowerShell 7 as Administrator
+2. Set-ExecutionPolicy Bypass -Scope Process -Force
+3. .\HardMatch-OptionC.ps1
+4. Sign in when prompted (Connect-MgGraph delegated auth) [learn.microsoft.com]
+5. Pick the AD user, then search & pick the 365 user via GUI (or console fallback), and the script will hard-match by setting onPremisesImmutableId with Update-MgUser (requires User.ReadWrite.All)
