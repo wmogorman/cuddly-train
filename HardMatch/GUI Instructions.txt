@@ -1,4 +1,4 @@
-1. Open Windows PowerShell (x64) or PowerShell 7 as Administrator
+1. Open Windows PowerShell (x64, preferred). PowerShell 7 is OK only if WindowsCompatibility is installed to provide Add-WindowsCapability.
 2. Set-ExecutionPolicy Bypass -Scope Process -Force
 3. .\HardMatch-OptionC.ps1
 4. Sign in when prompted (Connect-MgGraph delegated auth) [learn.microsoft.com]

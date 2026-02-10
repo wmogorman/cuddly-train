@@ -76,6 +76,22 @@ function Ensure-ActiveDirectoryModule {
   catch {
     Write-Warn "ActiveDirectory module missing. Attempting RSAT AD install…"
     try {
+      if (-not (Get-Command Add-WindowsCapability -ErrorAction SilentlyContinue)) {
+        Write-Warn "Add-WindowsCapability not found. Attempting WindowsCompatibility fallback…"
+        try {
+          if (-not (Get-Module -ListAvailable -Name WindowsCompatibility)) {
+            Write-Warn "WindowsCompatibility module not found. Installing (CurrentUser)…"
+            Install-Module WindowsCompatibility -Scope CurrentUser -Force -AllowClobber
+          }
+          Import-Module WindowsCompatibility -ErrorAction Stop
+          Import-WinModule DISM -ErrorAction Stop
+        } catch {
+          Write-Warn "WindowsCompatibility fallback failed: $($_.Exception.Message)"
+        }
+      }
+      if (-not (Get-Command Add-WindowsCapability -ErrorAction SilentlyContinue)) {
+        throw "Add-WindowsCapability is unavailable. Run in Windows PowerShell 5.1 or install WindowsCompatibility."
+      }
       Add-WindowsCapability -Online -Name Rsat.ActiveDirectory.DS-LDS.Tools~~~~0.0.1.0 | Out-Null
       Import-Module ActiveDirectory -ErrorAction Stop
       Write-Ok "ActiveDirectory module installed."
