@@ -204,6 +204,7 @@ if ($graphContext.TenantId -ne $tenantId) {
 
 $graphResourceAppId = "00000003-0000-0000-c000-000000000000"
 $integrationPrimaryDomain = Get-PrimaryDomainForIntegrationGroup -Config $config
+$integrationGroupLegacyNames = @("DMX Integration Group", "DMX_Integration_Group")
 Write-Step "Using integration group primary domain filter: $integrationPrimaryDomain"
 $dynamicMembershipRule = "(user.userPrincipalName -contains '@$integrationPrimaryDomain') and (user.department -ne `"NotSupport`") and (user.accountEnabled -eq true) and (user.assignedPlans -any (assignedPlan.servicePlanId -ne `"`" -and assignedPlan.capabilityStatus -eq `"Enabled`"))"
 Write-Step "Integration group mode: $integrationGroupMode"
@@ -212,13 +213,73 @@ function Ensure-Group {
   param(
     [string] $DisplayName,
     [ValidateSet("Assigned","Dynamic")] [string] $Type,
-    [switch] $AllowAssignedFallbackIfDynamicUnavailable
+    [switch] $AllowAssignedFallbackIfDynamicUnavailable,
+    [string[]] $LegacyDisplayNames = @(),
+    [switch] $RenameLegacyDisplayNameToCurrent,
+    [switch] $PreserveExistingDynamicMembershipRule,
+    [switch] $PrintDynamicMembershipRule
   )
 
   $controlName = "Group/$DisplayName"
-  $groups = @(Get-MgGroup -Filter "displayName eq '$($DisplayName.Replace("'","''"))'" -ConsistencyLevel eventual -CountVariable ignore -All `
-    -Property "id,displayName,groupTypes,membershipRule,membershipRuleProcessingState,securityEnabled,mailEnabled")
-  $existing = Get-SingleOrThrow -Items $groups -Description "group named $DisplayName"
+  $searchDisplayNames = @($DisplayName + @($LegacyDisplayNames) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Sort-Object -Unique)
+  $allMatches = @()
+  foreach ($name in $searchDisplayNames) {
+    $allMatches += @(Get-MgGroup -Filter "displayName eq '$($name.Replace("'","''"))'" -ConsistencyLevel eventual -CountVariable ignore -All `
+      -Property "id,displayName,groupTypes,membershipRule,membershipRuleProcessingState,securityEnabled,mailEnabled")
+  }
+
+  $byId = @{}
+  foreach ($group in $allMatches) {
+    if (-not $byId.ContainsKey($group.Id)) {
+      $byId[$group.Id] = $group
+    }
+  }
+  $matchedGroups = @($byId.Values)
+
+  $preferredMatches = @($matchedGroups | Where-Object { $_.DisplayName -eq $DisplayName })
+  if ($preferredMatches.Count -gt 1) {
+    $ids = ($preferredMatches | ForEach-Object { $_.Id }) -join ", "
+    Add-AuditControl -ControlName $controlName -MissingItems @("DuplicateTargetGroups") -Action "Error" -Notes "Multiple groups already named '$DisplayName'. IDs: $ids"
+    throw "Multiple groups named '$DisplayName' found. Resolve duplicates first. IDs: $ids"
+  }
+
+  $existing = $null
+  if ($preferredMatches.Count -eq 1) {
+    $existing = $preferredMatches[0]
+    $legacyCollisions = @($matchedGroups | Where-Object { $_.Id -ne $existing.Id })
+    if ($legacyCollisions.Count -gt 0) {
+      $legacyNames = ($legacyCollisions | Select-Object -ExpandProperty DisplayName -Unique) -join ", "
+      Write-Warning "Found additional legacy-named integration groups while '$DisplayName' already exists. Leaving extras unchanged: $legacyNames"
+      Add-AuditControl -ControlName "GroupAlias/$DisplayName" -MissingItems @("AdditionalLegacyNamedGroups") -Action "Warning" -Notes "Additional legacy-named groups found and not renamed: $legacyNames"
+    }
+  } elseif ($matchedGroups.Count -eq 1) {
+    $existing = $matchedGroups[0]
+  } elseif ($matchedGroups.Count -gt 1) {
+    $ids = ($matchedGroups | ForEach-Object { "$($_.DisplayName) [$($_.Id)]" }) -join "; "
+    Add-AuditControl -ControlName $controlName -MissingItems @("AmbiguousLegacyGroups") -Action "Error" -Notes "Multiple legacy candidates found: $ids"
+    throw "Multiple matching legacy groups found for '$DisplayName'. Resolve manually: $ids"
+  }
+
+  if ($existing -and $existing.DisplayName -ne $DisplayName -and $RenameLegacyDisplayNameToCurrent) {
+    $legacyName = $existing.DisplayName
+    Write-Step "Renaming legacy group '$legacyName' to '$DisplayName'"
+    if ($script:PSCmdlet.ShouldProcess("$legacyName [$($existing.Id)]", "Rename group to '$DisplayName'")) {
+      Update-MgGroup -GroupId $existing.Id -DisplayName $DisplayName | Out-Null
+      $existing = Get-MgGroup -GroupId $existing.Id -Property "id,displayName,groupTypes,membershipRule,membershipRuleProcessingState,securityEnabled,mailEnabled"
+      Add-AuditControl -ControlName "GroupRename/$DisplayName" -MissingItems @("LegacyName:$legacyName") -Action "Updated" -Notes "Legacy group renamed to standardized name."
+    } else {
+      Add-AuditControl -ControlName "GroupRename/$DisplayName" -MissingItems @("LegacyName:$legacyName") -Action "PlannedUpdate" -Notes "Legacy group rename planned only."
+    }
+  }
+
+  if ($existing -and $PrintDynamicMembershipRule) {
+    if ($existing.GroupTypes -contains "DynamicMembership") {
+      $ruleText = if ([string]::IsNullOrWhiteSpace($existing.MembershipRule)) { "<empty>" } else { $existing.MembershipRule }
+      Write-Step "Dynamic membership rule for '$($existing.DisplayName)' [$($existing.Id)]: $ruleText"
+    } else {
+      Write-Step "Group '$($existing.DisplayName)' [$($existing.Id)] is not dynamic; membership rule is not applicable."
+    }
+  }
 
   if (-not $existing) {
     Write-Step "Creating $Type group: $DisplayName"
@@ -304,14 +365,18 @@ function Ensure-Group {
     }
 
     if ($missingSettings.Count -gt 0) {
-      Write-Step "Updating dynamic membership settings for $DisplayName"
-      if ($script:PSCmdlet.ShouldProcess($DisplayName, "Update dynamic group membership settings")) {
-        Update-MgGroup -GroupId $existing.Id @patch | Out-Null
-        $updated = Get-MgGroup -GroupId $existing.Id -Property "id,displayName,groupTypes,membershipRule,membershipRuleProcessingState"
-        Add-AuditControl -ControlName $controlName -MissingItems $missingSettings -Action "Updated" -Notes "Dynamic group settings remediated."
-        return $updated
+      if ($PreserveExistingDynamicMembershipRule) {
+        Add-AuditControl -ControlName $controlName -MissingItems $missingSettings -Action "PreservedExistingRule" -Notes "Existing dynamic membership settings were not modified by policy."
+      } else {
+        Write-Step "Updating dynamic membership settings for $DisplayName"
+        if ($script:PSCmdlet.ShouldProcess($DisplayName, "Update dynamic group membership settings")) {
+          Update-MgGroup -GroupId $existing.Id @patch | Out-Null
+          $updated = Get-MgGroup -GroupId $existing.Id -Property "id,displayName,groupTypes,membershipRule,membershipRuleProcessingState"
+          Add-AuditControl -ControlName $controlName -MissingItems $missingSettings -Action "Updated" -Notes "Dynamic group settings remediated."
+          return $updated
+        }
+        Add-AuditControl -ControlName $controlName -MissingItems $missingSettings -Action "PlannedUpdate" -Notes "Dynamic group settings remediation planned only."
       }
-      Add-AuditControl -ControlName $controlName -MissingItems $missingSettings -Action "PlannedUpdate" -Notes "Dynamic group settings remediation planned only."
     } else {
       Add-AuditControl -ControlName $controlName -MissingItems @() -Action "None" -Notes "Dynamic group already compliant."
     }
@@ -747,15 +812,33 @@ function Invoke-OptionalBicepDeployment {
 Write-Step "Ensuring ActaMSP groups"
 switch ($integrationGroupMode) {
   "Assigned" {
-    $integrationGroup = Ensure-Group -DisplayName $config.IntegrationGroupName -Type Assigned
+    $integrationGroup = Ensure-Group `
+      -DisplayName $config.IntegrationGroupName `
+      -Type Assigned `
+      -LegacyDisplayNames $integrationGroupLegacyNames `
+      -RenameLegacyDisplayNameToCurrent `
+      -PrintDynamicMembershipRule
     break
   }
   "Dynamic" {
-    $integrationGroup = Ensure-Group -DisplayName $config.IntegrationGroupName -Type Dynamic
+    $integrationGroup = Ensure-Group `
+      -DisplayName $config.IntegrationGroupName `
+      -Type Dynamic `
+      -LegacyDisplayNames $integrationGroupLegacyNames `
+      -RenameLegacyDisplayNameToCurrent `
+      -PreserveExistingDynamicMembershipRule `
+      -PrintDynamicMembershipRule
     break
   }
   default {
-    $integrationGroup = Ensure-Group -DisplayName $config.IntegrationGroupName -Type Dynamic -AllowAssignedFallbackIfDynamicUnavailable
+    $integrationGroup = Ensure-Group `
+      -DisplayName $config.IntegrationGroupName `
+      -Type Dynamic `
+      -AllowAssignedFallbackIfDynamicUnavailable `
+      -LegacyDisplayNames $integrationGroupLegacyNames `
+      -RenameLegacyDisplayNameToCurrent `
+      -PreserveExistingDynamicMembershipRule `
+      -PrintDynamicMembershipRule
     break
   }
 }
