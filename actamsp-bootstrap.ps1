@@ -99,6 +99,63 @@ function Get-ConfigValue {
   return $value
 }
 
+function Get-PrimaryDomainForIntegrationGroup {
+  param([object] $Config)
+
+  $configuredDomain = $Config.IntegrationGroupPrimaryDomain
+  if (-not [string]::IsNullOrWhiteSpace($configuredDomain)) {
+    return $configuredDomain.Trim()
+  }
+
+  $domains = @(Get-MgDomain -All -Property "id,isDefault,isVerified")
+  $defaultVerified = @($domains | Where-Object { $_.IsDefault -eq $true -and $_.IsVerified -eq $true } | Select-Object -First 1)
+  if ($defaultVerified.Count -gt 0) {
+    return $defaultVerified[0].Id
+  }
+
+  $firstVerified = @($domains | Where-Object { $_.IsVerified -eq $true } | Select-Object -First 1)
+  if ($firstVerified.Count -gt 0) {
+    return $firstVerified[0].Id
+  }
+
+  throw "Could not resolve a verified primary domain for integration group rule. Set IntegrationGroupPrimaryDomain in config."
+}
+
+function Get-ExceptionMessageText {
+  param([object] $ErrorObject)
+
+  $exception = if ($ErrorObject -is [System.Management.Automation.ErrorRecord]) {
+    $ErrorObject.Exception
+  } elseif ($ErrorObject -is [System.Exception]) {
+    $ErrorObject
+  } else {
+    return [string]$ErrorObject
+  }
+
+  $messages = [System.Collections.Generic.List[string]]::new()
+  while ($exception) {
+    if (-not [string]::IsNullOrWhiteSpace($exception.Message)) {
+      $messages.Add($exception.Message) | Out-Null
+    }
+    $exception = $exception.InnerException
+  }
+
+  return ($messages -join " | ")
+}
+
+function Test-IsDynamicGroupLicenseConstraintError {
+  param([object] $ErrorObject)
+
+  $message = Get-ExceptionMessageText -ErrorObject $ErrorObject
+  if ([string]::IsNullOrWhiteSpace($message)) {
+    return $false
+  }
+
+  $hasDynamicSignal = $message -match "(?i)(dynamic|membershiprule|membership rule)"
+  $hasLicenseSignal = $message -match "(?i)(premium|p1|license|licensing|sku|subscription)"
+  return ($hasDynamicSignal -and $hasLicenseSignal)
+}
+
 if (-not (Test-Path -Path $ConfigPath -PathType Leaf)) {
   throw "Config file not found: $ConfigPath"
 }
@@ -115,9 +172,24 @@ foreach ($key in $requiredConfigKeys) {
   [void](Get-ConfigValue -Config $config -Name $key)
 }
 
+$integrationGroupModeRaw = [string]$config.IntegrationGroupMode
+if ([string]::IsNullOrWhiteSpace($integrationGroupModeRaw)) {
+  $integrationGroupModeRaw = "Auto"
+}
+
+switch -Regex ($integrationGroupModeRaw.Trim().ToLowerInvariant()) {
+  "^auto$"     { $integrationGroupMode = "Auto"; break }
+  "^dynamic$"  { $integrationGroupMode = "Dynamic"; break }
+  "^assigned$" { $integrationGroupMode = "Assigned"; break }
+  default {
+    throw "Invalid IntegrationGroupMode '$integrationGroupModeRaw'. Valid values: Auto, Dynamic, Assigned."
+  }
+}
+
 $requiredGraphConnectionScopes = @(
   "Application.ReadWrite.All",
   "Directory.ReadWrite.All",
+  "Domain.Read.All",
   "Group.ReadWrite.All"
 )
 
@@ -131,12 +203,16 @@ if ($graphContext.TenantId -ne $tenantId) {
 }
 
 $graphResourceAppId = "00000003-0000-0000-c000-000000000000"
-$dynamicMembershipRule = '(user.accountEnabled -eq true) and (user.assignedLicenses -any (assignedLicense.skuId -ne Guid("00000000-0000-0000-0000-000000000000")))'
+$integrationPrimaryDomain = Get-PrimaryDomainForIntegrationGroup -Config $config
+Write-Step "Using integration group primary domain filter: $integrationPrimaryDomain"
+$dynamicMembershipRule = "(user.userPrincipalName -contains '@$integrationPrimaryDomain') and (user.department -ne `"NotSupport`") and (user.accountEnabled -eq true) and (user.assignedPlans -any (assignedPlan.servicePlanId -ne `"`" -and assignedPlan.capabilityStatus -eq `"Enabled`"))"
+Write-Step "Integration group mode: $integrationGroupMode"
 
 function Ensure-Group {
   param(
     [string] $DisplayName,
-    [ValidateSet("Assigned","Dynamic")] [string] $Type
+    [ValidateSet("Assigned","Dynamic")] [string] $Type,
+    [switch] $AllowAssignedFallbackIfDynamicUnavailable
   )
 
   $controlName = "Group/$DisplayName"
@@ -162,17 +238,39 @@ function Ensure-Group {
     }
 
     if ($script:PSCmdlet.ShouldProcess($DisplayName, "Create dynamic security group")) {
-      $created = New-MgGroup `
-        -DisplayName $DisplayName `
-        -MailEnabled:$false `
-        -SecurityEnabled:$true `
-        -MailNickname ([Guid]::NewGuid().ToString("N")) `
-        -GroupTypes @("DynamicMembership") `
-        -MembershipRule $dynamicMembershipRule `
-        -MembershipRuleProcessingState "On"
-      Add-AuditControl -ControlName $controlName -MissingItems @("GroupNotFound") -Action "Created" -Notes "Dynamic group created."
-      return $created
+      try {
+        $created = New-MgGroup `
+          -DisplayName $DisplayName `
+          -MailEnabled:$false `
+          -SecurityEnabled:$true `
+          -MailNickname ([Guid]::NewGuid().ToString("N")) `
+          -GroupTypes @("DynamicMembership") `
+          -MembershipRule $dynamicMembershipRule `
+          -MembershipRuleProcessingState "On"
+        Add-AuditControl -ControlName $controlName -MissingItems @("GroupNotFound") -Action "Created" -Notes "Dynamic group created."
+        return $created
+      } catch {
+        if ($AllowAssignedFallbackIfDynamicUnavailable -and (Test-IsDynamicGroupLicenseConstraintError -ErrorObject $_)) {
+          $errorText = Get-ExceptionMessageText -ErrorObject $_
+          Write-Warning "Dynamic group is unavailable for '$DisplayName' (likely no Entra ID P1). Falling back to assigned group. Error: $errorText"
+          $fallback = New-MgGroup -DisplayName $DisplayName -MailEnabled:$false -SecurityEnabled:$true -MailNickname ([Guid]::NewGuid().ToString("N"))
+          Add-AuditControl -ControlName $controlName -MissingItems @("DynamicMembershipUnavailable") -Action "CreatedFallbackAssigned" -Notes "Dynamic group unavailable due to licensing/capability. Assigned fallback created."
+          return $fallback
+        }
+        throw
+      }
     }
+
+    if ($AllowAssignedFallbackIfDynamicUnavailable) {
+      Add-AuditControl -ControlName $controlName -MissingItems @("GroupNotFound","DynamicMembershipUnavailable") -Action "PlannedCreateFallbackAssigned" -Notes "Assigned fallback creation planned only."
+      return New-PlaceholderObject -Data @{
+        Id = $null
+        DisplayName = $DisplayName
+        GroupTypes = @()
+        IsPlanned = $true
+      }
+    }
+
     Add-AuditControl -ControlName $controlName -MissingItems @("GroupNotFound") -Action "PlannedCreate" -Notes "Dynamic group creation planned only."
     return New-PlaceholderObject -Data @{
       Id = $null
@@ -186,6 +284,10 @@ function Ensure-Group {
 
   if ($Type -eq "Dynamic") {
     if (-not ($existing.GroupTypes -contains "DynamicMembership")) {
+      if ($AllowAssignedFallbackIfDynamicUnavailable) {
+        Add-AuditControl -ControlName $controlName -MissingItems @("DynamicMembershipUnavailable") -Action "FallbackAssignedInUse" -Notes "Assigned group in use because dynamic groups are unavailable for this tenant."
+        return $existing
+      }
       Add-AuditControl -ControlName $controlName -MissingItems @("ExpectedDynamicMembership") -Action "Error" -Notes "Group exists but is assigned/static."
       throw "Group '$DisplayName' exists but is not dynamic. Convert/remove it before running bootstrap."
     }
@@ -525,6 +627,44 @@ function Ensure-DelegatedAdminConsent {
   return $mergedScopeString
 }
 
+function Ensure-AppBaseline {
+  param(
+    [string] $DisplayName,
+    [object] $GraphSp,
+    [string[]] $RequiredApplicationPerms,
+    [string[]] $RequiredDelegatedPerms
+  )
+
+  Write-Step "Ensuring app registration and service principal: $DisplayName"
+  $app = Ensure-Application -DisplayName $DisplayName
+  $sp = Ensure-ServicePrincipalForApp -AppId $app.AppId
+
+  Set-ApplicationRequiredResourceAccess `
+    -App $app `
+    -GraphSp $GraphSp `
+    -RequiredApplicationPerms $RequiredApplicationPerms `
+    -RequiredDelegatedPerms $RequiredDelegatedPerms
+
+  Ensure-ApplicationAdminConsent `
+    -AppServicePrincipal $sp `
+    -GraphSp $GraphSp `
+    -RequiredApplicationPerms $RequiredApplicationPerms
+
+  $delegatedScopeString = Ensure-DelegatedAdminConsent `
+    -AppServicePrincipal $sp `
+    -GraphSp $GraphSp `
+    -RequiredDelegatedPerms $RequiredDelegatedPerms
+
+  return [pscustomobject]@{
+    DisplayName = $DisplayName
+    App = $app
+    ServicePrincipal = $sp
+    DelegatedScopeString = $delegatedScopeString
+    RequiredApplicationPerms = @($RequiredApplicationPerms | Sort-Object -Unique)
+    RequiredDelegatedPerms = @($RequiredDelegatedPerms | Sort-Object -Unique)
+  }
+}
+
 function New-BicepParametersFromState {
   param(
     [string] $OutputPath,
@@ -605,12 +745,21 @@ function Invoke-OptionalBicepDeployment {
 }
 
 Write-Step "Ensuring ActaMSP groups"
-$integrationGroup = Ensure-Group -DisplayName $config.IntegrationGroupName -Type Dynamic
+switch ($integrationGroupMode) {
+  "Assigned" {
+    $integrationGroup = Ensure-Group -DisplayName $config.IntegrationGroupName -Type Assigned
+    break
+  }
+  "Dynamic" {
+    $integrationGroup = Ensure-Group -DisplayName $config.IntegrationGroupName -Type Dynamic
+    break
+  }
+  default {
+    $integrationGroup = Ensure-Group -DisplayName $config.IntegrationGroupName -Type Dynamic -AllowAssignedFallbackIfDynamicUnavailable
+    break
+  }
+}
 $pilotGroup = Ensure-Group -DisplayName $config.PilotGroupName -Type Assigned
-
-Write-Step "Ensuring app registration and service principal"
-$app = Ensure-Application -DisplayName $config.AppDisplayName
-$sp = Ensure-ServicePrincipalForApp -AppId $app.AppId
 
 Write-Step "Resolving Microsoft Graph service principal"
 $graphSp = Get-SingleOrThrow -Items @(Get-MgServicePrincipal -Filter "appId eq '$graphResourceAppId'" -All -Property "id,appRoles,oauth2PermissionScopes,displayName") -Description "Microsoft Graph service principal"
@@ -620,7 +769,7 @@ if (-not $graphSp) {
 }
 Add-AuditControl -ControlName "ServicePrincipal/MicrosoftGraphResource" -MissingItems @() -Action "None" -Notes "Microsoft Graph resource service principal is present."
 
-$requiredApplicationPerms = @(
+$requiredApplicationPermsPrimary = @(
   "AdministrativeUnit.Read.All",
   "AuditLog.Read.All",
   "Device.Read.All",
@@ -638,28 +787,63 @@ $requiredApplicationPerms = @(
   "User.ReadBasic.All"
 )
 
-$requiredDelegatedPerms = @(
+$requiredDelegatedPermsPrimary = @(
   "Subscription.Read.All",
   "User.Read",
   "User.Read.All",
   "User.ReadBasic.All"
 )
 
-Set-ApplicationRequiredResourceAccess `
-  -App $app `
-  -GraphSp $graphSp `
-  -RequiredApplicationPerms $requiredApplicationPerms `
-  -RequiredDelegatedPerms $requiredDelegatedPerms
+$requiredApplicationPermsNetworkDetectivePro = @(
+  "AdministrativeUnit.Read.All",
+  "AuditLog.Read.All",
+  "Device.Read.All",
+  "Directory.Read.All",
+  "Domain.Read.All",
+  "Group.Read.All",
+  "GroupMember.Read.All",
+  "IdentityProvider.Read.All",
+  "Notes.Read.All",
+  "Organization.Read.All",
+  "Reports.Read.All",
+  "SecurityEvents.Read.All",
+  "Sites.Read.All",
+  "User.Read.All"
+)
 
-Ensure-ApplicationAdminConsent `
-  -AppServicePrincipal $sp `
-  -GraphSp $graphSp `
-  -RequiredApplicationPerms $requiredApplicationPerms
+$requiredDelegatedPermsNetworkDetectivePro = @(
+  "Subscription.Read.All",
+  "User.ReadBasic.All"
+)
 
-$delegatedScopeString = Ensure-DelegatedAdminConsent `
-  -AppServicePrincipal $sp `
-  -GraphSp $graphSp `
-  -RequiredDelegatedPerms $requiredDelegatedPerms
+$networkDetectiveProDisplayName = "Network Detective Pro"
+$isPrimaryAlsoNetworkDetectivePro = $config.AppDisplayName.Trim().Equals($networkDetectiveProDisplayName, [System.StringComparison]::OrdinalIgnoreCase)
+
+if ($isPrimaryAlsoNetworkDetectivePro) {
+  Write-Step "Primary app display name matches Network Detective Pro; applying merged permission baseline once."
+  $mergedApplicationPerms = @($requiredApplicationPermsPrimary + $requiredApplicationPermsNetworkDetectivePro | Sort-Object -Unique)
+  $mergedDelegatedPerms = @($requiredDelegatedPermsPrimary + $requiredDelegatedPermsNetworkDetectivePro | Sort-Object -Unique)
+
+  $primaryAppBaseline = Ensure-AppBaseline `
+    -DisplayName $config.AppDisplayName `
+    -GraphSp $graphSp `
+    -RequiredApplicationPerms $mergedApplicationPerms `
+    -RequiredDelegatedPerms $mergedDelegatedPerms
+
+  $networkDetectiveProBaseline = $primaryAppBaseline
+} else {
+  $primaryAppBaseline = Ensure-AppBaseline `
+    -DisplayName $config.AppDisplayName `
+    -GraphSp $graphSp `
+    -RequiredApplicationPerms $requiredApplicationPermsPrimary `
+    -RequiredDelegatedPerms $requiredDelegatedPermsPrimary
+
+  $networkDetectiveProBaseline = Ensure-AppBaseline `
+    -DisplayName $networkDetectiveProDisplayName `
+    -GraphSp $graphSp `
+    -RequiredApplicationPerms $requiredApplicationPermsNetworkDetectivePro `
+    -RequiredDelegatedPerms $requiredDelegatedPermsNetworkDetectivePro
+}
 
 $auditControls = @($script:AuditControls)
 $auditSummary = Get-AuditSummary -Controls $auditControls
@@ -684,14 +868,45 @@ if ($script:PSCmdlet.ShouldProcess($auditPath, "Write bootstrap audit report fil
 
 $state = [ordered]@{
   TenantId = $tenantId
+  IntegrationGroupMode = $integrationGroupMode
+  IntegrationGroupPrimaryDomain = $integrationPrimaryDomain
+  IntegrationGroupIsDynamic = [bool]($integrationGroup.GroupTypes -contains "DynamicMembership")
+  IntegrationGroupMembershipRule = if ($integrationGroup.GroupTypes -contains "DynamicMembership") { $integrationGroup.MembershipRule } else { $null }
   IntegrationGroupId = $integrationGroup.Id
   PilotGroupId = $pilotGroup.Id
-  ApplicationObjectId = $app.Id
-  ApplicationAppId = $app.AppId
-  ServicePrincipalId = $sp.Id
+  ApplicationObjectId = $primaryAppBaseline.App.Id
+  ApplicationAppId = $primaryAppBaseline.App.AppId
+  ServicePrincipalId = $primaryAppBaseline.ServicePrincipal.Id
   GraphResourceSpId = $graphSp.Id
-  DelegatedScopes = $delegatedScopeString
-  ApplicationRoles = ($requiredApplicationPerms | Sort-Object -Unique)
+  DelegatedScopes = $primaryAppBaseline.DelegatedScopeString
+  ApplicationRoles = $primaryAppBaseline.RequiredApplicationPerms
+  NetworkDetectiveProApplicationObjectId = $networkDetectiveProBaseline.App.Id
+  NetworkDetectiveProApplicationAppId = $networkDetectiveProBaseline.App.AppId
+  NetworkDetectiveProServicePrincipalId = $networkDetectiveProBaseline.ServicePrincipal.Id
+  NetworkDetectiveProDelegatedScopes = $networkDetectiveProBaseline.DelegatedScopeString
+  NetworkDetectiveProApplicationRoles = @($requiredApplicationPermsNetworkDetectivePro | Sort-Object -Unique)
+  Applications = @(
+    [ordered]@{
+      LogicalName = "Primary"
+      DisplayName = $primaryAppBaseline.DisplayName
+      ApplicationObjectId = $primaryAppBaseline.App.Id
+      ApplicationAppId = $primaryAppBaseline.App.AppId
+      ServicePrincipalId = $primaryAppBaseline.ServicePrincipal.Id
+      DelegatedScopes = $primaryAppBaseline.DelegatedScopeString
+      ApplicationRoles = $primaryAppBaseline.RequiredApplicationPerms
+      DelegatedPermissions = $primaryAppBaseline.RequiredDelegatedPerms
+    },
+    [ordered]@{
+      LogicalName = "NetworkDetectivePro"
+      DisplayName = $networkDetectiveProDisplayName
+      ApplicationObjectId = $networkDetectiveProBaseline.App.Id
+      ApplicationAppId = $networkDetectiveProBaseline.App.AppId
+      ServicePrincipalId = $networkDetectiveProBaseline.ServicePrincipal.Id
+      DelegatedScopes = $networkDetectiveProBaseline.DelegatedScopeString
+      ApplicationRoles = @($requiredApplicationPermsNetworkDetectivePro | Sort-Object -Unique)
+      DelegatedPermissions = @($requiredDelegatedPermsNetworkDetectivePro | Sort-Object -Unique)
+    }
+  )
   AuditReportPath = $auditPath
 }
 
@@ -714,6 +929,3 @@ if ($bicepParamWritten) {
 Invoke-OptionalBicepDeployment -Config $config -BaseDirectory $configDirectory -BicepParametersPath $bicepParamPath
 
 Write-Step "Bootstrap complete."
-
-
-
