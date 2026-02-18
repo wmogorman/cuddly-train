@@ -143,6 +143,12 @@ foreach ($customer in $customers) {
     DurationSeconds = $null
     Status = "Pending"
     Error = $null
+    AuditPath = $null
+    Controls = $null
+    AlreadyCompliant = $null
+    MissingControls = $null
+    RemediatedNow = $null
+    StillMissing = $null
   }
 
   try {
@@ -171,6 +177,19 @@ foreach ($customer in $customers) {
       Write-Step "Running bootstrap for tenant $tenantId ($($customer.CustomerDisplayName))"
       & $BootstrapScriptPath -ConfigPath $tenantConfigPath -Confirm:$false
       $result.Status = "Success"
+
+      $auditPath = [System.IO.Path]::ChangeExtension($tenantConfigPath, ".audit.json")
+      $result.AuditPath = $auditPath
+      if (Test-Path -Path $auditPath -PathType Leaf) {
+        $audit = Get-Content -Path $auditPath -Raw | ConvertFrom-Json
+        if ($audit.Summary) {
+          $result.Controls = $audit.Summary.Controls
+          $result.AlreadyCompliant = $audit.Summary.AlreadyCompliant
+          $result.MissingControls = $audit.Summary.Missing
+          $result.RemediatedNow = $audit.Summary.RemediatedNow
+          $result.StillMissing = $audit.Summary.StillMissing
+        }
+      }
     } else {
       $result.Status = "Skipped"
     }
@@ -194,6 +213,11 @@ foreach ($customer in $customers) {
 }
 
 $batchEnd = Get-Date
+$totalControls = (@($results | Where-Object { $_.Controls -ne $null } | Measure-Object -Property Controls -Sum).Sum)
+$totalMissingControls = (@($results | Where-Object { $_.MissingControls -ne $null } | Measure-Object -Property MissingControls -Sum).Sum)
+$totalRemediatedControls = (@($results | Where-Object { $_.RemediatedNow -ne $null } | Measure-Object -Property RemediatedNow -Sum).Sum)
+$totalStillMissingControls = (@($results | Where-Object { $_.StillMissing -ne $null } | Measure-Object -Property StillMissing -Sum).Sum)
+
 $summary = [ordered]@{
   PartnerTenantId = $context.TenantId
   BatchStartTime = $batchStart.ToString("o")
@@ -203,6 +227,10 @@ $summary = [ordered]@{
   Success = @($results | Where-Object { $_.Status -eq "Success" }).Count
   Failed = @($results | Where-Object { $_.Status -eq "Failed" }).Count
   Skipped = @($results | Where-Object { $_.Status -eq "Skipped" }).Count
+  ControlsEvaluated = if ($null -eq $totalControls) { 0 } else { [int]$totalControls }
+  MissingControls = if ($null -eq $totalMissingControls) { 0 } else { [int]$totalMissingControls }
+  RemediatedControls = if ($null -eq $totalRemediatedControls) { 0 } else { [int]$totalRemediatedControls }
+  StillMissingControls = if ($null -eq $totalStillMissingControls) { 0 } else { [int]$totalStillMissingControls }
 }
 
 $resultsJsonPath = Join-Path -Path $OutputDirectory -ChildPath "batch-results.json"
@@ -220,4 +248,5 @@ if ($PSCmdlet.ShouldProcess($summaryPath, "Write batch summary JSON")) {
 }
 
 Write-Step "Batch complete. Success: $($summary.Success), Failed: $($summary.Failed), Skipped: $($summary.Skipped), Total: $($summary.Total)"
+Write-Step "Audit totals. Controls: $($summary.ControlsEvaluated), Missing: $($summary.MissingControls), Remediated: $($summary.RemediatedControls), Still missing: $($summary.StillMissingControls)"
 Write-Step "Output directory: $OutputDirectory"
