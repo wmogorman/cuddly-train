@@ -21,6 +21,14 @@
 .PARAMETER AppId
   Application (resource) AppId / identifier required by the external auth method configuration
 
+.PARAMETER ExternalAuthConfigId
+  Optional existing External Authentication Method configuration ID. When provided, the script skips EAM discovery/create
+  and updates/targets this specific configuration directly (useful when Graph list responses are inconsistent).
+
+.PARAMETER AuditEamOnlyPilotReadiness
+  Run a best-effort diagnostic summary (no changes) for common settings that cause EAM-only pilot users to get stuck
+  in "Let's keep your account secure" registration loops.
+
 .PARAMETER DisableMicrosoftAuthenticatorPolicy
   Disable the Microsoft Authenticator authentication method policy (best-effort) so users aren't offered Authenticator for MFA.
 
@@ -55,6 +63,10 @@ param(
   # Provider-specific app/resource identifier expected by Entra EAM config (rollout mode only).
   [Parameter(Mandatory=$false)]
   [string]$AppId,
+
+  # Optional explicit EAM config ID to bypass discovery/create when the config already exists.
+  [Parameter(Mandatory=$false)]
+  [string]$ExternalAuthConfigId,
 
   [Parameter(Mandatory=$false)]
   [string]$PilotGroupName = "DMX Pilot Group",
@@ -102,7 +114,11 @@ param(
 
   # Optional: include guest accounts during bulk registration. Defaults to false to avoid noisy failures in mixed/guest-heavy tenants.
   [Parameter(Mandatory=$false)]
-  [bool]$BulkRegisterIncludeGuestUsers = $false
+  [bool]$BulkRegisterIncludeGuestUsers = $false,
+
+  # Best-effort diagnostics for EAM-only pilot loop conditions (no tenant changes).
+  [Parameter(Mandatory=$false)]
+  [bool]$AuditEamOnlyPilotReadiness = $true
 
   ,
   [Parameter(Mandatory=$false)]
@@ -258,28 +274,64 @@ function Invoke-Beta {
   return Invoke-MgGraphRequest @params
 }
 
+function Get-GraphMemberValue {
+  param(
+    [Parameter(Mandatory=$true)]$Object,
+    [Parameter(Mandatory=$true)][string]$Name
+  )
+
+  if ($null -eq $Object) { return $null }
+
+  if ($Object -is [System.Collections.IDictionary]) {
+    if ($Object.Contains($Name)) {
+      return $Object[$Name]
+    }
+    return $null
+  }
+
+  $prop = $Object.PSObject.Properties[$Name]
+  if ($null -ne $prop) {
+    return $prop.Value
+  }
+
+  return $null
+}
+
+function Test-GraphMemberExists {
+  param(
+    [Parameter(Mandatory=$true)]$Object,
+    [Parameter(Mandatory=$true)][string]$Name
+  )
+
+  if ($null -eq $Object) { return $false }
+
+  if ($Object -is [System.Collections.IDictionary]) {
+    return $Object.Contains($Name)
+  }
+
+  return ($null -ne $Object.PSObject.Properties[$Name])
+}
+
 function Invoke-GraphGetAllPages {
   param([Parameter(Mandatory=$true)][string]$InitialUri)
 
-  $results = New-Object System.Collections.Generic.List[object]
+  $results = @()
   $nextUri = $InitialUri
 
   while (-not [string]::IsNullOrWhiteSpace($nextUri)) {
     $response = Invoke-Beta -Method GET -Uri $nextUri
 
-    $valueProp = $response.PSObject.Properties["value"]
-    if ($null -ne $valueProp -and $null -ne $valueProp.Value) {
-      foreach ($item in @($valueProp.Value)) {
-        $results.Add($item) | Out-Null
-      }
+    $value = Get-GraphMemberValue -Object $response -Name "value"
+    if ($null -ne $value) {
+      $results += @($value)
     }
     else {
-      $results.Add($response) | Out-Null
+      $results += $response
     }
 
-    $nextLinkProp = $response.PSObject.Properties["@odata.nextLink"]
-    if ($null -ne $nextLinkProp -and -not [string]::IsNullOrWhiteSpace([string]$nextLinkProp.Value)) {
-      $nextUri = [string]$nextLinkProp.Value
+    $nextLink = Get-GraphMemberValue -Object $response -Name "@odata.nextLink"
+    if (-not [string]::IsNullOrWhiteSpace([string]$nextLink)) {
+      $nextUri = [string]$nextLink
     }
     else {
       $nextUri = $null
@@ -298,11 +350,11 @@ function Get-GroupTransitiveUsers {
   return @(
     foreach ($u in @($users)) {
       [pscustomobject]@{
-        Id              = [string]$u.id
-        DisplayName     = [string]$u.displayName
-        UserPrincipalName = [string]$u.userPrincipalName
-        AccountEnabled  = if ($u.PSObject.Properties.Name -contains "accountEnabled") { [bool]$u.accountEnabled } else { $true }
-        UserType        = if ($u.PSObject.Properties.Name -contains "userType") { [string]$u.userType } else { $null }
+        Id              = [string](Get-GraphMemberValue -Object $u -Name "id")
+        DisplayName     = [string](Get-GraphMemberValue -Object $u -Name "displayName")
+        UserPrincipalName = [string](Get-GraphMemberValue -Object $u -Name "userPrincipalName")
+        AccountEnabled  = if (Test-GraphMemberExists -Object $u -Name "accountEnabled") { [bool](Get-GraphMemberValue -Object $u -Name "accountEnabled") } else { $true }
+        UserType        = if (Test-GraphMemberExists -Object $u -Name "userType") { [string](Get-GraphMemberValue -Object $u -Name "userType") } else { $null }
       }
     }
   )
@@ -317,8 +369,8 @@ function Test-UserHasExternalAuthMethodRegistration {
   $existing = Invoke-GraphGetAllPages -InitialUri "/v1.0/users/$UserId/authentication/externalAuthenticationMethods"
   return @(
     $existing | Where-Object {
-      $configIdProp = $_.PSObject.Properties["configurationId"]
-      ($null -ne $configIdProp) -and ([string]$configIdProp.Value -eq $ConfigurationId)
+      $configId = Get-GraphMemberValue -Object $_ -Name "configurationId"
+      (-not [string]::IsNullOrWhiteSpace([string]$configId)) -and ([string]$configId -eq $ConfigurationId)
     }
   ).Count -gt 0
 }
@@ -413,16 +465,35 @@ function Invoke-BulkRegisterExternalAuthMethodForWrapperGroupUsers {
 function Get-AuthenticationMethodConfigurationsCollection {
   $attempts = @(
     "/v1.0/policies/authenticationMethodsPolicy/authenticationMethodConfigurations",
-    "/beta/policies/authenticationMethodsPolicy/authenticationMethodConfigurations"
+    "/beta/policies/authenticationMethodsPolicy/authenticationMethodConfigurations",
+    "/v1.0/policies/authenticationMethodsPolicy?`$expand=authenticationMethodConfigurations",
+    "/beta/policies/authenticationMethodsPolicy?`$expand=authenticationMethodConfigurations"
   )
 
   $errors = New-Object System.Collections.Generic.List[string]
   foreach ($uri in $attempts) {
     try {
       $resp = Invoke-Beta -Method GET -Uri $uri
+      $items = @()
+      $collectionUriForPatch = "/v1.0/policies/authenticationMethodsPolicy/authenticationMethodConfigurations"
+
+      if ($uri -match "/authenticationMethodConfigurations$") {
+        $items = @(Get-GraphMemberValue -Object $resp -Name "value")
+        if ($uri -match "^/beta/") {
+          $collectionUriForPatch = "/beta/policies/authenticationMethodsPolicy/authenticationMethodConfigurations"
+        }
+      }
+      else {
+        $expanded = Get-GraphMemberValue -Object $resp -Name "authenticationMethodConfigurations"
+        $items = @($expanded)
+        if ($uri -match "^/beta/") {
+          $collectionUriForPatch = "/beta/policies/authenticationMethodsPolicy/authenticationMethodConfigurations"
+        }
+      }
+
       return [pscustomobject]@{
-        CollectionUri = $uri
-        Items         = @($resp.value)
+        CollectionUri = $collectionUriForPatch
+        Items         = @($items)
       }
     }
     catch {
@@ -455,13 +526,13 @@ function Set-WrapperGroupExclusionOnAuthMethodConfigs {
   $configList = @($configCollection.Items)
   $configById = @{}
   foreach ($cfg in $configList) {
-    $idProp = $cfg.PSObject.Properties["id"]
-    if ($null -eq $idProp -or [string]::IsNullOrWhiteSpace([string]$idProp.Value)) {
+    $cfgId = [string](Get-GraphMemberValue -Object $cfg -Name "id")
+    if ([string]::IsNullOrWhiteSpace($cfgId)) {
       continue
     }
 
-    $configById[[string]$idProp.Value] = $cfg
-    $configById[[string]$idProp.Value.ToString().ToLowerInvariant()] = $cfg
+    $configById[$cfgId] = $cfg
+    $configById[$cfgId.ToLowerInvariant()] = $cfg
   }
 
   foreach ($requestedId in $requestedIds) {
@@ -481,16 +552,15 @@ function Set-WrapperGroupExclusionOnAuthMethodConfigs {
 
     $configId = [string]$config.id
     $currentExcludeTargets = @()
-    if (($config.PSObject.Properties.Name -contains "excludeTargets") -and $null -ne $config.excludeTargets) {
-      $currentExcludeTargets = @($config.excludeTargets)
+    if ((Test-GraphMemberExists -Object $config -Name "excludeTargets") -and $null -ne (Get-GraphMemberValue -Object $config -Name "excludeTargets")) {
+      $currentExcludeTargets = @(Get-GraphMemberValue -Object $config -Name "excludeTargets")
     }
 
     $groupExcluded = @(
       $currentExcludeTargets | Where-Object {
-        $targetTypeProp = $_.PSObject.Properties["targetType"]
-        $idProp = $_.PSObject.Properties["id"]
-        ($null -ne $targetTypeProp) -and ([string]$targetTypeProp.Value -eq "group") -and
-        ($null -ne $idProp) -and ([string]$idProp.Value -eq $WrapperGroupId)
+        $targetType = [string](Get-GraphMemberValue -Object $_ -Name "targetType")
+        $idVal = [string](Get-GraphMemberValue -Object $_ -Name "id")
+        ($targetType -eq "group") -and ($idVal -eq $WrapperGroupId)
       }
     ).Count -gt 0
 
@@ -505,19 +575,25 @@ function Set-WrapperGroupExclusionOnAuthMethodConfigs {
 
     $newExcludeTargets = @()
     foreach ($target in $currentExcludeTargets) {
-      $targetTypeProp = $target.PSObject.Properties["targetType"]
-      $idProp = $target.PSObject.Properties["id"]
+      $targetType = [string](Get-GraphMemberValue -Object $target -Name "targetType")
+      $idVal = [string](Get-GraphMemberValue -Object $target -Name "id")
       $isWrapperTarget =
-        ($null -ne $targetTypeProp) -and ([string]$targetTypeProp.Value -eq "group") -and
-        ($null -ne $idProp) -and ([string]$idProp.Value -eq $WrapperGroupId)
+        ($targetType -eq "group") -and ($idVal -eq $WrapperGroupId)
 
       if ($Mode -eq "Remove" -and $isWrapperTarget) {
         continue
       }
 
       $targetHash = @{}
-      foreach ($prop in $target.PSObject.Properties) {
-        $targetHash[$prop.Name] = $prop.Value
+      if ($target -is [System.Collections.IDictionary]) {
+        foreach ($key in $target.Keys) {
+          $targetHash[[string]$key] = $target[$key]
+        }
+      }
+      else {
+        foreach ($prop in $target.PSObject.Properties) {
+          $targetHash[$prop.Name] = $prop.Value
+        }
       }
       $newExcludeTargets += $targetHash
     }
@@ -532,9 +608,9 @@ function Set-WrapperGroupExclusionOnAuthMethodConfigs {
     $patchBody = @{
       excludeTargets = @($newExcludeTargets)
     }
-    $odataTypeProp = $config.PSObject.Properties["@odata.type"]
-    if ($null -ne $odataTypeProp -and -not [string]::IsNullOrWhiteSpace([string]$odataTypeProp.Value)) {
-      $patchBody["@odata.type"] = [string]$odataTypeProp.Value
+    $odataTypeValue = [string](Get-GraphMemberValue -Object $config -Name "@odata.type")
+    if (-not [string]::IsNullOrWhiteSpace($odataTypeValue)) {
+      $patchBody["@odata.type"] = $odataTypeValue
     }
 
     $verb = if ($Mode -eq "Add") { "Add wrapper-group exclusion" } else { "Remove wrapper-group exclusion" }
@@ -555,11 +631,7 @@ function Set-WrapperGroupExclusionOnAuthMethodConfigs {
   }
 }
 
-# External Authentication Method endpoints/schema vary by tenant rollout and Graph version.
-# This helper tries a few shapes and returns the first successful match by displayName.
-function Get-ExternalAuthMethodConfigByName {
-  param([Parameter(Mandatory=$true)][string]$DisplayName)
-
+function Get-ExternalAuthMethodConfigs {
   $queryAttempts = @(
     # Preferred direct collection endpoints.
     "/v1.0/policies/authenticationMethodsPolicy/authenticationMethodConfigurations",
@@ -573,36 +645,61 @@ function Get-ExternalAuthMethodConfigByName {
   )
 
   $errors = New-Object System.Collections.Generic.List[string]
+  $allItemsCombined = @()
+  $externalItemsCombined = @()
+  $successfulQueryUris = @()
+  $preferredCollectionQueryUri = $null
+  $preferredCollectionQueryUriWithExternal = $null
 
   foreach ($queryUri in $queryAttempts) {
     try {
-      $response = Invoke-Beta -Method GET -Uri $queryUri
+      $response = $null
+      $pagedCollectionItems = $null
+      if ($queryUri -match "^(/v1\.0|/beta)/policies/authenticationMethodsPolicy/authenticationMethodConfigurations$") {
+        # This collection can be paged (often 10 items/page), and external methods may appear after built-ins.
+        $pagedCollectionItems = @(Invoke-GraphGetAllPages -InitialUri $queryUri)
+        # Keep a response-like object for downstream logic/consistency.
+        $response = [pscustomobject]@{ value = @($pagedCollectionItems) }
+      }
+      else {
+        $response = Invoke-Beta -Method GET -Uri $queryUri
+      }
+      $successfulQueryUris += $queryUri
 
       $items = @()
       if ($queryUri -match "/authenticationMethodConfigurations$") {
-        $items = @($response.value)
+        $items = @(Get-GraphMemberValue -Object $response -Name "value")
       }
-      elseif ($null -ne $response.authenticationMethodConfigurations) {
-        $items = @($response.authenticationMethodConfigurations)
-      }
-
-      $match = @(
-        $items | Where-Object {
-          # StrictMode-safe property access: not every auth method config object has every field.
-          $displayNameProp = $_.PSObject.Properties["displayName"]
-          $odataTypeProp = $_.PSObject.Properties["@odata.type"]
-          $hasExternalShape =
-            ($_.PSObject.Properties.Name -contains "openIdConnectSetting") -or
-            ($_.PSObject.Properties.Name -contains "appId") -or
-            ($null -ne $odataTypeProp -and [string]$odataTypeProp.Value -match "externalAuthenticationMethod")
-
-          ($null -ne $displayNameProp) -and ([string]$displayNameProp.Value -eq $DisplayName) -and $hasExternalShape
+      else {
+        $expandedConfigs = Get-GraphMemberValue -Object $response -Name "authenticationMethodConfigurations"
+        if ($null -ne $expandedConfigs) {
+          $items = @($expandedConfigs)
         }
-      ) | Select-Object -First 1
+      }
 
-      return [pscustomobject]@{
-        Item     = $match
-        QueryUri = $queryUri
+      $allItems = @($items)
+      $externalItems = @(
+        $items | Where-Object {
+          $odataType = [string](Get-GraphMemberValue -Object $_ -Name "@odata.type")
+          $hasExternalShape =
+            (Test-GraphMemberExists -Object $_ -Name "openIdConnectSetting") -or
+            (Test-GraphMemberExists -Object $_ -Name "appId") -or
+            ((-not [string]::IsNullOrWhiteSpace($odataType)) -and ($odataType -match "externalAuthenticationMethod"))
+
+          $hasExternalShape
+        }
+      )
+
+      $allItemsCombined += @($allItems)
+      $externalItemsCombined += @($externalItems)
+
+      if ($queryUri -match "^(/v1\.0|/beta)/policies/authenticationMethodsPolicy/authenticationMethodConfigurations$") {
+        if (-not $preferredCollectionQueryUri) {
+          $preferredCollectionQueryUri = $queryUri
+        }
+        if ((@($externalItems).Count -gt 0) -and (-not $preferredCollectionQueryUriWithExternal)) {
+          $preferredCollectionQueryUriWithExternal = $queryUri
+        }
       }
     }
     catch {
@@ -610,7 +707,221 @@ function Get-ExternalAuthMethodConfigByName {
     }
   }
 
+  if (@($successfulQueryUris).Count -gt 0) {
+    $selectedQueryUri = if ($preferredCollectionQueryUriWithExternal) {
+      $preferredCollectionQueryUriWithExternal
+    }
+    elseif ($preferredCollectionQueryUri) {
+      $preferredCollectionQueryUri
+    }
+    else {
+      @($successfulQueryUris)[0]
+    }
+
+    return [pscustomobject]@{
+      Items     = @($externalItemsCombined)
+      AllItems  = @($allItemsCombined)
+      QueryUri  = $selectedQueryUri
+    }
+  }
+
   throw ("Failed to query external authentication method configurations. Attempts: {0}" -f ($errors -join " || "))
+}
+
+# External Authentication Method endpoints/schema vary by tenant rollout and Graph version.
+# This helper tries a few shapes and returns the first successful match by displayName.
+function Get-ExternalAuthMethodConfigByName {
+  param([Parameter(Mandatory=$true)][string]$DisplayName)
+
+  $lookup = Get-ExternalAuthMethodConfigs
+  $match = @(
+    @($lookup.Items) | Where-Object {
+      $displayNameValue = [string](Get-GraphMemberValue -Object $_ -Name "displayName")
+      (-not [string]::IsNullOrWhiteSpace($displayNameValue)) -and ($displayNameValue -eq $DisplayName)
+    }
+  ) | Select-Object -First 1
+
+  if (-not $match) {
+    # Some tenants return sparse objects in the list call (missing @odata.type/appId/openIdConnectSetting),
+    # which causes an existing external method to be filtered out above. Fall back to exact displayName match.
+    $sparseMatch = @(
+      @($lookup.AllItems) | Where-Object {
+        $displayNameValue = [string](Get-GraphMemberValue -Object $_ -Name "displayName")
+        (-not [string]::IsNullOrWhiteSpace($displayNameValue)) -and ($displayNameValue -eq $DisplayName)
+      }
+    ) | Select-Object -First 1
+
+    if ($sparseMatch) {
+      $match = $sparseMatch
+      Write-Warning "Matched authentication method configuration '$DisplayName' by displayName using a sparse Graph response (external-specific fields were not returned in list output). Reusing existing config."
+    }
+  }
+
+  return [pscustomobject]@{
+    Item     = $match
+    QueryUri = $lookup.QueryUri
+  }
+}
+
+# Fallback lookup: some tenants reject duplicate EAM provider configs with opaque 400/500s.
+# If displayName changed between runs, match the existing config by provider identifiers instead.
+function Get-ExternalAuthMethodConfigByProviderIdentifiers {
+  param(
+    [Parameter(Mandatory=$false)][string]$AppId,
+    [Parameter(Mandatory=$false)][string]$ClientId
+  )
+
+  $lookup = Get-ExternalAuthMethodConfigs
+  $match = @(
+    @($lookup.Items) | Where-Object {
+      $appIdValue = [string](Get-GraphMemberValue -Object $_ -Name "appId")
+      $oidcValue = Get-GraphMemberValue -Object $_ -Name "openIdConnectSetting"
+      $oidcClientId = $null
+      if ($null -ne $oidcValue) {
+        $oidcClientId = [string](Get-GraphMemberValue -Object $oidcValue -Name "clientId")
+      }
+
+      $appIdMatches = (-not [string]::IsNullOrWhiteSpace($AppId)) -and (-not [string]::IsNullOrWhiteSpace($appIdValue)) -and ($appIdValue -eq $AppId)
+      $clientIdMatches = (-not [string]::IsNullOrWhiteSpace($ClientId)) -and (-not [string]::IsNullOrWhiteSpace($oidcClientId)) -and ($oidcClientId -eq $ClientId)
+
+      $appIdMatches -or $clientIdMatches
+    }
+  ) | Select-Object -First 1
+
+  return [pscustomobject]@{
+    Item     = $match
+    QueryUri = $lookup.QueryUri
+  }
+}
+
+function Get-ExternalAuthMethodConfigById {
+  param([Parameter(Mandatory=$true)][string]$Id)
+
+  $attempts = @(
+    "/v1.0/policies/authenticationMethodsPolicy/authenticationMethodConfigurations/$Id",
+    "/beta/policies/authenticationMethodsPolicy/authenticationMethodConfigurations/$Id"
+  )
+
+  $errors = New-Object System.Collections.Generic.List[string]
+  foreach ($uri in $attempts) {
+    try {
+      $item = Invoke-Beta -Method GET -Uri $uri
+      return [pscustomobject]@{
+        Item     = $item
+        QueryUri = $uri
+      }
+    }
+    catch {
+      $errors.Add(("{0} => {1}" -f $uri, (Get-ExceptionMessageText -ErrorObject $_))) | Out-Null
+    }
+  }
+
+  throw ("Failed to query external authentication method configuration by id '$Id'. Attempts: {0}" -f ($errors -join " || "))
+}
+
+function Invoke-EamOnlyPilotReadinessAudit {
+  param(
+    [Parameter(Mandatory=$true)][string]$WrapperGroupName,
+    [Parameter(Mandatory=$false)][string]$PilotGroupName
+  )
+
+  Write-Step "Auditing EAM-only pilot readiness (diagnostic only, no changes)..."
+  $warningCount = 0
+
+  # Security Defaults can force additional registration prompts that conflict with EAM-only pilot expectations.
+  try {
+    $secDefaults = Invoke-Beta -Method GET -Uri "/v1.0/policies/identitySecurityDefaultsEnforcementPolicy"
+    $isSecDefaultsEnabled = [bool](Get-GraphMemberValue -Object $secDefaults -Name "isEnabled")
+    if ($isSecDefaultsEnabled) {
+      $warningCount++
+      Write-Warning "Security Defaults is enabled. This can trigger registration prompts/flows that conflict with an EAM-only pilot."
+    }
+    else {
+      Write-Host "   Security Defaults: disabled." -ForegroundColor Green
+    }
+  }
+  catch {
+    Write-Warning "Could not query Security Defaults policy. Verify manually: Entra ID -> Properties -> Manage security defaults. Details: $($_.Exception.Message)"
+  }
+
+  # SSPR enablement is a useful signal. If enabled, combined registration can still require additional methods.
+  try {
+    $authorizationPolicy = Invoke-Beta -Method GET -Uri "/v1.0/policies/authorizationPolicy"
+    $ssprFlagName = $null
+    foreach ($candidate in @("allowedToUseSSPR","allowedToUseSspr")) {
+      if (Test-GraphMemberExists -Object $authorizationPolicy -Name $candidate) {
+        $ssprFlagName = $candidate
+        break
+      }
+    }
+
+    if ($ssprFlagName) {
+      $ssprEnabled = [bool](Get-GraphMemberValue -Object $authorizationPolicy -Name $ssprFlagName)
+      if ($ssprEnabled) {
+        $warningCount++
+        Write-Warning "SSPR appears enabled (authorizationPolicy.$ssprFlagName = true). Combined registration/SSPR requirements may cause 'Let's keep your account secure' loops for EAM-only pilots."
+      }
+      else {
+        Write-Host "   SSPR enablement signal (authorizationPolicy.$ssprFlagName): false" -ForegroundColor Green
+      }
+    }
+    else {
+      Write-Host "   authorizationPolicy did not expose an SSPR enablement flag in this tenant response." -ForegroundColor Yellow
+    }
+  }
+  catch {
+    Write-Warning "Could not query authorizationPolicy SSPR signal. Details: $($_.Exception.Message)"
+  }
+
+  # Surface auth-method policy signals the script already manipulates so the operator sees current state in one place.
+  try {
+    $ampV1 = Invoke-Beta -Method GET -Uri "/v1.0/policies/authenticationMethodsPolicy"
+    $regEnforcement = Get-GraphMemberValue -Object $ampV1 -Name "registrationEnforcement"
+    $campaign = if ($null -ne $regEnforcement) { Get-GraphMemberValue -Object $regEnforcement -Name "authenticationMethodsRegistrationCampaign" } else { $null }
+    $campaignState = if ($null -ne $campaign) { [string](Get-GraphMemberValue -Object $campaign -Name "state") } else { $null }
+
+    if (-not [string]::IsNullOrWhiteSpace($campaignState)) {
+      Write-Host "   Authenticator registration campaign: $campaignState" -ForegroundColor Green
+    }
+    else {
+      Write-Host "   Authenticator registration campaign: not returned by this tenant response." -ForegroundColor Yellow
+    }
+  }
+  catch {
+    Write-Warning "Could not query authenticationMethodsPolicy registration campaign state. Details: $($_.Exception.Message)"
+  }
+
+  try {
+    $ampBeta = Invoke-Beta -Method GET -Uri "/beta/policies/authenticationMethodsPolicy"
+    $systemPref = Get-GraphMemberValue -Object $ampBeta -Name "systemCredentialPreferences"
+    $systemPrefState = if ($null -ne $systemPref) { [string](Get-GraphMemberValue -Object $systemPref -Name "state") } else { $null }
+
+    if (-not [string]::IsNullOrWhiteSpace($systemPrefState)) {
+      Write-Host "   System-preferred MFA: $systemPrefState" -ForegroundColor Green
+    }
+    else {
+      Write-Host "   System-preferred MFA: not returned by this tenant response." -ForegroundColor Yellow
+    }
+  }
+  catch {
+    Write-Warning "Could not query system-preferred MFA state. Details: $($_.Exception.Message)"
+  }
+
+  Write-Host "   Manual checks still required for loop troubleshooting (Graph coverage is inconsistent for Password reset screens):" -ForegroundColor Yellow
+  Write-Host "     1) Entra -> Protection -> Password reset -> Registration -> 'Require users to register when signing in'"
+  Write-Host "     2) Entra -> Protection -> Password reset -> Properties -> Self service password reset enabled (and pilot scope/exclusions)"
+  Write-Host "     3) Entra -> Protection -> Password reset -> Authentication methods -> Mobile phone / Office phone + number of methods required"
+  Write-Host "     4) Test a pilot user that is a DIRECT member of '$WrapperGroupName' (nested membership can delay/confuse troubleshooting)"
+  if (-not [string]::IsNullOrWhiteSpace($PilotGroupName)) {
+    Write-Host "        (Pilot group '$PilotGroupName' may be nested in the wrapper; direct membership is recommended for troubleshooting.)"
+  }
+
+  if ($warningCount -eq 0) {
+    Write-Host "   No obvious tenant-wide blockers were detected in the checks this script can perform. If loops persist, focus on Password reset Registration/SSPR settings and per-user registered methods." -ForegroundColor Green
+  }
+  else {
+    Write-Host "   Diagnostic summary: $warningCount potential tenant-wide loop contributor(s) detected." -ForegroundColor Yellow
+  }
 }
 
 # --- Prereqs ---
@@ -773,28 +1084,74 @@ $extConfig = $null
 # Use v1.0 by default, but switch to beta if the successful lookup came from beta endpoints.
 $extConfigCollectionUri = "/v1.0/policies/authenticationMethodsPolicy/authenticationMethodConfigurations"
 $skipExternalAuthConfigDueToWhatIfQueryFailure = $false
-try {
-  $extLookup = Get-ExternalAuthMethodConfigByName -DisplayName $Name
-  $extConfig = $extLookup.Item
-  if ($extLookup.QueryUri -match "^(/v1\.0|/beta)/policies/authenticationMethodsPolicy/authenticationMethodConfigurations$") {
-    $extConfigCollectionUri = $extLookup.QueryUri
+if (-not [string]::IsNullOrWhiteSpace($ExternalAuthConfigId)) {
+  Write-Host "   Using explicit External Authentication Method configuration id: $ExternalAuthConfigId" -ForegroundColor Green
+  try {
+    $extById = Get-ExternalAuthMethodConfigById -Id $ExternalAuthConfigId
+    $extConfig = $extById.Item
+    if ($extById.QueryUri -match "^/beta/") {
+      $extConfigCollectionUri = "/beta/policies/authenticationMethodsPolicy/authenticationMethodConfigurations"
+    }
+    else {
+      $extConfigCollectionUri = "/v1.0/policies/authenticationMethodsPolicy/authenticationMethodConfigurations"
+    }
   }
-  elseif ($extLookup.QueryUri -match "^/beta/") {
-    # If policy lookup only worked in beta, keep writes in beta as well.
-    $extConfigCollectionUri = "/beta/policies/authenticationMethodsPolicy/authenticationMethodConfigurations"
+  catch {
+    if ($WhatIfPreference) {
+      $extConfig = [pscustomobject]@{ id = $ExternalAuthConfigId; displayName = $Name; IsPlanned = $true }
+      Write-Warning "Could not query explicit External Authentication Method config id '$ExternalAuthConfigId' during -WhatIf. Continuing dry-run with planned placeholder. Details: $($_.Exception.Message)"
+    }
+    else {
+      throw "Failed to query explicit External Authentication Method config id '$ExternalAuthConfigId'. Details: $($_.Exception.Message)"
+    }
   }
 }
-catch {
-  if ($WhatIfPreference) {
-    $skipExternalAuthConfigDueToWhatIfQueryFailure = $true
-    Write-Warning "Could not query authenticationMethodConfigurations (beta) during -WhatIf. This preview endpoint varies by tenant and may return BadRequest when unavailable. Continuing dry-run. Details: $($_.Exception.Message)"
+else {
+  try {
+    $extLookup = Get-ExternalAuthMethodConfigByName -DisplayName $Name
+    $extConfig = $extLookup.Item
+    if ($extLookup.QueryUri -match "^(/v1\.0|/beta)/policies/authenticationMethodsPolicy/authenticationMethodConfigurations$") {
+      $extConfigCollectionUri = $extLookup.QueryUri
+    }
+    elseif ($extLookup.QueryUri -match "^/beta/") {
+      # If policy lookup only worked in beta, keep writes in beta as well.
+      $extConfigCollectionUri = "/beta/policies/authenticationMethodsPolicy/authenticationMethodConfigurations"
+    }
   }
-  elseif ($isOffboarding) {
-    $skipExternalAuthConfigDueToWhatIfQueryFailure = $true
-    Write-Warning "Could not query authenticationMethodConfigurations (beta) while offboarding. Continuing with CA removal and Microsoft MFA restoration. Details: $($_.Exception.Message)"
+  catch {
+    if ($WhatIfPreference) {
+      $skipExternalAuthConfigDueToWhatIfQueryFailure = $true
+      Write-Warning "Could not query authenticationMethodConfigurations (beta) during -WhatIf. This preview endpoint varies by tenant and may return BadRequest when unavailable. Continuing dry-run. Details: $($_.Exception.Message)"
+    }
+    elseif ($isOffboarding) {
+      $skipExternalAuthConfigDueToWhatIfQueryFailure = $true
+      Write-Warning "Could not query authenticationMethodConfigurations (beta) while offboarding. Continuing with CA removal and Microsoft MFA restoration. Details: $($_.Exception.Message)"
+    }
+    else {
+      throw "Failed to query authenticationMethodConfigurations (beta). Details: $($_.Exception.Message)"
+    }
   }
-  else {
-    throw "Failed to query authenticationMethodConfigurations (beta). Details: $($_.Exception.Message)"
+}
+
+if ((-not $skipExternalAuthConfigDueToWhatIfQueryFailure) -and (-not $isOffboarding) -and (-not $extConfig)) {
+  try {
+    $extLookupByProvider = Get-ExternalAuthMethodConfigByProviderIdentifiers -AppId $AppId -ClientId $ClientId
+    if ($extLookupByProvider.Item) {
+      $extConfig = $extLookupByProvider.Item
+      if ($extLookupByProvider.QueryUri -match "^(/v1\.0|/beta)/policies/authenticationMethodsPolicy/authenticationMethodConfigurations$") {
+        $extConfigCollectionUri = $extLookupByProvider.QueryUri
+      }
+      elseif ($extLookupByProvider.QueryUri -match "^/beta/") {
+        $extConfigCollectionUri = "/beta/policies/authenticationMethodsPolicy/authenticationMethodConfigurations"
+      }
+
+      $existingDisplayName = [string](Get-GraphMemberValue -Object $extConfig -Name "displayName")
+      if ([string]::IsNullOrWhiteSpace($existingDisplayName)) { $existingDisplayName = "<unknown>" }
+      Write-Warning "Found an existing External Authentication Method configuration with matching provider identifiers (appId/clientId) but a different displayName ('$existingDisplayName'). Reusing it instead of creating a duplicate. If you intended a new config, use different provider identifiers."
+    }
+  }
+  catch {
+    Write-Warning "Provider-identifier fallback lookup for External Authentication Method config failed. Will continue and attempt create by displayName. Details: $($_.Exception.Message)"
   }
 }
 
@@ -868,13 +1225,49 @@ elseif (-not $extConfig) {
 
   try {
     if ($PSCmdlet.ShouldProcess($Name, "Create External Authentication Method configuration")) {
-      try {
-        $created = Invoke-Beta -Method POST -Uri $extConfigCollectionUri -Body $body
+      $createUris = New-Object System.Collections.Generic.List[string]
+      $createUris.Add($extConfigCollectionUri) | Out-Null
+      $betaCreateUri = "/beta/policies/authenticationMethodsPolicy/authenticationMethodConfigurations"
+      if ($extConfigCollectionUri -ne $betaCreateUri) {
+        $createUris.Add($betaCreateUri) | Out-Null
       }
-      catch {
-        # If the tenant rejects the newer payload shape, retry once with the legacy format.
-        Write-Warning "Primary external auth config create payload failed; trying legacy preview payload shape. Details: $($_.Exception.Message)"
-        $created = Invoke-Beta -Method POST -Uri $extConfigCollectionUri -Body $legacyBody
+
+      $createPayloadAttempts = @(
+        [pscustomobject]@{ Label = "primary"; Body = $body },
+        [pscustomobject]@{ Label = "legacy";  Body = $legacyBody }
+      )
+
+      $createErrors = New-Object System.Collections.Generic.List[string]
+      $created = $null
+
+      foreach ($createUri in $createUris) {
+        foreach ($payloadAttempt in $createPayloadAttempts) {
+          try {
+            if ($payloadAttempt.Label -eq "primary" -and $createUri -eq $extConfigCollectionUri) {
+              Write-Host "   Creating via $createUri using primary payload..." -ForegroundColor DarkCyan
+            }
+            else {
+              Write-Host "   Retrying create via $createUri using $($payloadAttempt.Label) payload..." -ForegroundColor DarkCyan
+            }
+
+            $created = Invoke-Beta -Method POST -Uri $createUri -Body $payloadAttempt.Body
+            $extConfigCollectionUri = $createUri
+            break
+          }
+          catch {
+            $detail = Get-ExceptionMessageText -ErrorObject $_
+            $createErrors.Add(("{0} [{1}] => {2}" -f $createUri, $payloadAttempt.Label, $detail)) | Out-Null
+            Write-Warning "External auth config create attempt failed ($createUri / $($payloadAttempt.Label) payload). Details: $detail"
+          }
+        }
+
+        if ($null -ne $created) {
+          break
+        }
+      }
+
+      if ($null -eq $created) {
+        throw ("All create attempts failed. Attempts: {0}" -f ($createErrors -join " || "))
       }
 
       $extConfig = $created
@@ -889,7 +1282,8 @@ elseif (-not $extConfig) {
     throw @"
 Failed to create external auth method configuration.
 This endpoint/shape varies by tenant. The error usually tells you the exact missing/invalid fields.
-Details: $($_.Exception.Message)
+Create endpoint attempts included '$extConfigCollectionUri' and '/beta/...'.
+Details: $(Get-ExceptionMessageText -ErrorObject $_)
 "@
   }
 }
@@ -1033,12 +1427,8 @@ if ($BulkRegisterExternalAuthMethodForWrapperGroupUsers) {
     }
     else {
       try {
-        $configDisplayName = if ($extConfig.PSObject.Properties.Name -contains "displayName" -and -not [string]::IsNullOrWhiteSpace([string]$extConfig.displayName)) {
-          [string]$extConfig.displayName
-        }
-        else {
-          $Name
-        }
+        $configDisplayName = [string](Get-GraphMemberValue -Object $extConfig -Name "displayName")
+        if ([string]::IsNullOrWhiteSpace($configDisplayName)) { $configDisplayName = $Name }
 
         Invoke-BulkRegisterExternalAuthMethodForWrapperGroupUsers `
           -WrapperGroupId $wrapperForBulkRegistration.Id `
@@ -1301,6 +1691,23 @@ else {
   Write-Host "   Skipping system-preferred MFA change by parameter." -ForegroundColor Yellow
 }
 
+if ($AuditEamOnlyPilotReadiness) {
+  if ($isOffboarding) {
+    Write-Host "==> Skipping EAM-only pilot readiness audit in offboarding mode." -ForegroundColor Cyan
+  }
+  else {
+    try {
+      Invoke-EamOnlyPilotReadinessAudit -WrapperGroupName $WrapperGroupName -PilotGroupName $PilotGroupName
+    }
+    catch {
+      Write-Warning "Could not complete EAM-only pilot readiness audit. Continuing. Details: $($_.Exception.Message)"
+    }
+  }
+}
+else {
+  Write-Host "==> Skipping EAM-only pilot readiness audit by parameter." -ForegroundColor Cyan
+}
+
 Write-Step "Done."
 
 Write-Host ""
@@ -1322,7 +1729,8 @@ else {
   Write-Host "  4) Entra -> Authentication methods -> Registration campaign: confirm disabled (if you left defaults)"
   Write-Host "  5) Entra -> Authentication methods -> Policies: confirm common Microsoft MFA methods exclude '$WrapperGroupName' (if enabled)"
   Write-Host "  6) If bulk registration was enabled: Entra/myaccount -> Security info: confirm wrapper-group users have '$Name' registered"
-  Write-Host "  7) myaccount.microsoft.com -> Security info: confirm users in pilot get prompted with External method"
+  Write-Host "  7) Review the EAM-only pilot readiness diagnostic summary (Security Defaults / SSPR signals / manual Password reset checks)"
+  Write-Host "  8) myaccount.microsoft.com -> Security info: confirm users in pilot get prompted with External method"
 }
 Write-Host ""
 Write-Host "Note: This script changes tenant auth method policy settings (best-effort). It only adds per-user External Authentication Method registrations when -BulkRegisterExternalAuthMethodForWrapperGroupUsers is enabled; it does not remove other per-user MFA registrations. If user prompts still look wrong, review the user's registered methods and tenant authentication method policies." -ForegroundColor Yellow
