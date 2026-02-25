@@ -6,6 +6,7 @@
    - Nest "DMX Pilot Group" into wrapper
    - Create External Authentication Method configuration (Graph beta)
    - Target External method to wrapper group
+   - (Optional) Bulk-register External method for wrapper-group users
    - Create Conditional Access policy requiring MFA for wrapper group
 
 .PARAMETER Name
@@ -72,6 +73,36 @@ param(
 
   [Parameter(Mandatory=$false)]
   [bool]$DisableSystemPreferredMfa = $true
+
+  ,
+  # Exclude the wrapper group from common Microsoft MFA methods (SMS/voice/Auth app/OATH)
+  # so Conditional Access "require MFA" resolves to the external method for pilot users.
+  [Parameter(Mandatory=$false)]
+  [bool]$RestrictCommonMicrosoftMfaMethodsForWrapperGroup = $true,
+
+  # Authentication method configuration IDs to exclude the wrapper group from.
+  # Keep this focused on common MFA methods; leave break-glass/onboarding methods like TAP alone.
+  [Parameter(Mandatory=$false)]
+  [string[]]$WrapperGroupExcludedMethodIds = @(
+    "microsoftAuthenticator",
+    "sms",
+    "voice",
+    "softwareOath",
+    "hardwareOath"
+  ),
+
+  # Optional: bulk-register the external auth method for transitive user members of the wrapper group.
+  # This adds the per-user externalAuthenticationMethod registration (idempotent) but does not remove other registrations.
+  [Parameter(Mandatory=$false)]
+  [bool]$BulkRegisterExternalAuthMethodForWrapperGroupUsers = $false,
+
+  # Optional: skip disabled accounts during bulk registration (recommended).
+  [Parameter(Mandatory=$false)]
+  [bool]$BulkRegisterSkipDisabledUsers = $true,
+
+  # Optional: include guest accounts during bulk registration. Defaults to false to avoid noisy failures in mixed/guest-heavy tenants.
+  [Parameter(Mandatory=$false)]
+  [bool]$BulkRegisterIncludeGuestUsers = $false
 
   ,
   [Parameter(Mandatory=$false)]
@@ -227,6 +258,303 @@ function Invoke-Beta {
   return Invoke-MgGraphRequest @params
 }
 
+function Invoke-GraphGetAllPages {
+  param([Parameter(Mandatory=$true)][string]$InitialUri)
+
+  $results = New-Object System.Collections.Generic.List[object]
+  $nextUri = $InitialUri
+
+  while (-not [string]::IsNullOrWhiteSpace($nextUri)) {
+    $response = Invoke-Beta -Method GET -Uri $nextUri
+
+    $valueProp = $response.PSObject.Properties["value"]
+    if ($null -ne $valueProp -and $null -ne $valueProp.Value) {
+      foreach ($item in @($valueProp.Value)) {
+        $results.Add($item) | Out-Null
+      }
+    }
+    else {
+      $results.Add($response) | Out-Null
+    }
+
+    $nextLinkProp = $response.PSObject.Properties["@odata.nextLink"]
+    if ($null -ne $nextLinkProp -and -not [string]::IsNullOrWhiteSpace([string]$nextLinkProp.Value)) {
+      $nextUri = [string]$nextLinkProp.Value
+    }
+    else {
+      $nextUri = $null
+    }
+  }
+
+  return @($results)
+}
+
+function Get-GroupTransitiveUsers {
+  param([Parameter(Mandatory=$true)][string]$GroupId)
+
+  $uri = "/v1.0/groups/$GroupId/transitiveMembers/microsoft.graph.user?`$select=id,displayName,userPrincipalName,accountEnabled,userType&`$top=999"
+  $users = Invoke-GraphGetAllPages -InitialUri $uri
+
+  return @(
+    foreach ($u in @($users)) {
+      [pscustomobject]@{
+        Id              = [string]$u.id
+        DisplayName     = [string]$u.displayName
+        UserPrincipalName = [string]$u.userPrincipalName
+        AccountEnabled  = if ($u.PSObject.Properties.Name -contains "accountEnabled") { [bool]$u.accountEnabled } else { $true }
+        UserType        = if ($u.PSObject.Properties.Name -contains "userType") { [string]$u.userType } else { $null }
+      }
+    }
+  )
+}
+
+function Test-UserHasExternalAuthMethodRegistration {
+  param(
+    [Parameter(Mandatory=$true)][string]$UserId,
+    [Parameter(Mandatory=$true)][string]$ConfigurationId
+  )
+
+  $existing = Invoke-GraphGetAllPages -InitialUri "/v1.0/users/$UserId/authentication/externalAuthenticationMethods"
+  return @(
+    $existing | Where-Object {
+      $configIdProp = $_.PSObject.Properties["configurationId"]
+      ($null -ne $configIdProp) -and ([string]$configIdProp.Value -eq $ConfigurationId)
+    }
+  ).Count -gt 0
+}
+
+function Add-UserExternalAuthMethodRegistration {
+  param(
+    [Parameter(Mandatory=$true)][string]$UserId,
+    [Parameter(Mandatory=$true)][string]$ConfigurationId,
+    [Parameter(Mandatory=$true)][string]$DisplayName
+  )
+
+  Invoke-Beta -Method POST -Uri "/v1.0/users/$UserId/authentication/externalAuthenticationMethods" -Body @{
+    "@odata.type"   = "#microsoft.graph.externalAuthenticationMethod"
+    configurationId = $ConfigurationId
+    displayName     = $DisplayName
+  } | Out-Null
+}
+
+function Invoke-BulkRegisterExternalAuthMethodForWrapperGroupUsers {
+  param(
+    [Parameter(Mandatory=$true)][string]$WrapperGroupId,
+    [Parameter(Mandatory=$true)][string]$ConfigurationId,
+    [Parameter(Mandatory=$true)][string]$ConfigurationDisplayName,
+    [Parameter(Mandatory=$true)][bool]$SkipDisabledUsers,
+    [Parameter(Mandatory=$true)][bool]$IncludeGuestUsers
+  )
+
+  $users = @()
+  try {
+    $users = @(Get-GroupTransitiveUsers -GroupId $WrapperGroupId)
+  }
+  catch {
+    throw "Could not enumerate transitive users in wrapper group '$WrapperGroupId'. Details: $($_.Exception.Message)"
+  }
+
+  if ($users.Count -eq 0) {
+    Write-Host "   No transitive user members found in wrapper group." -ForegroundColor Yellow
+    return
+  }
+
+  $eligibleUsers = @()
+  foreach ($u in $users) {
+    if ($SkipDisabledUsers -and -not $u.AccountEnabled) {
+      Write-Host "   Skipping disabled user: $($u.UserPrincipalName)" -ForegroundColor DarkYellow
+      continue
+    }
+
+    if (-not $IncludeGuestUsers -and -not [string]::IsNullOrWhiteSpace($u.UserType) -and $u.UserType -eq "Guest") {
+      Write-Host "   Skipping guest user: $($u.UserPrincipalName)" -ForegroundColor DarkYellow
+      continue
+    }
+
+    $eligibleUsers += $u
+  }
+
+  if ($eligibleUsers.Count -eq 0) {
+    Write-Host "   No eligible users to register after filters (disabled/guest)." -ForegroundColor Yellow
+    return
+  }
+
+  $registeredCount = 0
+  $alreadyCount = 0
+  $failedCount = 0
+
+  foreach ($u in $eligibleUsers) {
+    $label = if (-not [string]::IsNullOrWhiteSpace($u.UserPrincipalName)) { $u.UserPrincipalName } else { $u.Id }
+    try {
+      if (Test-UserHasExternalAuthMethodRegistration -UserId $u.Id -ConfigurationId $ConfigurationId) {
+        $alreadyCount++
+        Write-Host "   Already registered: $label" -ForegroundColor Green
+        continue
+      }
+
+      if ($PSCmdlet.ShouldProcess($label, "Add external auth method registration '$ConfigurationDisplayName'")) {
+        Add-UserExternalAuthMethodRegistration -UserId $u.Id -ConfigurationId $ConfigurationId -DisplayName $ConfigurationDisplayName
+        $registeredCount++
+        Write-Host "   Registered external auth method for: $label" -ForegroundColor Green
+      }
+      else {
+        Write-Host "   Planned external auth registration for: $label" -ForegroundColor Yellow
+      }
+    }
+    catch {
+      $failedCount++
+      Write-Warning "Could not register external auth method for '$label'. Continuing. Details: $($_.Exception.Message)"
+    }
+  }
+
+  Write-Host "   Bulk registration summary: eligible=$($eligibleUsers.Count), added=$registeredCount, alreadyPresent=$alreadyCount, failed=$failedCount" -ForegroundColor Cyan
+}
+
+function Get-AuthenticationMethodConfigurationsCollection {
+  $attempts = @(
+    "/v1.0/policies/authenticationMethodsPolicy/authenticationMethodConfigurations",
+    "/beta/policies/authenticationMethodsPolicy/authenticationMethodConfigurations"
+  )
+
+  $errors = New-Object System.Collections.Generic.List[string]
+  foreach ($uri in $attempts) {
+    try {
+      $resp = Invoke-Beta -Method GET -Uri $uri
+      return [pscustomobject]@{
+        CollectionUri = $uri
+        Items         = @($resp.value)
+      }
+    }
+    catch {
+      $errors.Add(("{0} => {1}" -f $uri, $_.Exception.Message)) | Out-Null
+    }
+  }
+
+  throw ("Failed to query authentication method configurations. Attempts: {0}" -f ($errors -join " || "))
+}
+
+# Adds/removes a wrapper-group exclusion on selected auth method policy configs, without deleting user registrations.
+function Set-WrapperGroupExclusionOnAuthMethodConfigs {
+  param(
+    [Parameter(Mandatory=$true)][string]$WrapperGroupId,
+    [Parameter(Mandatory=$true)][string[]]$MethodIds,
+    [Parameter(Mandatory=$true)][ValidateSet("Add","Remove")][string]$Mode
+  )
+
+  if ([string]::IsNullOrWhiteSpace($WrapperGroupId)) {
+    throw "WrapperGroupId is required."
+  }
+
+  $requestedIds = @($MethodIds | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
+  if ($requestedIds.Count -eq 0) {
+    Write-Host "   No authentication method IDs were specified for wrapper-group exclusions." -ForegroundColor Yellow
+    return
+  }
+
+  $configCollection = Get-AuthenticationMethodConfigurationsCollection
+  $configList = @($configCollection.Items)
+  $configById = @{}
+  foreach ($cfg in $configList) {
+    $idProp = $cfg.PSObject.Properties["id"]
+    if ($null -eq $idProp -or [string]::IsNullOrWhiteSpace([string]$idProp.Value)) {
+      continue
+    }
+
+    $configById[[string]$idProp.Value] = $cfg
+    $configById[[string]$idProp.Value.ToString().ToLowerInvariant()] = $cfg
+  }
+
+  foreach ($requestedId in $requestedIds) {
+    $lookupKey = [string]$requestedId
+    $config = $null
+    if ($configById.ContainsKey($lookupKey)) {
+      $config = $configById[$lookupKey]
+    }
+    elseif ($configById.ContainsKey($lookupKey.ToLowerInvariant())) {
+      $config = $configById[$lookupKey.ToLowerInvariant()]
+    }
+
+    if (-not $config) {
+      Write-Warning "Authentication method config '$requestedId' was not found in this tenant; skipping."
+      continue
+    }
+
+    $configId = [string]$config.id
+    $currentExcludeTargets = @()
+    if (($config.PSObject.Properties.Name -contains "excludeTargets") -and $null -ne $config.excludeTargets) {
+      $currentExcludeTargets = @($config.excludeTargets)
+    }
+
+    $groupExcluded = @(
+      $currentExcludeTargets | Where-Object {
+        $targetTypeProp = $_.PSObject.Properties["targetType"]
+        $idProp = $_.PSObject.Properties["id"]
+        ($null -ne $targetTypeProp) -and ([string]$targetTypeProp.Value -eq "group") -and
+        ($null -ne $idProp) -and ([string]$idProp.Value -eq $WrapperGroupId)
+      }
+    ).Count -gt 0
+
+    if ($Mode -eq "Add" -and $groupExcluded) {
+      Write-Host "   Auth method '$configId' already excludes wrapper group." -ForegroundColor Green
+      continue
+    }
+    if ($Mode -eq "Remove" -and -not $groupExcluded) {
+      Write-Host "   Auth method '$configId' does not exclude wrapper group; nothing to remove." -ForegroundColor Green
+      continue
+    }
+
+    $newExcludeTargets = @()
+    foreach ($target in $currentExcludeTargets) {
+      $targetTypeProp = $target.PSObject.Properties["targetType"]
+      $idProp = $target.PSObject.Properties["id"]
+      $isWrapperTarget =
+        ($null -ne $targetTypeProp) -and ([string]$targetTypeProp.Value -eq "group") -and
+        ($null -ne $idProp) -and ([string]$idProp.Value -eq $WrapperGroupId)
+
+      if ($Mode -eq "Remove" -and $isWrapperTarget) {
+        continue
+      }
+
+      $targetHash = @{}
+      foreach ($prop in $target.PSObject.Properties) {
+        $targetHash[$prop.Name] = $prop.Value
+      }
+      $newExcludeTargets += $targetHash
+    }
+
+    if ($Mode -eq "Add") {
+      $newExcludeTargets += @{
+        targetType = "group"
+        id         = $WrapperGroupId
+      }
+    }
+
+    $patchBody = @{
+      excludeTargets = @($newExcludeTargets)
+    }
+    $odataTypeProp = $config.PSObject.Properties["@odata.type"]
+    if ($null -ne $odataTypeProp -and -not [string]::IsNullOrWhiteSpace([string]$odataTypeProp.Value)) {
+      $patchBody["@odata.type"] = [string]$odataTypeProp.Value
+    }
+
+    $verb = if ($Mode -eq "Add") { "Add wrapper-group exclusion" } else { "Remove wrapper-group exclusion" }
+    $patchUri = ($configCollection.CollectionUri.TrimEnd("/") + "/$configId")
+    try {
+      if ($PSCmdlet.ShouldProcess("authenticationMethodConfigurations/$configId", "$verb for wrapper group '$WrapperGroupId'")) {
+        Invoke-Beta -Method PATCH -Uri $patchUri -Body $patchBody | Out-Null
+        $resultWord = if ($Mode -eq "Add") { "Added" } else { "Removed" }
+        Write-Host "   $resultWord wrapper-group exclusion on auth method '$configId'." -ForegroundColor Green
+      }
+      else {
+        Write-Host "   Planned $($verb.ToLowerInvariant()) on auth method '$configId'." -ForegroundColor Yellow
+      }
+    }
+    catch {
+      Write-Warning "Could not update auth method '$configId' exclusions. Continuing. Details: $($_.Exception.Message)"
+    }
+  }
+}
+
 # External Authentication Method endpoints/schema vary by tenant rollout and Graph version.
 # This helper tries a few shapes and returns the first successful match by displayName.
 function Get-ExternalAuthMethodConfigByName {
@@ -295,6 +623,11 @@ $scopes = @(
   "Group.ReadWrite.All",
   "Directory.ReadWrite.All" # helps with group nesting + lookups in some tenants
 )
+
+if ($BulkRegisterExternalAuthMethodForWrapperGroupUsers) {
+  # Needed to create/list externalAuthenticationMethods on users.
+  $scopes += "UserAuthMethod-External.ReadWrite.All"
+}
 
 Connect-MgGraph -Scopes $scopes | Out-Null
 if (Get-Command -Name "Select-MgProfile" -ErrorAction SilentlyContinue) {
@@ -610,6 +943,125 @@ else {
   }
 }
 
+# --- 4b) Exclude wrapper group from common Microsoft MFA methods (best-effort) ---
+if ($RestrictCommonMicrosoftMfaMethodsForWrapperGroup) {
+  $restrictionMode = if ($isOffboarding) { "Remove" } else { "Add" }
+  $restrictionVerb = if ($isOffboarding) { "Removing" } else { "Applying" }
+  Write-Step "$restrictionVerb wrapper-group exclusions on common Microsoft MFA methods (best-effort)..."
+
+  $wrapperForMethodRestrictions = $null
+  if (Get-Variable -Name "wrapper" -ErrorAction SilentlyContinue) {
+    $wrapperForMethodRestrictions = $wrapper
+  }
+
+  if (-not $wrapperForMethodRestrictions -or -not $wrapperForMethodRestrictions.Id) {
+    try {
+      $wrapperForMethodRestrictions = Get-GroupByDisplayNameUnique -DisplayName $WrapperGroupName
+    }
+    catch {
+      Write-Warning "Could not resolve wrapper group '$WrapperGroupName' for auth method exclusions. Continuing. Details: $($_.Exception.Message)"
+    }
+  }
+
+  if (-not $wrapperForMethodRestrictions) {
+    if ($isOffboarding) {
+      Write-Host "   Wrapper group '$WrapperGroupName' not found; skipping auth method exclusion cleanup." -ForegroundColor Yellow
+    }
+    else {
+      Write-Warning "Wrapper group '$WrapperGroupName' not found; skipping common Microsoft MFA method restrictions."
+    }
+  }
+  elseif (-not $wrapperForMethodRestrictions.Id) {
+    Write-Host "   Skipping auth method exclusion updates because wrapper group is planned only (-WhatIf)." -ForegroundColor Yellow
+  }
+  else {
+    try {
+      Set-WrapperGroupExclusionOnAuthMethodConfigs `
+        -WrapperGroupId $wrapperForMethodRestrictions.Id `
+        -MethodIds $WrapperGroupExcludedMethodIds `
+        -Mode $restrictionMode
+    }
+    catch {
+      if ($WhatIfPreference) {
+        Write-Warning "Could not query/update auth method exclusions during -WhatIf. Continuing dry-run. Details: $($_.Exception.Message)"
+      }
+      else {
+        Write-Warning "Could not apply wrapper-group auth method exclusions. Continuing. Details: $($_.Exception.Message)"
+      }
+    }
+  }
+}
+else {
+  Write-Host "==> Skipping wrapper-group exclusions on common Microsoft MFA methods by parameter." -ForegroundColor Cyan
+}
+
+# --- 4c) Optional bulk per-user registration of the external auth method (best-effort) ---
+if ($BulkRegisterExternalAuthMethodForWrapperGroupUsers) {
+  if ($isOffboarding) {
+    Write-Host "==> Skipping bulk external auth registration in offboarding mode." -ForegroundColor Cyan
+  }
+  else {
+    Write-Step "Bulk-registering external auth method for eligible wrapper-group users (best-effort, idempotent)..."
+
+    $wrapperForBulkRegistration = $null
+    if (Get-Variable -Name "wrapper" -ErrorAction SilentlyContinue) {
+      $wrapperForBulkRegistration = $wrapper
+    }
+
+    if (-not $wrapperForBulkRegistration -or -not $wrapperForBulkRegistration.Id) {
+      try {
+        $wrapperForBulkRegistration = Get-GroupByDisplayNameUnique -DisplayName $WrapperGroupName
+      }
+      catch {
+        Write-Warning "Could not resolve wrapper group '$WrapperGroupName' for bulk registration. Continuing. Details: $($_.Exception.Message)"
+      }
+    }
+
+    if (-not $wrapperForBulkRegistration) {
+      Write-Warning "Wrapper group '$WrapperGroupName' not found; skipping bulk external auth registration."
+    }
+    elseif (-not $wrapperForBulkRegistration.Id) {
+      Write-Host "   Skipping bulk registration because wrapper group is planned only (-WhatIf)." -ForegroundColor Yellow
+    }
+    elseif (-not $extConfig -or -not $extConfig.id) {
+      if ($WhatIfPreference) {
+        Write-Host "   Planned bulk external auth registration for wrapper-group users (external config is planned only in -WhatIf)." -ForegroundColor Yellow
+      }
+      else {
+        Write-Warning "External auth method configuration ID is unavailable; skipping bulk user registration."
+      }
+    }
+    else {
+      try {
+        $configDisplayName = if ($extConfig.PSObject.Properties.Name -contains "displayName" -and -not [string]::IsNullOrWhiteSpace([string]$extConfig.displayName)) {
+          [string]$extConfig.displayName
+        }
+        else {
+          $Name
+        }
+
+        Invoke-BulkRegisterExternalAuthMethodForWrapperGroupUsers `
+          -WrapperGroupId $wrapperForBulkRegistration.Id `
+          -ConfigurationId ([string]$extConfig.id) `
+          -ConfigurationDisplayName $configDisplayName `
+          -SkipDisabledUsers $BulkRegisterSkipDisabledUsers `
+          -IncludeGuestUsers $BulkRegisterIncludeGuestUsers
+      }
+      catch {
+        if ($WhatIfPreference) {
+          Write-Warning "Could not bulk-register external auth method during -WhatIf. Continuing dry-run. Details: $($_.Exception.Message)"
+        }
+        else {
+          Write-Warning "Could not bulk-register external auth method for wrapper-group users. Continuing. Details: $($_.Exception.Message)"
+        }
+      }
+    }
+  }
+}
+else {
+  Write-Host "==> Skipping bulk external auth registration for wrapper-group users by parameter." -ForegroundColor Cyan
+}
+
 # --- 5) Create/Remove Conditional Access policy for Duo rollout ---
 Write-Step "Ensuring Conditional Access policy '$CaPolicyName' exists..."
 $existingCa = $null
@@ -860,6 +1312,7 @@ if ($isOffboarding) {
   Write-Host "  3) Entra -> Authentication methods -> Policies -> Microsoft Authenticator: confirm enabled"
   Write-Host "  4) Entra -> Authentication methods -> Registration campaign: confirm enabled (if you left defaults)"
   Write-Host "  5) Entra -> Authentication methods -> System-preferred MFA: confirm enabled"
+  Write-Host "  6) Entra -> Authentication methods -> Policies: confirm wrapper-group exclusions were removed from common Microsoft MFA methods (if enabled)"
 }
 else {
   # Rollout checklist: confirm Duo is active and Microsoft prompts are no longer preferred.
@@ -867,7 +1320,10 @@ else {
   Write-Host "  2) Entra -> Conditional Access: confirm '$CaPolicyName' enabled and scoped correctly"
   Write-Host "  3) Entra -> Authentication methods -> Policies -> Microsoft Authenticator: confirm disabled (if you left defaults)"
   Write-Host "  4) Entra -> Authentication methods -> Registration campaign: confirm disabled (if you left defaults)"
-  Write-Host "  5) myaccount.microsoft.com -> Security info: confirm users in pilot get prompted with External method"
+  Write-Host "  5) Entra -> Authentication methods -> Policies: confirm common Microsoft MFA methods exclude '$WrapperGroupName' (if enabled)"
+  Write-Host "  6) If bulk registration was enabled: Entra/myaccount -> Security info: confirm wrapper-group users have '$Name' registered"
+  Write-Host "  7) myaccount.microsoft.com -> Security info: confirm users in pilot get prompted with External method"
 }
 Write-Host ""
-Write-Host "Note: This script changes tenant auth method policy settings (best-effort), but it does not remove or add per-user MFA registrations. If user prompts still look wrong, review the user's registered methods and tenant authentication method policies." -ForegroundColor Yellow
+Write-Host "Note: This script changes tenant auth method policy settings (best-effort). It only adds per-user External Authentication Method registrations when -BulkRegisterExternalAuthMethodForWrapperGroupUsers is enabled; it does not remove other per-user MFA registrations. If user prompts still look wrong, review the user's registered methods and tenant authentication method policies." -ForegroundColor Yellow
+Write-Host "Note: Bulk per-user registration requires delegated Graph scope 'UserAuthMethod-External.ReadWrite.All' (requested automatically when that option is enabled)." -ForegroundColor Yellow
