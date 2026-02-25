@@ -29,6 +29,13 @@
   Run a best-effort diagnostic summary (no changes) for common settings that cause EAM-only pilot users to get stuck
   in "Let's keep your account secure" registration loops.
 
+.PARAMETER EnforceStrictExternalOnlyTenantPrereqs
+  Best-effort tenant-wide enforcement for the scriptable prerequisites of a strict external-only rollout:
+   - Disable Security Defaults
+   - Disable admin SSPR (authorizationPolicy.allowedToUseSSPR when exposed)
+  Note: Password reset / SSPR portal settings (registration prompt, SSPR enabled scope, reset methods) are not
+  reliably exposed via supported Graph endpoints in this script and still require manual configuration.
+
 .PARAMETER DisableMicrosoftAuthenticatorPolicy
   Disable the Microsoft Authenticator authentication method policy (best-effort) so users aren't offered Authenticator for MFA.
 
@@ -87,13 +94,14 @@ param(
   [bool]$DisableSystemPreferredMfa = $true
 
   ,
-  # Exclude the wrapper group from common Microsoft MFA methods (SMS/voice/Auth app/OATH)
-  # so Conditional Access "require MFA" resolves to the external method for pilot users.
+  # Exclude the wrapper group from common Microsoft MFA methods so Conditional Access
+  # "require MFA" resolves to the external method for pilot users.
   [Parameter(Mandatory=$false)]
   [bool]$RestrictCommonMicrosoftMfaMethodsForWrapperGroup = $true,
 
   # Authentication method configuration IDs to exclude the wrapper group from.
-  # Keep this focused on common MFA methods; leave break-glass/onboarding methods like TAP alone.
+  # Strict external-only default blocks common Microsoft MFA methods. Override only if you intentionally
+  # want to allow additional Microsoft methods for a pilot.
   [Parameter(Mandatory=$false)]
   [string[]]$WrapperGroupExcludedMethodIds = @(
     "microsoftAuthenticator",
@@ -118,7 +126,11 @@ param(
 
   # Best-effort diagnostics for EAM-only pilot loop conditions (no tenant changes).
   [Parameter(Mandatory=$false)]
-  [bool]$AuditEamOnlyPilotReadiness = $true
+  [bool]$AuditEamOnlyPilotReadiness = $true,
+
+  # Best-effort tenant-wide enforcement for strict external-only prerequisites (high impact).
+  [Parameter(Mandatory=$false)]
+  [bool]$EnforceStrictExternalOnlyTenantPrereqs = $false
 
   ,
   [Parameter(Mandatory=$false)]
@@ -912,11 +924,12 @@ function Invoke-EamOnlyPilotReadinessAudit {
     Write-Warning "Could not query system-preferred MFA state. Details: $($_.Exception.Message)"
   }
 
-  Write-Host "   Manual checks still required for loop troubleshooting (Graph coverage is inconsistent for Password reset screens)." -ForegroundColor Yellow
-  Write-Host "   For an EAM-only PILOT, verify these expected values:" -ForegroundColor Yellow
+  Write-Host "   Manual checks still required for loop troubleshooting (Password reset / SSPR portal coverage is inconsistent in supported Graph APIs)." -ForegroundColor Yellow
+  Write-Host "   (The optional -EnforceStrictExternalOnlyTenantPrereqs switch only covers Security Defaults + admin SSPR flag.)" -ForegroundColor Yellow
+  Write-Host "   For a STRICT external-only pilot, verify these expected values:" -ForegroundColor Yellow
   Write-Host "     1) Entra -> Protection -> Password reset -> Registration -> 'Require users to register when signing in' = No (during pilot testing)"
-  Write-Host "     2) Entra -> Protection -> Password reset -> Properties -> SSPR enabled = No for pilot users OR exclude the pilot from SSPR while testing"
-  Write-Host "     3) Entra -> Protection -> Password reset -> Authentication methods -> Mobile phone / Office phone disabled for pilot expectations; avoid forcing an extra recovery method during pilot"
+  Write-Host "     2) Entra -> Protection -> Password reset -> Properties -> Self service password reset enabled = No (strict external-only requirement)"
+  Write-Host "     3) Entra -> Protection -> Password reset -> Authentication methods -> Mobile phone / Office phone disabled; do not require extra recovery methods"
   Write-Host "     4) Test a pilot user that is a DIRECT member of '$WrapperGroupName' (nested membership can delay/confuse troubleshooting)"
   if (-not [string]::IsNullOrWhiteSpace($PilotGroupName)) {
     Write-Host "        (Pilot group '$PilotGroupName' may be nested in the wrapper; direct membership is recommended for troubleshooting.)"
@@ -934,6 +947,74 @@ function Invoke-EamOnlyPilotReadinessAudit {
   }
 }
 
+function Invoke-StrictExternalOnlyTenantPrereqEnforcement {
+  Write-Step "Enforcing strict external-only tenant prerequisites (best-effort, high impact)..."
+
+  # 1) Security Defaults must be off for strict external-only pilot behavior.
+  try {
+    $secDefaults = Invoke-Beta -Method GET -Uri "/v1.0/policies/identitySecurityDefaultsEnforcementPolicy"
+    $isEnabled = [bool](Get-GraphMemberValue -Object $secDefaults -Name "isEnabled")
+    if (-not $isEnabled) {
+      Write-Host "   Security Defaults already disabled." -ForegroundColor Green
+    }
+    else {
+      if ($PSCmdlet.ShouldProcess("identitySecurityDefaultsEnforcementPolicy", "Disable Security Defaults")) {
+        Invoke-Beta -Method PATCH -Uri "/v1.0/policies/identitySecurityDefaultsEnforcementPolicy" -Body @{
+          isEnabled = $false
+        } | Out-Null
+        Write-Host "   Disabled Security Defaults." -ForegroundColor Green
+      }
+      else {
+        Write-Host "   Planned disable Security Defaults." -ForegroundColor Yellow
+      }
+    }
+  }
+  catch {
+    Write-Warning "Could not query/update Security Defaults. Verify manually: Entra ID -> Properties -> Manage security defaults = No. Details: $($_.Exception.Message)"
+  }
+
+  # 2) Disable admin SSPR signal (this is not the full Password reset / SSPR configuration).
+  try {
+    $authorizationPolicy = Invoke-Beta -Method GET -Uri "/v1.0/policies/authorizationPolicy"
+    $ssprFlagName = $null
+    foreach ($candidate in @("allowedToUseSSPR","allowedToUseSspr")) {
+      if (Test-GraphMemberExists -Object $authorizationPolicy -Name $candidate) {
+        $ssprFlagName = $candidate
+        break
+      }
+    }
+
+    if (-not $ssprFlagName) {
+      Write-Host "   authorizationPolicy did not expose an admin SSPR flag; skipping admin SSPR enforcement." -ForegroundColor Yellow
+    }
+    else {
+      $currentValue = [bool](Get-GraphMemberValue -Object $authorizationPolicy -Name $ssprFlagName)
+      if (-not $currentValue) {
+        Write-Host "   Admin SSPR flag (authorizationPolicy.$ssprFlagName) already false." -ForegroundColor Green
+      }
+      else {
+        if ($PSCmdlet.ShouldProcess("authorizationPolicy", "Set $ssprFlagName = false (disable admin SSPR)")) {
+          Invoke-Beta -Method PATCH -Uri "/v1.0/policies/authorizationPolicy" -Body @{
+            $ssprFlagName = $false
+          } | Out-Null
+          Write-Host "   Set authorizationPolicy.$ssprFlagName = false (admin SSPR disabled)." -ForegroundColor Green
+        }
+        else {
+          Write-Host "   Planned authorizationPolicy.$ssprFlagName = false (admin SSPR disable)." -ForegroundColor Yellow
+        }
+      }
+    }
+  }
+  catch {
+    Write-Warning "Could not query/update authorizationPolicy admin SSPR flag. This does NOT cover full Password reset / SSPR settings. Details: $($_.Exception.Message)"
+  }
+
+  Write-Host "   Manual-only (not reliably enforced by this script via supported Graph APIs):" -ForegroundColor Yellow
+  Write-Host "     - Entra -> Protection -> Password reset -> Registration -> 'Require users to register when signing in' = No"
+  Write-Host "     - Entra -> Protection -> Password reset -> Properties -> Self service password reset enabled = No"
+  Write-Host "     - Entra -> Protection -> Password reset -> Authentication methods -> Mobile/Office phone disabled; avoid extra recovery requirements"
+}
+
 # --- Prereqs ---
 Ensure-Module -ModuleName "Microsoft.Graph"
 
@@ -948,6 +1029,12 @@ $scopes = @(
 if ($BulkRegisterExternalAuthMethodForWrapperGroupUsers) {
   # Needed to create/list externalAuthenticationMethods on users.
   $scopes += "UserAuthMethod-External.ReadWrite.All"
+}
+
+if ($EnforceStrictExternalOnlyTenantPrereqs) {
+  # Needed for Security Defaults + authorizationPolicy updates.
+  $scopes += "Policy.ReadWrite.Authorization"
+  $scopes += "Policy.ReadWrite.SecurityDefaults"
 }
 
 Connect-MgGraph -Scopes $scopes | Out-Null
@@ -974,6 +1061,26 @@ else {
       throw "Parameter -$requiredParamName is required unless -OffboardToMicrosoftPreferred is specified."
     }
   }
+
+  Write-Host "   Target posture (strict external-only): Duo External MFA only for '$WrapperGroupName' (Microsoft Authenticator/SMS/Voice/OATH excluded by default)." -ForegroundColor Yellow
+  Write-Host "   SSPR/combined registration can still cause loops unless Password reset settings are disabled manually (see audit output)." -ForegroundColor Yellow
+}
+
+if ($EnforceStrictExternalOnlyTenantPrereqs) {
+  if ($isOffboarding) {
+    Write-Host "==> Skipping strict external-only tenant prerequisite enforcement in offboarding mode." -ForegroundColor Cyan
+  }
+  else {
+    try {
+      Invoke-StrictExternalOnlyTenantPrereqEnforcement
+    }
+    catch {
+      Write-Warning "Could not complete strict external-only tenant prerequisite enforcement. Continuing. Details: $($_.Exception.Message)"
+    }
+  }
+}
+else {
+  Write-Host "==> Skipping strict external-only tenant prerequisite enforcement by parameter." -ForegroundColor Cyan
 }
 
 # --- 1) Complete Authentication Methods migration (UCP) ---
@@ -1737,11 +1844,13 @@ else {
   Write-Host "  2) Entra -> Conditional Access: confirm '$CaPolicyName' enabled and scoped correctly"
   Write-Host "  3) Entra -> Authentication methods -> Policies -> Microsoft Authenticator: confirm disabled (if you left defaults)"
   Write-Host "  4) Entra -> Authentication methods -> Registration campaign: confirm disabled (if you left defaults)"
-  Write-Host "  5) Entra -> Authentication methods -> Policies: confirm common Microsoft MFA methods exclude '$WrapperGroupName' (if enabled)"
+  Write-Host "  5) Entra -> Authentication methods -> Policies: confirm common Microsoft MFA methods exclude '$WrapperGroupName' (Authenticator/SMS/Voice/OATH, if enabled)"
   Write-Host "  6) If bulk registration was enabled: Entra/myaccount -> Security info: confirm wrapper-group users have '$Name' registered"
-  Write-Host "  7) Review the EAM-only pilot readiness audit output (expected pilot values for Security Defaults / SSPR / Password reset registration)"
-  Write-Host "  8) myaccount.microsoft.com -> Security info: confirm users in pilot get prompted with External method"
+  Write-Host "  7) Review the EAM-only pilot readiness audit output (expected values for Security Defaults / SSPR / Password reset registration)"
+  Write-Host "  8) myaccount.microsoft.com -> Security info / sign-in: confirm pilot users use External MFA and are not offered Microsoft MFA methods"
 }
 Write-Host ""
 Write-Host "Note: This script changes tenant auth method policy settings (best-effort). It only adds per-user External Authentication Method registrations when -BulkRegisterExternalAuthMethodForWrapperGroupUsers is enabled; it does not remove other per-user MFA registrations. If user prompts still look wrong, review the user's registered methods and tenant authentication method policies." -ForegroundColor Yellow
 Write-Host "Note: Bulk per-user registration requires delegated Graph scope 'UserAuthMethod-External.ReadWrite.All' (requested automatically when that option is enabled)." -ForegroundColor Yellow
+Write-Host "Note: Use -EnforceStrictExternalOnlyTenantPrereqs `$true to automatically disable Security Defaults and the admin SSPR authorizationPolicy flag (best-effort, tenant-wide)." -ForegroundColor Yellow
+Write-Host "Note: Strict external-only rollout also requires Password reset / SSPR settings to be disabled manually (the script audits these signals but does not reliably enforce SSPR disablement via Graph)." -ForegroundColor Yellow
