@@ -29,6 +29,9 @@
 .PARAMETER DisableSystemPreferredMfa
   Disable system-preferred MFA (best-effort) so Entra doesn't steer users to Microsoft-preferred MFA methods.
 
+.PARAMETER OffboardToMicrosoftPreferred
+  Reverse the Duo rollout (best-effort): remove the Duo Conditional Access policy, disable the External Authentication Method configuration, and restore Microsoft-preferred MFA settings.
+
 .NOTES
   Requires Microsoft.Graph PowerShell SDK.
   Uses Graph beta endpoints for External Authentication Methods + migration state in many tenants.
@@ -39,13 +42,13 @@ param(
   [Parameter(Mandatory=$true)]
   [string]$Name,
 
-  [Parameter(Mandatory=$true)]
+  [Parameter(Mandatory=$false)]
   [string]$ClientId,
 
-  [Parameter(Mandatory=$true)]
+  [Parameter(Mandatory=$false)]
   [string]$DiscoveryEndpoint,
 
-  [Parameter(Mandatory=$true)]
+  [Parameter(Mandatory=$false)]
   [string]$AppId,
 
   [Parameter(Mandatory=$false)]
@@ -55,7 +58,7 @@ param(
   [string]$WrapperGroupName = "DMX-ExternalMFA-Users",
 
   [Parameter(Mandatory=$false)]
-  [string]$CaPolicyName = "DMX - Require MFA (External MFA Rollout)",
+  [string]$CaPolicyName = "DMX - Require MFA (External MFA)",
 
   [Parameter(Mandatory=$false)]
   [bool]$DisableMicrosoftAuthenticatorPolicy = $true,
@@ -65,6 +68,10 @@ param(
 
   [Parameter(Mandatory=$false)]
   [bool]$DisableSystemPreferredMfa = $true
+
+  ,
+  [Parameter(Mandatory=$false)]
+  [switch]$OffboardToMicrosoftPreferred
 )
 
 Set-StrictMode -Version Latest
@@ -88,6 +95,62 @@ function Ensure-Module {
   if (-not (Get-Module -ListAvailable -Name $ModuleName)) {
     throw "Missing module '$ModuleName'. Install with: Install-Module $ModuleName -Scope CurrentUser"
   }
+}
+
+function Get-ExceptionMessageText {
+  param([Parameter(Mandatory=$true)]$ErrorObject)
+
+  $exception = if ($ErrorObject -is [System.Management.Automation.ErrorRecord]) {
+    $ErrorObject.Exception
+  }
+  elseif ($ErrorObject -is [System.Exception]) {
+    $ErrorObject
+  }
+  else {
+    return [string]$ErrorObject
+  }
+
+  $messages = New-Object System.Collections.Generic.List[string]
+  while ($null -ne $exception) {
+    if (-not [string]::IsNullOrWhiteSpace($exception.Message)) {
+      $messages.Add($exception.Message) | Out-Null
+    }
+    $exception = $exception.InnerException
+  }
+
+  return ($messages -join " | ")
+}
+
+function Test-LooksLikeSsprMigrationBlocker {
+  param([Parameter(Mandatory=$true)][string]$MessageText)
+
+  if ([string]::IsNullOrWhiteSpace($MessageText)) {
+    return $false
+  }
+
+  return (
+    $MessageText -match "(?i)\bsspr\b" -or
+    $MessageText -match "(?i)self[- ]service password reset" -or
+    $MessageText -match "(?i)password reset" -or
+    $MessageText -match "(?i)authentication methods.*migration" -or
+    $MessageText -match "(?i)legacy.*authentication method"
+  )
+}
+
+function Write-SsprMigrationBlockerGuidance {
+  param([Parameter(Mandatory=$true)][string]$ErrorText)
+
+  Write-Host "   Likely SSPR / legacy auth-method migration blocker detected." -ForegroundColor Yellow
+  Write-Host "   Manual remediation (tenant-wide) to try before rerunning:" -ForegroundColor Yellow
+  Write-Host "     1) Entra admin center -> Protection -> Password reset -> Authentication methods"
+  Write-Host "        Review legacy SSPR method settings and temporarily disable conflicting legacy settings if needed."
+  Write-Host "     2) Entra admin center -> Protection -> Password reset -> Registration"
+  Write-Host "        Check legacy registration settings that may block Authentication Methods policy migration."
+  Write-Host "     3) Entra admin center -> Protection -> Authentication methods -> Policies / Migration"
+  Write-Host "        Confirm methods are configured in Authentication Methods policy and retry migration."
+  Write-Host "     4) Rerun this script after the SSPR/legacy settings change."
+  Write-Host "   Note: This script continues even when migration completion fails, but some tenants require the migration to complete for consistent behavior." -ForegroundColor Yellow
+  Write-Host "   Error text (trimmed): $ErrorText" -ForegroundColor DarkYellow
 }
 
 function Escape-ODataStringLiteral {
@@ -134,7 +197,7 @@ function Invoke-Beta {
     [Parameter(Mandatory=$true)][ValidateSet("GET","POST","PATCH","PUT","DELETE")]
     [string]$Method,
     [Parameter(Mandatory=$true)]
-    [string]$Uri,   # must start with /beta/...
+    [string]$Uri,   # may be /v1.0/... or /beta/...
     [Parameter(Mandatory=$false)]
     $Body
   )
@@ -149,6 +212,58 @@ function Invoke-Beta {
   }
 
   return Invoke-MgGraphRequest @params
+}
+
+function Get-ExternalAuthMethodConfigByName {
+  param([Parameter(Mandatory=$true)][string]$DisplayName)
+
+  $queryAttempts = @(
+    "/v1.0/policies/authenticationMethodsPolicy/authenticationMethodConfigurations",
+    "/beta/policies/authenticationMethodsPolicy/authenticationMethodConfigurations",
+    "/v1.0/policies/authenticationMethodsPolicy?`$expand=authenticationMethodConfigurations",
+    "/beta/policies/authenticationMethodsPolicy?`$expand=authenticationMethodConfigurations",
+    "/v1.0/policies/authenticationMethodsPolicy",
+    "/beta/policies/authenticationMethodsPolicy"
+  )
+
+  $errors = New-Object System.Collections.Generic.List[string]
+
+  foreach ($queryUri in $queryAttempts) {
+    try {
+      $response = Invoke-Beta -Method GET -Uri $queryUri
+
+      $items = @()
+      if ($queryUri -match "/authenticationMethodConfigurations$") {
+        $items = @($response.value)
+      }
+      elseif ($null -ne $response.authenticationMethodConfigurations) {
+        $items = @($response.authenticationMethodConfigurations)
+      }
+
+      $match = @(
+        $items | Where-Object {
+          $displayNameProp = $_.PSObject.Properties["displayName"]
+          $odataTypeProp = $_.PSObject.Properties["@odata.type"]
+          $hasExternalShape =
+            ($_.PSObject.Properties.Name -contains "openIdConnectSetting") -or
+            ($_.PSObject.Properties.Name -contains "appId") -or
+            ($null -ne $odataTypeProp -and [string]$odataTypeProp.Value -match "externalAuthenticationMethod")
+
+          ($null -ne $displayNameProp) -and ([string]$displayNameProp.Value -eq $DisplayName) -and $hasExternalShape
+        }
+      ) | Select-Object -First 1
+
+      return [pscustomobject]@{
+        Item     = $match
+        QueryUri = $queryUri
+      }
+    }
+    catch {
+      $errors.Add(("{0} => {1}" -f $queryUri, $_.Exception.Message)) | Out-Null
+    }
+  }
+
+  throw ("Failed to query external authentication method configurations. Attempts: {0}" -f ($errors -join " || "))
 }
 
 # --- Prereqs ---
@@ -170,89 +285,119 @@ else {
   Write-Host "   Select-MgProfile not available (Microsoft.Graph SDK v2+). Continuing; beta calls use explicit /beta URIs." -ForegroundColor Yellow
 }
 
-# --- 1) Complete Authentication Methods migration (UCP) ---
-# This is tenant-dependent; in some tenants this property is writable via beta.
-Write-Step "Setting Authentication Methods policy migration state to 'migrationComplete' (best-effort)..."
-try {
-  # Try PATCH to authenticationMethodsPolicy (beta)
-  if ($PSCmdlet.ShouldProcess("policies/authenticationMethodsPolicy", "Set policyMigrationState to migrationComplete")) {
-    Invoke-Beta -Method PATCH -Uri "/beta/policies/authenticationMethodsPolicy" -Body @{
-      policyMigrationState = "migrationComplete"
-    } | Out-Null
-    Write-Host "   Migration state PATCH submitted." -ForegroundColor Green
-  }
-  else {
-    Write-Host "   Planned migration state PATCH." -ForegroundColor Yellow
-  }
+$isOffboarding = [bool]$OffboardToMicrosoftPreferred
+if ($isOffboarding) {
+  Write-Step "Offboarding mode enabled: removing Duo CA and restoring Microsoft-preferred MFA settings (best-effort)."
 }
-catch {
-  Write-Warning "Could not set policyMigrationState. This may already be complete, or your tenant doesn't allow this via Graph. Details: $($_.Exception.Message)"
-}
-
-# --- 2) Ensure wrapper group exists ---
-Write-Step "Ensuring wrapper group '$WrapperGroupName' exists..."
-$wrapper = Get-GroupByDisplayNameUnique -DisplayName $WrapperGroupName
-if (-not $wrapper) {
-  if ($PSCmdlet.ShouldProcess($WrapperGroupName, "Create security group")) {
-    $wrapper = New-MgGroup -DisplayName $WrapperGroupName `
-      -MailEnabled:$false `
-      -MailNickname (New-SafeMailNickname -DisplayName $WrapperGroupName) `
-      -SecurityEnabled:$true
-    Write-Host "   Created group: $($wrapper.Id)" -ForegroundColor Green
-  }
-  else {
-    $wrapper = New-PlannedGroupObject -DisplayName $WrapperGroupName
-    Write-Host "   Planned group creation." -ForegroundColor Yellow
-  }
-} else {
-  Write-Host "   Found group: $($wrapper.Id)" -ForegroundColor Green
-}
-
-# --- 3) Ensure Pilot group exists and nest it ---
-Write-Step "Ensuring pilot group '$PilotGroupName' exists..."
-$pilot = Get-GroupByDisplayNameUnique -DisplayName $PilotGroupName
-if (-not $pilot) {
-  if ($PSCmdlet.ShouldProcess($PilotGroupName, "Create security group")) {
-    $pilot = New-MgGroup -DisplayName $PilotGroupName `
-      -MailEnabled:$false `
-      -MailNickname (New-SafeMailNickname -DisplayName $PilotGroupName) `
-      -SecurityEnabled:$true
-    Write-Host "   Created pilot group: $($pilot.Id)" -ForegroundColor Green
-  }
-  else {
-    $pilot = New-PlannedGroupObject -DisplayName $PilotGroupName
-    Write-Host "   Planned pilot group creation." -ForegroundColor Yellow
-  }
-} else {
-  Write-Host "   Found pilot group: $($pilot.Id)" -ForegroundColor Green
-}
-
-Write-Step "Nesting pilot group into wrapper group (best-effort, idempotent)..."
-try {
-  if (-not $wrapper.Id -or -not $pilot.Id) {
-    Write-Host "   Skipping membership check/nesting because one or more groups are planned only (-WhatIf)." -ForegroundColor Yellow
-  }
-  else {
-  # Check if already a member
-    $members = Get-MgGroupMember -GroupId $wrapper.Id -All
-    $already = $members | Where-Object { $_.Id -eq $pilot.Id }
-    if ($already) {
-      Write-Host "   Pilot group is already nested." -ForegroundColor Green
-    } else {
-      if ($PSCmdlet.ShouldProcess("$($wrapper.DisplayName) [$($wrapper.Id)]", "Add nested group '$($pilot.DisplayName)' [$($pilot.Id)]")) {
-        New-MgGroupMemberByRef -GroupId $wrapper.Id -BodyParameter @{
-          "@odata.id" = "https://graph.microsoft.com/v1.0/directoryObjects/$($pilot.Id)"
-        } | Out-Null
-        Write-Host "   Nested pilot group into wrapper." -ForegroundColor Green
-      }
-      else {
-        Write-Host "   Planned nesting pilot group into wrapper." -ForegroundColor Yellow
-      }
+else {
+  foreach ($requiredParamName in @("ClientId","DiscoveryEndpoint","AppId")) {
+    $value = Get-Variable -Name $requiredParamName -ValueOnly
+    if ([string]::IsNullOrWhiteSpace([string]$value)) {
+      throw "Parameter -$requiredParamName is required unless -OffboardToMicrosoftPreferred is specified."
     }
   }
 }
-catch {
-  Write-Warning "Could not nest group (some tenants restrict group nesting / role requirements). You can instead add pilot users directly to '$WrapperGroupName'. Details: $($_.Exception.Message)"
+
+# --- 1) Complete Authentication Methods migration (UCP) ---
+# This is tenant-dependent; in some tenants this property is writable via beta.
+if (-not $isOffboarding) {
+  Write-Step "Setting Authentication Methods policy migration state to 'migrationComplete' (best-effort)..."
+  try {
+    # Try PATCH to authenticationMethodsPolicy (beta)
+    if ($PSCmdlet.ShouldProcess("policies/authenticationMethodsPolicy", "Set policyMigrationState to migrationComplete")) {
+      Invoke-Beta -Method PATCH -Uri "/beta/policies/authenticationMethodsPolicy" -Body @{
+        policyMigrationState = "migrationComplete"
+      } | Out-Null
+      Write-Host "   Migration state PATCH submitted." -ForegroundColor Green
+    }
+    else {
+      Write-Host "   Planned migration state PATCH." -ForegroundColor Yellow
+    }
+  }
+  catch {
+    $migrationErrorText = Get-ExceptionMessageText -ErrorObject $_
+    Write-Warning "Could not set policyMigrationState. This may already be complete, or your tenant doesn't allow this via Graph. Details: $migrationErrorText"
+    if (Test-LooksLikeSsprMigrationBlocker -MessageText $migrationErrorText) {
+      Write-SsprMigrationBlockerGuidance -ErrorText $migrationErrorText
+    }
+    else {
+      Write-Host "   If the error references SSPR / self-service password reset, review legacy SSPR settings and Authentication Methods migration settings before rerunning." -ForegroundColor Yellow
+    }
+  }
+}
+else {
+  Write-Host "==> Skipping UCP migration state change in offboarding mode." -ForegroundColor Cyan
+}
+
+# --- 2) Ensure wrapper group exists ---
+if (-not $isOffboarding) {
+  Write-Step "Ensuring wrapper group '$WrapperGroupName' exists..."
+  $wrapper = Get-GroupByDisplayNameUnique -DisplayName $WrapperGroupName
+  if (-not $wrapper) {
+    if ($PSCmdlet.ShouldProcess($WrapperGroupName, "Create security group")) {
+      $wrapper = New-MgGroup -DisplayName $WrapperGroupName `
+        -MailEnabled:$false `
+        -MailNickname (New-SafeMailNickname -DisplayName $WrapperGroupName) `
+        -SecurityEnabled:$true
+      Write-Host "   Created group: $($wrapper.Id)" -ForegroundColor Green
+    }
+    else {
+      $wrapper = New-PlannedGroupObject -DisplayName $WrapperGroupName
+      Write-Host "   Planned group creation." -ForegroundColor Yellow
+    }
+  } else {
+    Write-Host "   Found group: $($wrapper.Id)" -ForegroundColor Green
+  }
+
+  # --- 3) Ensure Pilot group exists and nest it ---
+  Write-Step "Ensuring pilot group '$PilotGroupName' exists..."
+  $pilot = Get-GroupByDisplayNameUnique -DisplayName $PilotGroupName
+  if (-not $pilot) {
+    if ($PSCmdlet.ShouldProcess($PilotGroupName, "Create security group")) {
+      $pilot = New-MgGroup -DisplayName $PilotGroupName `
+        -MailEnabled:$false `
+        -MailNickname (New-SafeMailNickname -DisplayName $PilotGroupName) `
+        -SecurityEnabled:$true
+      Write-Host "   Created pilot group: $($pilot.Id)" -ForegroundColor Green
+    }
+    else {
+      $pilot = New-PlannedGroupObject -DisplayName $PilotGroupName
+      Write-Host "   Planned pilot group creation." -ForegroundColor Yellow
+    }
+  } else {
+    Write-Host "   Found pilot group: $($pilot.Id)" -ForegroundColor Green
+  }
+
+  Write-Step "Nesting pilot group into wrapper group (best-effort, idempotent)..."
+  try {
+    if (-not $wrapper.Id -or -not $pilot.Id) {
+      Write-Host "   Skipping membership check/nesting because one or more groups are planned only (-WhatIf)." -ForegroundColor Yellow
+    }
+    else {
+    # Check if already a member
+      $members = Get-MgGroupMember -GroupId $wrapper.Id -All
+      $already = $members | Where-Object { $_.Id -eq $pilot.Id }
+      if ($already) {
+        Write-Host "   Pilot group is already nested." -ForegroundColor Green
+      } else {
+        if ($PSCmdlet.ShouldProcess("$($wrapper.DisplayName) [$($wrapper.Id)]", "Add nested group '$($pilot.DisplayName)' [$($pilot.Id)]")) {
+          New-MgGroupMemberByRef -GroupId $wrapper.Id -BodyParameter @{
+            "@odata.id" = "https://graph.microsoft.com/v1.0/directoryObjects/$($pilot.Id)"
+          } | Out-Null
+          Write-Host "   Nested pilot group into wrapper." -ForegroundColor Green
+        }
+        else {
+          Write-Host "   Planned nesting pilot group into wrapper." -ForegroundColor Yellow
+        }
+      }
+    }
+  }
+  catch {
+    Write-Warning "Could not nest group (some tenants restrict group nesting / role requirements). You can instead add pilot users directly to '$WrapperGroupName'. Details: $($_.Exception.Message)"
+  }
+}
+else {
+  Write-Host "==> Skipping wrapper/pilot group creation and nesting in offboarding mode." -ForegroundColor Cyan
 }
 
 # --- 4) Create/Update External Authentication Method configuration ---
@@ -260,18 +405,34 @@ catch {
 #  - list existing external auth method configs
 #  - match by displayName
 #  - create if missing
-Write-Step "Ensuring External Authentication Method configuration '$Name' exists (Graph beta)..."
+if (-not $isOffboarding) {
+  Write-Step "Ensuring External Authentication Method configuration '$Name' exists (Graph beta)..."
+}
+else {
+  Write-Step "Ensuring External Authentication Method configuration '$Name' is disabled (Graph beta, best-effort)..."
+}
 
 $extConfig = $null
+$extConfigCollectionUri = "/v1.0/policies/authenticationMethodsPolicy/authenticationMethodConfigurations"
 $skipExternalAuthConfigDueToWhatIfQueryFailure = $false
 try {
-  $configs = Invoke-Beta -Method GET -Uri "/beta/policies/authenticationMethodsPolicy/authenticationMethodConfigurations"
-  $extConfig = @($configs.value) | Where-Object { $_.'@odata.type' -match "externalAuthenticationMethod" -and $_.displayName -eq $Name } | Select-Object -First 1
+  $extLookup = Get-ExternalAuthMethodConfigByName -DisplayName $Name
+  $extConfig = $extLookup.Item
+  if ($extLookup.QueryUri -match "^(/v1\.0|/beta)/policies/authenticationMethodsPolicy/authenticationMethodConfigurations$") {
+    $extConfigCollectionUri = $extLookup.QueryUri
+  }
+  elseif ($extLookup.QueryUri -match "^/beta/") {
+    $extConfigCollectionUri = "/beta/policies/authenticationMethodsPolicy/authenticationMethodConfigurations"
+  }
 }
 catch {
   if ($WhatIfPreference) {
     $skipExternalAuthConfigDueToWhatIfQueryFailure = $true
     Write-Warning "Could not query authenticationMethodConfigurations (beta) during -WhatIf. This preview endpoint varies by tenant and may return BadRequest when unavailable. Continuing dry-run. Details: $($_.Exception.Message)"
+  }
+  elseif ($isOffboarding) {
+    $skipExternalAuthConfigDueToWhatIfQueryFailure = $true
+    Write-Warning "Could not query authenticationMethodConfigurations (beta) while offboarding. Continuing with CA removal and Microsoft MFA restoration. Details: $($_.Exception.Message)"
   }
   else {
     throw "Failed to query authenticationMethodConfigurations (beta). Details: $($_.Exception.Message)"
@@ -279,13 +440,59 @@ catch {
 }
 
 if ($skipExternalAuthConfigDueToWhatIfQueryFailure) {
-  Write-Host "   Planned external auth method configuration create/update (query skipped in -WhatIf)." -ForegroundColor Yellow
+  if ($WhatIfPreference) {
+    Write-Host "   Planned external auth method configuration create/update (query skipped in -WhatIf)." -ForegroundColor Yellow
+  }
+  else {
+    Write-Host "   Skipped external auth method config disable because query failed in offboarding mode." -ForegroundColor Yellow
+  }
+}
+elseif ($isOffboarding) {
+  if (-not $extConfig) {
+    Write-Host "   External auth method config '$Name' not found. Nothing to disable." -ForegroundColor Green
+  }
+  elseif ($extConfig.state -eq "disabled") {
+    Write-Host "   External auth method config '$Name' is already disabled." -ForegroundColor Green
+  }
+  else {
+    try {
+      if ($PSCmdlet.ShouldProcess($Name, "Disable External Authentication Method configuration '$($extConfig.id)'")) {
+        $extConfigPatchUri = ($extConfigCollectionUri.TrimEnd("/") + "/$($extConfig.id)")
+        Invoke-Beta -Method PATCH -Uri $extConfigPatchUri -Body @{
+          state = "disabled"
+        } | Out-Null
+        Write-Host "   Disabled external auth method config id: $($extConfig.id)" -ForegroundColor Green
+      }
+      else {
+        Write-Host "   Planned external auth method config disable." -ForegroundColor Yellow
+      }
+    }
+    catch {
+      Write-Warning "Could not disable external auth method config. You may need to adjust fields for your tenant. Details: $($_.Exception.Message)"
+    }
+  }
 }
 elseif (-not $extConfig) {
   Write-Step "Creating External Authentication Method configuration..."
-  # This payload is the common schema used in many tenants; if your tenant expects different fields,
-  # Graph will return a helpful error specifying required properties.
+  # Prefer current Graph schema; fall back to older preview shape if the tenant still expects it.
   $body = @{
+    "@odata.type" = "#microsoft.graph.externalAuthenticationMethodConfiguration"
+    displayName   = $Name
+    state         = "enabled"
+    appId         = $AppId
+    openIdConnectSetting = @{
+      clientId     = $ClientId
+      discoveryUrl = $DiscoveryEndpoint
+    }
+    includeTargets = @(
+      @{
+        targetType = "group"
+        id         = $wrapper.Id
+      }
+    )
+  }
+
+  $legacyBody = @{
     "@odata.type"     = "#microsoft.graph.externalAuthenticationMethodConfiguration"
     displayName       = $Name
     state             = "enabled"
@@ -301,7 +508,14 @@ elseif (-not $extConfig) {
 
   try {
     if ($PSCmdlet.ShouldProcess($Name, "Create External Authentication Method configuration")) {
-      $created = Invoke-Beta -Method POST -Uri "/beta/policies/authenticationMethodsPolicy/authenticationMethodConfigurations" -Body $body
+      try {
+        $created = Invoke-Beta -Method POST -Uri $extConfigCollectionUri -Body $body
+      }
+      catch {
+        Write-Warning "Primary external auth config create payload failed; trying legacy preview payload shape. Details: $($_.Exception.Message)"
+        $created = Invoke-Beta -Method POST -Uri $extConfigCollectionUri -Body $legacyBody
+      }
+
       $extConfig = $created
       Write-Host "   Created external auth method config id: $($extConfig.id)" -ForegroundColor Green
     }
@@ -320,18 +534,40 @@ Details: $($_.Exception.Message)
 }
 else {
   Write-Step "Updating External Authentication Method configuration targeting + enablement (best-effort)..."
+  $extConfigPatchUri = ($extConfigCollectionUri.TrimEnd("/") + "/$($extConfig.id)")
+  $patchBody = @{
+    state = "enabled"
+    includeTargets = @(
+      @{
+        targetType = "group"
+        id         = $wrapper.Id
+      }
+    )
+    openIdConnectSetting = @{
+      clientId     = $ClientId
+      discoveryUrl = $DiscoveryEndpoint
+    }
+    appId = $AppId
+  }
+  $legacyPatchBody = @{
+    state = "enabled"
+    includeTarget = @{
+      targetType = "group"
+      id         = $wrapper.Id
+    }
+    clientId          = $ClientId
+    discoveryEndpoint = $DiscoveryEndpoint
+    appId             = $AppId
+  }
   try {
     if ($PSCmdlet.ShouldProcess($Name, "Update External Authentication Method configuration '$($extConfig.id)'")) {
-      Invoke-Beta -Method PATCH -Uri "/beta/policies/authenticationMethodsPolicy/authenticationMethodConfigurations/$($extConfig.id)" -Body @{
-        state = "enabled"
-        includeTarget = @{
-          targetType = "group"
-          id         = $wrapper.Id
-        }
-        clientId          = $ClientId
-        discoveryEndpoint = $DiscoveryEndpoint
-        appId             = $AppId
-      } | Out-Null
+      try {
+        Invoke-Beta -Method PATCH -Uri $extConfigPatchUri -Body $patchBody | Out-Null
+      }
+      catch {
+        Write-Warning "Primary external auth config PATCH payload failed; trying legacy preview payload shape. Details: $($_.Exception.Message)"
+        Invoke-Beta -Method PATCH -Uri $extConfigPatchUri -Body $legacyPatchBody | Out-Null
+      }
       Write-Host "   Updated external auth method config id: $($extConfig.id)" -ForegroundColor Green
     }
     else {
@@ -343,7 +579,7 @@ else {
   }
 }
 
-# --- 5) Create Conditional Access policy requiring MFA for wrapper group ---
+# --- 5) Create/Remove Conditional Access policy for Duo rollout ---
 Write-Step "Ensuring Conditional Access policy '$CaPolicyName' exists..."
 $existingCa = $null
 $skipCaDueToWhatIfQueryFailure = $false
@@ -364,6 +600,26 @@ catch {
 if ($skipCaDueToWhatIfQueryFailure) {
   Write-Host "   Planned CA policy create/update check skipped in -WhatIf due to query failure." -ForegroundColor Yellow
 }
+elseif ($isOffboarding) {
+  if (-not $existingCa) {
+    Write-Host "   CA policy not found. Nothing to remove." -ForegroundColor Green
+  }
+  else {
+    Write-Step "Removing Conditional Access policy '$CaPolicyName'..."
+    try {
+      if ($PSCmdlet.ShouldProcess($CaPolicyName, "Remove Conditional Access policy '$($existingCa.id)'")) {
+        Invoke-Beta -Method DELETE -Uri "/beta/identity/conditionalAccess/policies/$($existingCa.id)" | Out-Null
+        Write-Host "   Removed CA policy id: $($existingCa.id)" -ForegroundColor Green
+      }
+      else {
+        Write-Host "   Planned CA policy removal." -ForegroundColor Yellow
+      }
+    }
+    catch {
+      throw "Failed to remove CA policy. Details: $($_.Exception.Message)"
+    }
+  }
+}
 elseif (-not $existingCa) {
   Write-Step "Creating Conditional Access policy (Require MFA) targeting '$WrapperGroupName'..."
   $caBody = @{
@@ -383,6 +639,13 @@ elseif (-not $existingCa) {
       operator = "AND"
       builtInControls = @("mfa")
     }
+    sessionControls = @{
+      signInFrequency = @{
+        value     = 90
+        type      = "days"
+        isEnabled = $true
+      }
+    }
   }
 
   try {
@@ -399,29 +662,55 @@ elseif (-not $existingCa) {
   }
 }
 else {
-  Write-Host "   CA policy already exists (id: $($existingCa.id)). Skipping create." -ForegroundColor Green
-}
-
-# --- 6) Reduce Microsoft MFA steering so users follow External MFA (Duo) ---
-Write-Step "Applying MFA UX hardening for Duo rollout (best-effort)..."
-
-if ($DisableMicrosoftAuthenticatorPolicy) {
-  Write-Step "Ensuring Microsoft Authenticator authentication method policy is disabled..."
+  Write-Host "   CA policy already exists (id: $($existingCa.id)). Ensuring session sign-in frequency = 90 days..." -ForegroundColor Green
   try {
-    $msAuthConfig = Invoke-Beta -Method GET -Uri "/v1.0/policies/authenticationMethodsPolicy/authenticationMethodConfigurations/microsoftAuthenticator"
-    if ($msAuthConfig.state -eq "disabled") {
-      Write-Host "   Microsoft Authenticator method policy is already disabled." -ForegroundColor Green
+    if ($PSCmdlet.ShouldProcess($CaPolicyName, "Update Conditional Access policy session sign-in frequency to 90 days")) {
+      Invoke-Beta -Method PATCH -Uri "/beta/identity/conditionalAccess/policies/$($existingCa.id)" -Body @{
+        sessionControls = @{
+          signInFrequency = @{
+            value     = 90
+            type      = "days"
+            isEnabled = $true
+          }
+        }
+      } | Out-Null
+      Write-Host "   Set CA session sign-in frequency to 90 days." -ForegroundColor Green
     }
     else {
-      if ($PSCmdlet.ShouldProcess("microsoftAuthenticator method policy", "Disable Microsoft Authenticator authentication method policy")) {
+      Write-Host "   Planned CA session sign-in frequency update to 90 days." -ForegroundColor Yellow
+    }
+  }
+  catch {
+    Write-Warning "Could not update CA session sign-in frequency. Continuing. Details: $($_.Exception.Message)"
+  }
+}
+
+$desiredMsAuthState = if ($isOffboarding) { "enabled" } else { "disabled" }
+$desiredRegistrationCampaignState = if ($isOffboarding) { "enabled" } else { "disabled" }
+$desiredSystemPreferredMfaState = if ($isOffboarding) { "enabled" } else { "disabled" }
+$uxModeLabel = if ($isOffboarding) { "Restoring Microsoft-preferred MFA UX settings" } else { "Applying MFA UX hardening for Duo rollout" }
+
+# --- 6) MFA UX policy settings ---
+Write-Step "$uxModeLabel (best-effort)..."
+
+if ($DisableMicrosoftAuthenticatorPolicy) {
+  Write-Step "Ensuring Microsoft Authenticator authentication method policy is $desiredMsAuthState..."
+  try {
+    $msAuthConfig = Invoke-Beta -Method GET -Uri "/v1.0/policies/authenticationMethodsPolicy/authenticationMethodConfigurations/microsoftAuthenticator"
+    if ($msAuthConfig.state -eq $desiredMsAuthState) {
+      Write-Host "   Microsoft Authenticator method policy is already $desiredMsAuthState." -ForegroundColor Green
+    }
+    else {
+      $verb = if ($desiredMsAuthState -eq "disabled") { "Disable" } else { "Enable" }
+      if ($PSCmdlet.ShouldProcess("microsoftAuthenticator method policy", "$verb Microsoft Authenticator authentication method policy")) {
         Invoke-Beta -Method PATCH -Uri "/v1.0/policies/authenticationMethodsPolicy/authenticationMethodConfigurations/microsoftAuthenticator" -Body @{
           "@odata.type" = "#microsoft.graph.microsoftAuthenticatorAuthenticationMethodConfiguration"
-          state         = "disabled"
+          state         = $desiredMsAuthState
         } | Out-Null
-        Write-Host "   Disabled Microsoft Authenticator method policy." -ForegroundColor Green
+        Write-Host "   Set Microsoft Authenticator method policy to $desiredMsAuthState." -ForegroundColor Green
       }
       else {
-        Write-Host "   Planned disable of Microsoft Authenticator method policy." -ForegroundColor Yellow
+        Write-Host "   Planned Microsoft Authenticator method policy state change to $desiredMsAuthState." -ForegroundColor Yellow
       }
     }
   }
@@ -439,7 +728,7 @@ else {
 }
 
 if ($DisableAuthenticatorRegistrationCampaign) {
-  Write-Step "Ensuring Microsoft Authenticator registration campaign is disabled..."
+  Write-Step "Ensuring Microsoft Authenticator registration campaign is $desiredRegistrationCampaignState..."
   try {
     $authMethodsPolicyV1 = Invoke-Beta -Method GET -Uri "/v1.0/policies/authenticationMethodsPolicy"
     $registrationCampaign = $authMethodsPolicyV1.registrationEnforcement.authenticationMethodsRegistrationCampaign
@@ -447,24 +736,25 @@ if ($DisableAuthenticatorRegistrationCampaign) {
     if ($null -eq $registrationCampaign) {
       Write-Host "   Registration campaign settings not present in policy response; nothing to disable." -ForegroundColor Yellow
     }
-    elseif ($registrationCampaign.state -eq "disabled") {
-      Write-Host "   Registration campaign is already disabled." -ForegroundColor Green
+    elseif ($registrationCampaign.state -eq $desiredRegistrationCampaignState) {
+      Write-Host "   Registration campaign is already $desiredRegistrationCampaignState." -ForegroundColor Green
     }
     else {
       $campaignPatch = @{
         registrationEnforcement = @{
           authenticationMethodsRegistrationCampaign = @{
-            state = "disabled"
+            state = $desiredRegistrationCampaignState
           }
         }
       }
 
-      if ($PSCmdlet.ShouldProcess("authenticationMethodsPolicy.registrationEnforcement.authenticationMethodsRegistrationCampaign", "Disable Authenticator registration campaign")) {
+      $verb = if ($desiredRegistrationCampaignState -eq "disabled") { "Disable" } else { "Enable" }
+      if ($PSCmdlet.ShouldProcess("authenticationMethodsPolicy.registrationEnforcement.authenticationMethodsRegistrationCampaign", "$verb Authenticator registration campaign")) {
         Invoke-Beta -Method PATCH -Uri "/v1.0/policies/authenticationMethodsPolicy" -Body $campaignPatch | Out-Null
-        Write-Host "   Disabled Authenticator registration campaign." -ForegroundColor Green
+        Write-Host "   Set Authenticator registration campaign to $desiredRegistrationCampaignState." -ForegroundColor Green
       }
       else {
-        Write-Host "   Planned disable of Authenticator registration campaign." -ForegroundColor Yellow
+        Write-Host "   Planned registration campaign state change to $desiredRegistrationCampaignState." -ForegroundColor Yellow
       }
     }
   }
@@ -482,7 +772,7 @@ else {
 }
 
 if ($DisableSystemPreferredMfa) {
-  Write-Step "Ensuring system-preferred MFA is disabled..."
+  Write-Step "Ensuring system-preferred MFA is $desiredSystemPreferredMfaState..."
   try {
     $authMethodsPolicyBeta = Invoke-Beta -Method GET -Uri "/beta/policies/authenticationMethodsPolicy"
     $systemPref = $authMethodsPolicyBeta.systemCredentialPreferences
@@ -490,20 +780,21 @@ if ($DisableSystemPreferredMfa) {
     if ($null -eq $systemPref) {
       Write-Host "   systemCredentialPreferences not returned by this tenant/endpoint; skipping." -ForegroundColor Yellow
     }
-    elseif ($systemPref.state -eq "disabled") {
-      Write-Host "   System-preferred MFA is already disabled." -ForegroundColor Green
+    elseif ($systemPref.state -eq $desiredSystemPreferredMfaState) {
+      Write-Host "   System-preferred MFA is already $desiredSystemPreferredMfaState." -ForegroundColor Green
     }
     else {
-      if ($PSCmdlet.ShouldProcess("authenticationMethodsPolicy.systemCredentialPreferences", "Disable system-preferred MFA")) {
+      $verb = if ($desiredSystemPreferredMfaState -eq "disabled") { "Disable" } else { "Enable" }
+      if ($PSCmdlet.ShouldProcess("authenticationMethodsPolicy.systemCredentialPreferences", "$verb system-preferred MFA")) {
         Invoke-Beta -Method PATCH -Uri "/beta/policies/authenticationMethodsPolicy" -Body @{
           systemCredentialPreferences = @{
-            state = "disabled"
+            state = $desiredSystemPreferredMfaState
           }
         } | Out-Null
-        Write-Host "   Disabled system-preferred MFA." -ForegroundColor Green
+        Write-Host "   Set system-preferred MFA to $desiredSystemPreferredMfaState." -ForegroundColor Green
       }
       else {
-        Write-Host "   Planned disable of system-preferred MFA." -ForegroundColor Yellow
+        Write-Host "   Planned system-preferred MFA state change to $desiredSystemPreferredMfaState." -ForegroundColor Yellow
       }
     }
   }
@@ -524,10 +815,19 @@ Write-Step "Done."
 
 Write-Host ""
 Write-Host "Next validation checks:" -ForegroundColor Yellow
-Write-Host "  1) Entra -> Authentication methods -> External authentication methods: confirm '$Name' enabled + targeted to '$WrapperGroupName'"
-Write-Host "  2) Entra -> Conditional Access: confirm '$CaPolicyName' enabled and scoped correctly"
-Write-Host "  3) Entra -> Authentication methods -> Policies -> Microsoft Authenticator: confirm disabled (if you left defaults)"
-Write-Host "  4) Entra -> Authentication methods -> Registration campaign: confirm disabled (if you left defaults)"
-Write-Host "  5) myaccount.microsoft.com -> Security info: confirm users in pilot get prompted with External method"
+if ($isOffboarding) {
+  Write-Host "  1) Entra -> Conditional Access: confirm '$CaPolicyName' is removed/disabled"
+  Write-Host "  2) Entra -> Authentication methods -> External authentication methods: confirm '$Name' is disabled (or removed manually if preferred)"
+  Write-Host "  3) Entra -> Authentication methods -> Policies -> Microsoft Authenticator: confirm enabled"
+  Write-Host "  4) Entra -> Authentication methods -> Registration campaign: confirm enabled (if you left defaults)"
+  Write-Host "  5) Entra -> Authentication methods -> System-preferred MFA: confirm enabled"
+}
+else {
+  Write-Host "  1) Entra -> Authentication methods -> External authentication methods: confirm '$Name' enabled + targeted to '$WrapperGroupName'"
+  Write-Host "  2) Entra -> Conditional Access: confirm '$CaPolicyName' enabled and scoped correctly"
+  Write-Host "  3) Entra -> Authentication methods -> Policies -> Microsoft Authenticator: confirm disabled (if you left defaults)"
+  Write-Host "  4) Entra -> Authentication methods -> Registration campaign: confirm disabled (if you left defaults)"
+  Write-Host "  5) myaccount.microsoft.com -> Security info: confirm users in pilot get prompted with External method"
+}
 Write-Host ""
-Write-Host "Note: This script changes tenant auth method policy settings (best-effort), but it does not remove existing user MFA registrations. If a user still lands on an unexpected method, review the user's registered methods and tenant authentication method policies." -ForegroundColor Yellow
+Write-Host "Note: This script changes tenant auth method policy settings (best-effort), but it does not remove or add per-user MFA registrations. If user prompts still look wrong, review the user's registered methods and tenant authentication method policies." -ForegroundColor Yellow
