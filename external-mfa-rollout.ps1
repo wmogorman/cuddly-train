@@ -39,15 +39,19 @@
 
 [CmdletBinding(SupportsShouldProcess=$true, ConfirmImpact="High")]
 param(
+  # External Authentication Method display name (Duo config name in Entra).
   [Parameter(Mandatory=$true)]
   [string]$Name,
 
+  # Duo / external provider OIDC client identifier (rollout mode only).
   [Parameter(Mandatory=$false)]
   [string]$ClientId,
 
+  # Duo / external provider OIDC discovery document URL (rollout mode only).
   [Parameter(Mandatory=$false)]
   [string]$DiscoveryEndpoint,
 
+  # Provider-specific app/resource identifier expected by Entra EAM config (rollout mode only).
   [Parameter(Mandatory=$false)]
   [string]$AppId,
 
@@ -77,10 +81,12 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
+# Consistent high-visibility console output for major stages.
 function Write-Step($msg) {
   Write-Host "==> $msg" -ForegroundColor Cyan
 }
 
+# Placeholder object used during -WhatIf so later logic can continue without null-reference failures.
 function New-PlannedGroupObject {
   param([Parameter(Mandatory=$true)][string]$DisplayName)
   return [pscustomobject]@{
@@ -97,6 +103,7 @@ function Ensure-Module {
   }
 }
 
+# Flattens nested exception chains so warnings include the full Graph error context.
 function Get-ExceptionMessageText {
   param([Parameter(Mandatory=$true)]$ErrorObject)
 
@@ -121,6 +128,8 @@ function Get-ExceptionMessageText {
   return ($messages -join " | ")
 }
 
+# Heuristic only: Graph error text varies by tenant/API version.
+# This helps print actionable guidance when migration completion is blocked by legacy SSPR config.
 function Test-LooksLikeSsprMigrationBlocker {
   param([Parameter(Mandatory=$true)][string]$MessageText)
 
@@ -137,6 +146,7 @@ function Test-LooksLikeSsprMigrationBlocker {
   )
 }
 
+# Human-friendly remediation steps for the common "migration blocked by legacy SSPR settings" scenario.
 function Write-SsprMigrationBlockerGuidance {
   param([Parameter(Mandatory=$true)][string]$ErrorText)
 
@@ -153,11 +163,13 @@ function Write-SsprMigrationBlockerGuidance {
   Write-Host "   Error text (trimmed): $ErrorText" -ForegroundColor DarkYellow
 }
 
+# Escapes single quotes for OData string literals used in Graph filters.
 function Escape-ODataStringLiteral {
   param([Parameter(Mandatory=$true)][string]$Value)
   return ($Value -replace "'", "''")
 }
 
+# Creates a valid/unique-ish mailNickname for security groups (Graph requires one even if mail is disabled).
 function New-SafeMailNickname {
   param([Parameter(Mandatory=$true)][string]$DisplayName)
 
@@ -174,6 +186,7 @@ function New-SafeMailNickname {
   return ("{0}{1}" -f $base, ([guid]::NewGuid().ToString("N").Substring(0, 8)))
 }
 
+# Returns exactly one group by displayName, or throws on duplicates to avoid targeting the wrong object.
 function Get-GroupByDisplayNameUnique {
   param([Parameter(Mandatory=$true)][string]$DisplayName)
 
@@ -197,7 +210,7 @@ function Invoke-Beta {
     [Parameter(Mandatory=$true)][ValidateSet("GET","POST","PATCH","PUT","DELETE")]
     [string]$Method,
     [Parameter(Mandatory=$true)]
-    [string]$Uri,   # may be /v1.0/... or /beta/...
+    [string]$Uri,   # may be /v1.0/... or /beta/... (helper name kept for historical reasons)
     [Parameter(Mandatory=$false)]
     $Body
   )
@@ -214,14 +227,19 @@ function Invoke-Beta {
   return Invoke-MgGraphRequest @params
 }
 
+# External Authentication Method endpoints/schema vary by tenant rollout and Graph version.
+# This helper tries a few shapes and returns the first successful match by displayName.
 function Get-ExternalAuthMethodConfigByName {
   param([Parameter(Mandatory=$true)][string]$DisplayName)
 
   $queryAttempts = @(
+    # Preferred direct collection endpoints.
     "/v1.0/policies/authenticationMethodsPolicy/authenticationMethodConfigurations",
     "/beta/policies/authenticationMethodsPolicy/authenticationMethodConfigurations",
+    # Fallback: policy GET with expanded children (some tenants reject the collection endpoint).
     "/v1.0/policies/authenticationMethodsPolicy?`$expand=authenticationMethodConfigurations",
     "/beta/policies/authenticationMethodsPolicy?`$expand=authenticationMethodConfigurations",
+    # Last resort: plain policy GET (often not enough, but harmless to try).
     "/v1.0/policies/authenticationMethodsPolicy",
     "/beta/policies/authenticationMethodsPolicy"
   )
@@ -242,6 +260,7 @@ function Get-ExternalAuthMethodConfigByName {
 
       $match = @(
         $items | Where-Object {
+          # StrictMode-safe property access: not every auth method config object has every field.
           $displayNameProp = $_.PSObject.Properties["displayName"]
           $odataTypeProp = $_.PSObject.Properties["@odata.type"]
           $hasExternalShape =
@@ -279,17 +298,22 @@ $scopes = @(
 
 Connect-MgGraph -Scopes $scopes | Out-Null
 if (Get-Command -Name "Select-MgProfile" -ErrorAction SilentlyContinue) {
+  # Older Graph SDKs require profile selection for beta cmdlets; v2+ may not expose this command.
   Select-MgProfile -Name "beta" | Out-Null
 }
 else {
   Write-Host "   Select-MgProfile not available (Microsoft.Graph SDK v2+). Continuing; beta calls use explicit /beta URIs." -ForegroundColor Yellow
 }
 
+# Single script supports two modes:
+# - Rollout (default): create/update Duo EAM + CA + hardening
+# - Offboarding: disable Duo EAM, remove CA, restore Microsoft-preferred settings
 $isOffboarding = [bool]$OffboardToMicrosoftPreferred
 if ($isOffboarding) {
   Write-Step "Offboarding mode enabled: removing Duo CA and restoring Microsoft-preferred MFA settings (best-effort)."
 }
 else {
+  # Only require Duo/EAM creation inputs when we are rolling forward.
   foreach ($requiredParamName in @("ClientId","DiscoveryEndpoint","AppId")) {
     $value = Get-Variable -Name $requiredParamName -ValueOnly
     if ([string]::IsNullOrWhiteSpace([string]$value)) {
@@ -374,7 +398,7 @@ if (-not $isOffboarding) {
       Write-Host "   Skipping membership check/nesting because one or more groups are planned only (-WhatIf)." -ForegroundColor Yellow
     }
     else {
-    # Check if already a member
+      # Group nesting is idempotent only if we check first; duplicate add attempts can error.
       $members = Get-MgGroupMember -GroupId $wrapper.Id -All
       $already = $members | Where-Object { $_.Id -eq $pilot.Id }
       if ($already) {
@@ -413,6 +437,7 @@ else {
 }
 
 $extConfig = $null
+# Use v1.0 by default, but switch to beta if the successful lookup came from beta endpoints.
 $extConfigCollectionUri = "/v1.0/policies/authenticationMethodsPolicy/authenticationMethodConfigurations"
 $skipExternalAuthConfigDueToWhatIfQueryFailure = $false
 try {
@@ -422,6 +447,7 @@ try {
     $extConfigCollectionUri = $extLookup.QueryUri
   }
   elseif ($extLookup.QueryUri -match "^/beta/") {
+    # If policy lookup only worked in beta, keep writes in beta as well.
     $extConfigCollectionUri = "/beta/policies/authenticationMethodsPolicy/authenticationMethodConfigurations"
   }
 }
@@ -474,7 +500,7 @@ elseif ($isOffboarding) {
 }
 elseif (-not $extConfig) {
   Write-Step "Creating External Authentication Method configuration..."
-  # Prefer current Graph schema; fall back to older preview shape if the tenant still expects it.
+  # Prefer current Graph schema; keep a legacy preview payload as a fallback for older tenants.
   $body = @{
     "@odata.type" = "#microsoft.graph.externalAuthenticationMethodConfiguration"
     displayName   = $Name
@@ -492,6 +518,7 @@ elseif (-not $extConfig) {
     )
   }
 
+  # Legacy preview payload shape used in some older tenants/rollouts.
   $legacyBody = @{
     "@odata.type"     = "#microsoft.graph.externalAuthenticationMethodConfiguration"
     displayName       = $Name
@@ -512,6 +539,7 @@ elseif (-not $extConfig) {
         $created = Invoke-Beta -Method POST -Uri $extConfigCollectionUri -Body $body
       }
       catch {
+        # If the tenant rejects the newer payload shape, retry once with the legacy format.
         Write-Warning "Primary external auth config create payload failed; trying legacy preview payload shape. Details: $($_.Exception.Message)"
         $created = Invoke-Beta -Method POST -Uri $extConfigCollectionUri -Body $legacyBody
       }
@@ -535,6 +563,7 @@ Details: $($_.Exception.Message)
 else {
   Write-Step "Updating External Authentication Method configuration targeting + enablement (best-effort)..."
   $extConfigPatchUri = ($extConfigCollectionUri.TrimEnd("/") + "/$($extConfig.id)")
+  # Current schema patch payload (preferred).
   $patchBody = @{
     state = "enabled"
     includeTargets = @(
@@ -549,6 +578,7 @@ else {
     }
     appId = $AppId
   }
+  # Legacy preview schema patch payload fallback.
   $legacyPatchBody = @{
     state = "enabled"
     includeTarget = @{
@@ -565,6 +595,7 @@ else {
         Invoke-Beta -Method PATCH -Uri $extConfigPatchUri -Body $patchBody | Out-Null
       }
       catch {
+        # Retry legacy patch shape for tenants still on older preview schema behavior.
         Write-Warning "Primary external auth config PATCH payload failed; trying legacy preview payload shape. Details: $($_.Exception.Message)"
         Invoke-Beta -Method PATCH -Uri $extConfigPatchUri -Body $legacyPatchBody | Out-Null
       }
@@ -639,6 +670,7 @@ elseif (-not $existingCa) {
       operator = "AND"
       builtInControls = @("mfa")
     }
+    # Match the requested UI setting: periodic reauthentication every 90 days.
     sessionControls = @{
       signInFrequency = @{
         value     = 90
@@ -662,6 +694,7 @@ elseif (-not $existingCa) {
   }
 }
 else {
+  # Keep existing policy but normalize the sign-in frequency so reruns converge to the same result.
   Write-Host "   CA policy already exists (id: $($existingCa.id)). Ensuring session sign-in frequency = 90 days..." -ForegroundColor Green
   try {
     if ($PSCmdlet.ShouldProcess($CaPolicyName, "Update Conditional Access policy session sign-in frequency to 90 days")) {
@@ -691,6 +724,8 @@ $desiredSystemPreferredMfaState = if ($isOffboarding) { "enabled" } else { "disa
 $uxModeLabel = if ($isOffboarding) { "Restoring Microsoft-preferred MFA UX settings" } else { "Applying MFA UX hardening for Duo rollout" }
 
 # --- 6) MFA UX policy settings ---
+# This section intentionally changes tenant-wide auth method UX settings to make Duo External MFA
+# more likely/cleaner during rollout (or restores Microsoft-preferred defaults during offboarding).
 Write-Step "$uxModeLabel (best-effort)..."
 
 if ($DisableMicrosoftAuthenticatorPolicy) {
@@ -703,6 +738,7 @@ if ($DisableMicrosoftAuthenticatorPolicy) {
     else {
       $verb = if ($desiredMsAuthState -eq "disabled") { "Disable" } else { "Enable" }
       if ($PSCmdlet.ShouldProcess("microsoftAuthenticator method policy", "$verb Microsoft Authenticator authentication method policy")) {
+        # Disabling Authenticator here does not delete user registrations; it disables method usage policy.
         Invoke-Beta -Method PATCH -Uri "/v1.0/policies/authenticationMethodsPolicy/authenticationMethodConfigurations/microsoftAuthenticator" -Body @{
           "@odata.type" = "#microsoft.graph.microsoftAuthenticatorAuthenticationMethodConfiguration"
           state         = $desiredMsAuthState
@@ -731,6 +767,7 @@ if ($DisableAuthenticatorRegistrationCampaign) {
   Write-Step "Ensuring Microsoft Authenticator registration campaign is $desiredRegistrationCampaignState..."
   try {
     $authMethodsPolicyV1 = Invoke-Beta -Method GET -Uri "/v1.0/policies/authenticationMethodsPolicy"
+    # Registration campaign nudges users into Microsoft Authenticator; disabling reduces prompt churn during Duo rollout.
     $registrationCampaign = $authMethodsPolicyV1.registrationEnforcement.authenticationMethodsRegistrationCampaign
 
     if ($null -eq $registrationCampaign) {
@@ -775,6 +812,7 @@ if ($DisableSystemPreferredMfa) {
   Write-Step "Ensuring system-preferred MFA is $desiredSystemPreferredMfaState..."
   try {
     $authMethodsPolicyBeta = Invoke-Beta -Method GET -Uri "/beta/policies/authenticationMethodsPolicy"
+    # systemCredentialPreferences controls Microsoft "system-preferred MFA" behavior (beta property in many tenants).
     $systemPref = $authMethodsPolicyBeta.systemCredentialPreferences
 
     if ($null -eq $systemPref) {
@@ -816,6 +854,7 @@ Write-Step "Done."
 Write-Host ""
 Write-Host "Next validation checks:" -ForegroundColor Yellow
 if ($isOffboarding) {
+  # Offboarding checklist: confirm Duo requirements are removed and Microsoft defaults restored.
   Write-Host "  1) Entra -> Conditional Access: confirm '$CaPolicyName' is removed/disabled"
   Write-Host "  2) Entra -> Authentication methods -> External authentication methods: confirm '$Name' is disabled (or removed manually if preferred)"
   Write-Host "  3) Entra -> Authentication methods -> Policies -> Microsoft Authenticator: confirm enabled"
@@ -823,6 +862,7 @@ if ($isOffboarding) {
   Write-Host "  5) Entra -> Authentication methods -> System-preferred MFA: confirm enabled"
 }
 else {
+  # Rollout checklist: confirm Duo is active and Microsoft prompts are no longer preferred.
   Write-Host "  1) Entra -> Authentication methods -> External authentication methods: confirm '$Name' enabled + targeted to '$WrapperGroupName'"
   Write-Host "  2) Entra -> Conditional Access: confirm '$CaPolicyName' enabled and scoped correctly"
   Write-Host "  3) Entra -> Authentication methods -> Policies -> Microsoft Authenticator: confirm disabled (if you left defaults)"
