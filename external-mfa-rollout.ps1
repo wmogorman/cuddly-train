@@ -827,6 +827,7 @@ function Invoke-EamOnlyPilotReadinessAudit {
 
   Write-Step "Auditing EAM-only pilot readiness (diagnostic only, no changes)..."
   $warningCount = 0
+  $diagnosticFindings = @()
 
   # Security Defaults can force additional registration prompts that conflict with EAM-only pilot expectations.
   try {
@@ -834,7 +835,9 @@ function Invoke-EamOnlyPilotReadinessAudit {
     $isSecDefaultsEnabled = [bool](Get-GraphMemberValue -Object $secDefaults -Name "isEnabled")
     if ($isSecDefaultsEnabled) {
       $warningCount++
-      Write-Warning "Security Defaults is enabled. This can trigger registration prompts/flows that conflict with an EAM-only pilot."
+      $finding = "Security Defaults is enabled"
+      $diagnosticFindings += $finding
+      Write-Warning "$finding. This can trigger registration prompts/flows that conflict with an EAM-only pilot."
     }
     else {
       Write-Host "   Security Defaults: disabled." -ForegroundColor Green
@@ -859,7 +862,9 @@ function Invoke-EamOnlyPilotReadinessAudit {
       $ssprEnabled = [bool](Get-GraphMemberValue -Object $authorizationPolicy -Name $ssprFlagName)
       if ($ssprEnabled) {
         $warningCount++
-        Write-Warning "SSPR appears enabled (authorizationPolicy.$ssprFlagName = true). Combined registration/SSPR requirements may cause 'Let's keep your account secure' loops for EAM-only pilots."
+        $finding = "SSPR appears enabled (authorizationPolicy.$ssprFlagName = true)"
+        $diagnosticFindings += $finding
+        Write-Warning "$finding. Combined registration/SSPR requirements may cause 'Let's keep your account secure' loops for EAM-only pilots."
       }
       else {
         Write-Host "   SSPR enablement signal (authorizationPolicy.$ssprFlagName): false" -ForegroundColor Green
@@ -907,20 +912,25 @@ function Invoke-EamOnlyPilotReadinessAudit {
     Write-Warning "Could not query system-preferred MFA state. Details: $($_.Exception.Message)"
   }
 
-  Write-Host "   Manual checks still required for loop troubleshooting (Graph coverage is inconsistent for Password reset screens):" -ForegroundColor Yellow
-  Write-Host "     1) Entra -> Protection -> Password reset -> Registration -> 'Require users to register when signing in'"
-  Write-Host "     2) Entra -> Protection -> Password reset -> Properties -> Self service password reset enabled (and pilot scope/exclusions)"
-  Write-Host "     3) Entra -> Protection -> Password reset -> Authentication methods -> Mobile phone / Office phone + number of methods required"
+  Write-Host "   Manual checks still required for loop troubleshooting (Graph coverage is inconsistent for Password reset screens)." -ForegroundColor Yellow
+  Write-Host "   For an EAM-only PILOT, verify these expected values:" -ForegroundColor Yellow
+  Write-Host "     1) Entra -> Protection -> Password reset -> Registration -> 'Require users to register when signing in' = No (during pilot testing)"
+  Write-Host "     2) Entra -> Protection -> Password reset -> Properties -> SSPR enabled = No for pilot users OR exclude the pilot from SSPR while testing"
+  Write-Host "     3) Entra -> Protection -> Password reset -> Authentication methods -> Mobile phone / Office phone disabled for pilot expectations; avoid forcing an extra recovery method during pilot"
   Write-Host "     4) Test a pilot user that is a DIRECT member of '$WrapperGroupName' (nested membership can delay/confuse troubleshooting)"
   if (-not [string]::IsNullOrWhiteSpace($PilotGroupName)) {
     Write-Host "        (Pilot group '$PilotGroupName' may be nested in the wrapper; direct membership is recommended for troubleshooting.)"
   }
 
   if ($warningCount -eq 0) {
-    Write-Host "   No obvious tenant-wide blockers were detected in the checks this script can perform. If loops persist, focus on Password reset Registration/SSPR settings and per-user registered methods." -ForegroundColor Green
+    Write-Host "   Audit summary: no obvious tenant-wide blockers were detected in the checks this script can perform." -ForegroundColor Green
+    Write-Host "   If loops persist, focus on Password reset Registration/SSPR settings and per-user registered methods." -ForegroundColor Green
   }
   else {
-    Write-Host "   Diagnostic summary: $warningCount potential tenant-wide loop contributor(s) detected." -ForegroundColor Yellow
+    Write-Host "   Audit summary: $warningCount potential tenant-wide loop contributor(s) detected:" -ForegroundColor Yellow
+    foreach ($finding in @($diagnosticFindings)) {
+      Write-Host "     - $finding" -ForegroundColor Yellow
+    }
   }
 }
 
@@ -1729,7 +1739,7 @@ else {
   Write-Host "  4) Entra -> Authentication methods -> Registration campaign: confirm disabled (if you left defaults)"
   Write-Host "  5) Entra -> Authentication methods -> Policies: confirm common Microsoft MFA methods exclude '$WrapperGroupName' (if enabled)"
   Write-Host "  6) If bulk registration was enabled: Entra/myaccount -> Security info: confirm wrapper-group users have '$Name' registered"
-  Write-Host "  7) Review the EAM-only pilot readiness diagnostic summary (Security Defaults / SSPR signals / manual Password reset checks)"
+  Write-Host "  7) Review the EAM-only pilot readiness audit output (expected pilot values for Security Defaults / SSPR / Password reset registration)"
   Write-Host "  8) myaccount.microsoft.com -> Security info: confirm users in pilot get prompted with External method"
 }
 Write-Host ""
