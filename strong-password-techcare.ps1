@@ -18,6 +18,8 @@ param(
     [ValidateRange(5, 14)]
     [int]$PasswordExpiryWarningDays = 14,
 
+    [switch]$NoVerify,
+
     [switch]$SkipPdcCheck
 )
 
@@ -86,10 +88,22 @@ if ($PSCmdlet.ShouldProcess($gpoName, "Set $winlogonKey\$winlogonValueName = $Pa
     Write-Host "Set $gpoName -> $winlogonKey\$winlogonValueName = $PasswordExpiryWarningDays (days warning)." -ForegroundColor Green
 }
 
-# --- Show resulting settings for quick verification ---
-Write-Host "`nVerification:" -ForegroundColor Cyan
-Get-ADDefaultDomainPasswordPolicy -Identity $domain.DNSRoot | Select-Object `
-    MaxPasswordAge, MinPasswordAge, MinPasswordLength, PasswordHistoryCount, ComplexityEnabled, ReversibleEncryptionEnabled | Format-List
+if (-not $NoVerify) {
+    # --- Show resulting settings for quick verification ---
+    Write-Host "`nVerification:" -ForegroundColor Cyan
+    Get-ADDefaultDomainPasswordPolicy -Identity $domain.DNSRoot | Select-Object `
+        MaxPasswordAge, MinPasswordAge, MinPasswordLength, PasswordHistoryCount, ComplexityEnabled, ReversibleEncryptionEnabled | Format-List
 
-Write-Host "GPO registry setting (PasswordExpiryWarning):" -ForegroundColor Cyan
-Get-GPRegistryValue -Name $gpoName -Key $winlogonKey -ValueName $winlogonValueName | Format-List
+    Write-Host "GPO registry setting (PasswordExpiryWarning):" -ForegroundColor Cyan
+    try {
+        Get-GPRegistryValue -Name $gpoName -Key $winlogonKey -ValueName $winlogonValueName -ErrorAction Stop | Format-List
+    }
+    catch {
+        if ($WhatIfPreference) {
+            Write-Host "Not present (expected when running with -WhatIf because no changes were written)." -ForegroundColor Yellow
+        }
+        else {
+            Write-Warning "PasswordExpiryWarning is not currently configured in '$gpoName' at $winlogonKey."
+        }
+    }
+}

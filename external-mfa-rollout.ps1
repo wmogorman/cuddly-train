@@ -1054,12 +1054,24 @@ if ($isOffboarding) {
   Write-Step "Offboarding mode enabled: removing Duo CA and restoring Microsoft-preferred MFA settings (best-effort)."
 }
 else {
-  # Only require Duo/EAM creation inputs when we are rolling forward.
-  foreach ($requiredParamName in @("ClientId","DiscoveryEndpoint","AppId")) {
-    $value = Get-Variable -Name $requiredParamName -ValueOnly
-    if ([string]::IsNullOrWhiteSpace([string]$value)) {
-      throw "Parameter -$requiredParamName is required unless -OffboardToMicrosoftPreferred is specified."
+  $providerConfigInputNames = @("ClientId","DiscoveryEndpoint","AppId")
+  $providedProviderConfigInputs = @(
+    foreach ($paramName in $providerConfigInputNames) {
+      $value = Get-Variable -Name $paramName -ValueOnly
+      if (-not [string]::IsNullOrWhiteSpace([string]$value)) {
+        $paramName
+      }
     }
+  )
+
+  $hasAllProviderConfigInputs = ($providedProviderConfigInputs.Count -eq $providerConfigInputNames.Count)
+  $hasAnyProviderConfigInputs = ($providedProviderConfigInputs.Count -gt 0)
+
+  if ($hasAnyProviderConfigInputs -and -not $hasAllProviderConfigInputs) {
+    Write-Warning "Provider config inputs are incomplete ($($providedProviderConfigInputs -join ', ')). The script will attempt to reuse an existing EAM by name/ID, but it cannot create a new EAM or fully reconcile provider fields unless ClientId, DiscoveryEndpoint, and AppId are all supplied."
+  }
+  elseif (-not $hasAllProviderConfigInputs) {
+    Write-Host "   ClientId/DiscoveryEndpoint/AppId not supplied. The script will reuse an existing EAM (by -ExternalAuthConfigId or -Name) and skip provider-field reconciliation. If no matching EAM exists, creation will fail until those values are provided." -ForegroundColor Yellow
   }
 
   Write-Host "   Target posture (strict external-only): Duo External MFA only for '$WrapperGroupName' (Microsoft Authenticator/SMS/Voice/OATH excluded by default)." -ForegroundColor Yellow
@@ -1307,6 +1319,9 @@ elseif ($isOffboarding) {
 }
 elseif (-not $extConfig) {
   Write-Step "Creating External Authentication Method configuration..."
+  if (-not $hasAllProviderConfigInputs) {
+    throw "Existing External Authentication Method configuration '$Name' was not found, and ClientId/DiscoveryEndpoint/AppId were not fully supplied. Provide all three values (or -ExternalAuthConfigId) to create a new EAM configuration."
+  }
   # Prefer current Graph schema; keep a legacy preview payload as a fallback for older tenants.
   $body = @{
     "@odata.type" = "#microsoft.graph.externalAuthenticationMethodConfiguration"
@@ -1416,11 +1431,13 @@ else {
         id         = $wrapper.Id
       }
     )
-    openIdConnectSetting = @{
+  }
+  if ($hasAllProviderConfigInputs) {
+    $patchBody["openIdConnectSetting"] = @{
       clientId     = $ClientId
       discoveryUrl = $DiscoveryEndpoint
     }
-    appId = $AppId
+    $patchBody["appId"] = $AppId
   }
   # Legacy preview schema patch payload fallback.
   $legacyPatchBody = @{
@@ -1429,12 +1446,17 @@ else {
       targetType = "group"
       id         = $wrapper.Id
     }
-    clientId          = $ClientId
-    discoveryEndpoint = $DiscoveryEndpoint
-    appId             = $AppId
+  }
+  if ($hasAllProviderConfigInputs) {
+    $legacyPatchBody["clientId"] = $ClientId
+    $legacyPatchBody["discoveryEndpoint"] = $DiscoveryEndpoint
+    $legacyPatchBody["appId"] = $AppId
   }
   try {
     if ($PSCmdlet.ShouldProcess($Name, "Update External Authentication Method configuration '$($extConfig.id)'")) {
+      if (-not $hasAllProviderConfigInputs) {
+        Write-Host "   Provider config fields (ClientId/DiscoveryEndpoint/AppId) were not supplied; updating only state + group targeting." -ForegroundColor Yellow
+      }
       try {
         Invoke-Beta -Method PATCH -Uri $extConfigPatchUri -Body $patchBody | Out-Null
       }

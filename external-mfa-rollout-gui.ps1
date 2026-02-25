@@ -116,17 +116,17 @@ $txtName = New-TextBoxControl -X 240 -Y ($y - 2) -Width 660 -Text "Cisco Duo"
 $tabBasics.Controls.Add($txtName)
 $y += 34
 
-$tabBasics.Controls.Add((New-LabelControl -Text "ClientId (required for rollout)" -X 16 -Y $y))
+$tabBasics.Controls.Add((New-LabelControl -Text "ClientId (optional if EAM already exists)" -X 16 -Y $y))
 $txtClientId = New-TextBoxControl -X 240 -Y ($y - 2) -Width 660
 $tabBasics.Controls.Add($txtClientId)
 $y += 34
 
-$tabBasics.Controls.Add((New-LabelControl -Text "DiscoveryEndpoint" -X 16 -Y $y))
+$tabBasics.Controls.Add((New-LabelControl -Text "DiscoveryEndpoint (optional if EAM already exists)" -X 16 -Y $y))
 $txtDiscovery = New-TextBoxControl -X 240 -Y ($y - 2) -Width 660 -Text "https://us.azureauth.duosecurity.com/.well-known/openid-configuration"
 $tabBasics.Controls.Add($txtDiscovery)
 $y += 34
 
-$tabBasics.Controls.Add((New-LabelControl -Text "AppId (enterprise app / resource)" -X 16 -Y $y))
+$tabBasics.Controls.Add((New-LabelControl -Text "AppId (optional if EAM already exists)" -X 16 -Y $y))
 $txtAppId = New-TextBoxControl -X 240 -Y ($y - 2) -Width 660
 $tabBasics.Controls.Add($txtAppId)
 $y += 34
@@ -216,10 +216,11 @@ $txtNotes.Text = @"
 Use this GUI to launch external-mfa-rollout.ps1 for teammates.
 
 Recommended workflow:
-1. Fill required rollout values: Name, ClientId, DiscoveryEndpoint, AppId.
-2. If the EAM already exists in Entra, paste ExternalAuthConfigId to avoid create/discovery issues.
-3. Leave strict external-only defaults enabled unless you intentionally want Microsoft methods allowed.
-4. Use Run In Console so teammates can complete Microsoft Graph interactive sign-in.
+1. Fill required rollout value: Name.
+2. If creating a NEW EAM, also provide ClientId, DiscoveryEndpoint, and AppId.
+3. If the EAM already exists in Entra, paste ExternalAuthConfigId (recommended) and you can leave ClientId/DiscoveryEndpoint/AppId blank.
+4. Leave strict external-only defaults enabled unless you intentionally want Microsoft methods allowed.
+5. Use Run In Console so teammates can complete Microsoft Graph interactive sign-in.
 
 High-impact options:
 - Enforce strict external-only tenant prereqs:
@@ -323,14 +324,16 @@ function Test-UiState {
   }
 
   if (-not $State.Offboard) {
-    foreach ($pair in @(
+    $providerFields = @(
       @{ Label = "ClientId"; Value = $State.ClientId },
       @{ Label = "DiscoveryEndpoint"; Value = $State.DiscoveryEndpoint },
       @{ Label = "AppId"; Value = $State.AppId }
-    )) {
-      if ([string]::IsNullOrWhiteSpace([string]$pair.Value)) {
-        $errors.Add("$($pair.Label) is required for rollout mode.") | Out-Null
-      }
+    )
+    $providedProviderFields = @(
+      $providerFields | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_.Value) }
+    )
+    if ($providedProviderFields.Count -gt 0 -and $providedProviderFields.Count -lt $providerFields.Count) {
+      $errors.Add("Provider fields are partially filled. Supply all of ClientId/DiscoveryEndpoint/AppId, or leave all blank when reusing an existing EAM.") | Out-Null
     }
   }
 
