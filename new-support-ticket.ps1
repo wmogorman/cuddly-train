@@ -36,8 +36,8 @@ function getPrompt ($LCID) {
         '06$' {return "Opret en ny supportsag"} #kamelasa
         '0C$' {return "Cr$(cdPnt 00e9)er un nouveau ticket de Support"} #french
         '0B$' {return "Tee uusi tukipyynt$(cdPnt 00f6)"} #suomi mainittu
-        '09$' {return "Create new Support Ticket"} #english
-      default {return "Create new Support Ticket"} #something else $(cdPnt 2122)
+        '09$' {return "ActaMSP Support"} #english
+      default {return "ActaMSP Support"} #something else $(cdPnt 2122)
     }
 }
 
