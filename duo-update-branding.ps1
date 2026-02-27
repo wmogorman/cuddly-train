@@ -33,7 +33,7 @@ param(
   [string[]] $OnlyAccountNames,
 
   # Set -Publish:$false to stage only (draft without publishing).
-  [switch] $Publish = $true,
+  [switch] $Publish = $false,
 
   # Preview draft/publish requests while still reading account list.
   [switch] $WhatIf
@@ -42,7 +42,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-function Normalize-DuoHost {
+function Resolve-DuoHost {
   param([Parameter(Mandatory)][string] $HostOrUrl)
 
   $value = $HostOrUrl.Trim()
@@ -109,7 +109,7 @@ function Get-DuoParamsString {
 function New-DuoAuthHeaders {
   param(
     [Parameter(Mandatory)][string] $Method,
-    [Parameter(Mandatory)][string] $Host,
+    [Parameter(Mandatory)][string] $ApiHost,
     [Parameter(Mandatory)][string] $Path,
     [Parameter(Mandatory)][hashtable] $Params,
     [Parameter(Mandatory)][string] $IKey,
@@ -121,7 +121,7 @@ function New-DuoAuthHeaders {
   $canon = @(
     $date
     $Method.ToUpperInvariant()
-    $Host.ToLowerInvariant()
+    $ApiHost.ToLowerInvariant()
     $Path
     $paramsLine
   ) -join "`n"
@@ -134,20 +134,20 @@ function New-DuoAuthHeaders {
   return @{
     "Date"          = $date
     "Authorization" = "Basic $basic"
-    "Host"          = $Host
+    "Host"          = $ApiHost
   }
 }
 
 function Invoke-DuoApi {
   param(
     [Parameter(Mandatory)][ValidateSet("GET","POST","DELETE")] [string] $Method,
-    [Parameter(Mandatory)][string] $Host,
+    [Parameter(Mandatory)][string] $ApiHost,
     [Parameter(Mandatory)][string] $Path,
     [hashtable] $Params = @{}
   )
 
-  $headers = New-DuoAuthHeaders -Method $Method -Host $Host -Path $Path -Params $Params -IKey $IKey -SKey $SKey
-  $uri = "https://$Host$Path"
+  $headers = New-DuoAuthHeaders -Method $Method -ApiHost $ApiHost -Path $Path -Params $Params -IKey $IKey -SKey $SKey
+  $uri = "https://$ApiHost$Path"
   $isAccountDiscoveryCall = ($Path -eq "/accounts/v1/account/list")
 
   if ($WhatIf -and -not $isAccountDiscoveryCall) {
@@ -204,13 +204,13 @@ function Get-Base64Png {
   return [Convert]::ToBase64String($bytes)
 }
 
-$ParentApiHost = Normalize-DuoHost -HostOrUrl $ParentApiHost
+$ParentApiHost = Resolve-DuoHost -HostOrUrl $ParentApiHost
 Assert-PngFile -Path $LogoPngPath -MaxBytes 204800 -Label "Logo"
 if ($BackgroundPngPath) {
   Assert-PngFile -Path $BackgroundPngPath -MaxBytes 3145728 -Label "Background"
 }
 
-$accountsResp = Invoke-DuoApi -Method POST -Host $ParentApiHost -Path "/accounts/v1/account/list" -Params @{}
+$accountsResp = Invoke-DuoApi -Method POST -ApiHost $ParentApiHost -Path "/accounts/v1/account/list" -Params @{}
 if (-not $accountsResp) {
   throw "Unable to retrieve accounts."
 }
@@ -261,7 +261,7 @@ foreach ($acct in $accounts) {
   }
 
   try {
-    $childHost = Normalize-DuoHost -HostOrUrl $childHostRaw
+    $childHost = Resolve-DuoHost -HostOrUrl $childHostRaw
   } catch {
     $summary.Skipped++
     Write-Warning "Skipping [$childName] ($childId): invalid child host '$childHostRaw'."
@@ -281,7 +281,7 @@ foreach ($acct in $accounts) {
       $draftParams.background_img = $bgB64
     }
 
-    $draftResp = Invoke-DuoApi -Method POST -Host $childHost -Path "/admin/v1/branding/draft" -Params $draftParams
+    $draftResp = Invoke-DuoApi -Method POST -ApiHost $childHost -Path "/admin/v1/branding/draft" -Params $draftParams
     if ($draftResp -and $draftResp.stat -ne "OK") {
       throw "Draft update failed: $($draftResp | ConvertTo-Json -Depth 10)"
     }
@@ -292,7 +292,7 @@ foreach ($acct in $accounts) {
       continue
     }
 
-    $pubResp = Invoke-DuoApi -Method POST -Host $childHost -Path "/admin/v1/branding/draft/publish" -Params @{ account_id = $childId }
+    $pubResp = Invoke-DuoApi -Method POST -ApiHost $childHost -Path "/admin/v1/branding/draft/publish" -Params @{ account_id = $childId }
     if ($pubResp -and $pubResp.stat -ne "OK") {
       throw "Publish failed: $($pubResp | ConvertTo-Json -Depth 10)"
     }
