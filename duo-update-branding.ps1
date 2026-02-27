@@ -33,7 +33,7 @@ param(
   [string[]] $OnlyAccountNames,
 
   # Set -Publish:$false to stage only (draft without publishing).
-  [switch] $Publish = $false,
+  [switch] $Publish = $true,
 
   # Preview draft/publish requests while still reading account list.
   [switch] $WhatIf
@@ -41,6 +41,13 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+
+if ([string]::IsNullOrWhiteSpace($IKey)) {
+  throw "IKey cannot be empty."
+}
+if ([string]::IsNullOrWhiteSpace($SKey)) {
+  throw "SKey cannot be empty."
+}
 
 function Resolve-DuoHost {
   param([Parameter(Mandatory)][string] $HostOrUrl)
@@ -126,7 +133,7 @@ function New-DuoAuthHeaders {
     $paramsLine
   ) -join "`n"
 
-  $hmac = New-Object System.Security.Cryptography.HMACSHA1 ([System.Text.Encoding]::UTF8.GetBytes($SKey))
+  $hmac = New-Object System.Security.Cryptography.HMACSHA1 -ArgumentList (,([System.Text.Encoding]::UTF8.GetBytes($SKey)))
   $sigBytes = $hmac.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($canon))
   $sigHex = -join ($sigBytes | ForEach-Object { $_.ToString("x2") })
 
