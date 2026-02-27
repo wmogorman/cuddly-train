@@ -13,6 +13,7 @@
     - Grant read information
     - Grant applications
     - Grant settings
+    - Grant read log
     - Grant resource: Read
     - Grant set Admin API permissions
 
@@ -64,6 +65,8 @@ $RequiredPermissionParams = [ordered]@{
   adminapi_integrations           = "1"
   # Grant settings
   adminapi_settings               = "1"
+  # Grant read log
+  adminapi_read_log              = "1"
   # Existing required grants
   adminapi_read_resource          = "1"
   adminapi_allow_to_set_permissions = "1"
