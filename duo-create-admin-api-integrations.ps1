@@ -264,7 +264,7 @@ function Get-AdminApiIntegrations {
 
 function Get-MatchingAdminApiIntegrations {
   param(
-    [Parameter(Mandatory)] [object[]] $Integrations,
+    [Parameter(Mandatory)] [AllowEmptyCollection()] [object[]] $Integrations,
     [Parameter(Mandatory)] [string] $Name
   )
 
