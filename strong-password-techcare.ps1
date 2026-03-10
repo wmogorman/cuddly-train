@@ -1,3 +1,16 @@
+<#
+.SYNOPSIS
+Sets domain password policy and password expiry warning in Default Domain Policy.
+
+.DESCRIPTION
+Applies password settings to the domain default password policy and sets
+`PasswordExpiryWarning` in the Default Domain Policy GPO.
+Use `-SkipConfirmation` for non-interactive automation (for example Datto RMM)
+to prevent `ShouldProcess` confirmation prompts from hanging execution.
+
+.EXAMPLE
+.\strong-password-techcare.ps1 -SkipConfirmation -SkipPdcCheck -NoVerify
+#>
 #requires -RunAsAdministrator
 [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'High')]
 param(
@@ -20,11 +33,18 @@ param(
 
     [switch]$NoVerify,
 
-    [switch]$SkipPdcCheck
+    [switch]$SkipPdcCheck,
+
+    [switch]$SkipConfirmation
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+
+if ($SkipConfirmation) {
+    # Prevent interactive confirmation prompts (useful for non-interactive automation such as RMM components).
+    $ConfirmPreference = 'None'
+}
 
 if ($MinPasswordAgeDays -ge $MaxPasswordAgeDays) {
     throw "MinPasswordAgeDays ($MinPasswordAgeDays) must be less than MaxPasswordAgeDays ($MaxPasswordAgeDays)."
