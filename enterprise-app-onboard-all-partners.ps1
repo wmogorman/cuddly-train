@@ -2,6 +2,7 @@
 param(
     [string]$TargetAppId = "f45ddef0-f613-4c3d-92d1-6b80bf00e6cf",
     [string]$PartnerTenantId,
+    [string]$DelegatedClientId,
     [switch]$UseDeviceCode,
     [string[]]$IncludeTenantId,
     [string[]]$ExcludeTenantId,
@@ -85,6 +86,7 @@ function Connect-GraphDelegated {
     param(
         [string]$TenantId,
         [string[]]$Scopes,
+        [string]$DelegatedClientId,
         [switch]$UseDeviceCode,
         [string]$Phase
     )
@@ -98,6 +100,9 @@ function Connect-GraphDelegated {
     if (-not [string]::IsNullOrWhiteSpace($TenantId)) {
         $connectParams["TenantId"] = $TenantId
     }
+    if (-not [string]::IsNullOrWhiteSpace($DelegatedClientId)) {
+        $connectParams["ClientId"] = $DelegatedClientId
+    }
     if ($UseDeviceCode) {
         $connectParams["UseDeviceCode"] = $true
     }
@@ -108,8 +113,13 @@ function Connect-GraphDelegated {
     }
     catch {
         $message = Get-ExceptionMessageText -ErrorObject $_
+        $isUnauthorizedGraphPsClient = $message -match "(?i)AADSTS90099|Microsoft Graph Command Line Tools|has not been authorized in the tenant"
         $isListenerIssue = $message -match "(?i)writing to a listener|EventSourceException"
         $isWamWindowIssue = $message -match "(?i)window handle|wam"
+
+        if ($isUnauthorizedGraphPsClient -and [string]::IsNullOrWhiteSpace($DelegatedClientId)) {
+            throw "Delegated auth failed because the default Graph PowerShell client app (14d82eec-204b-4c2f-b7e8-296a70dab67e) is not authorized in tenant '$TenantId' (AADSTS90099). Re-run with -DelegatedClientId '<your partner-approved app client id>'."
+        }
 
         if ($UseDeviceCode -and $isListenerIssue) {
             Write-Log -Level "WARN" -Tenant $TenantId -Message "$Phase device-code sign-in hit a listener error; retrying with default interactive sign-in."
@@ -151,6 +161,27 @@ function Assert-RequiredGraphCmdlets {
     $missing = @($requiredCmdlets | Where-Object { -not (Get-Command -Name $_ -ErrorAction SilentlyContinue) })
     if ($missing.Count -gt 0) {
         throw "Missing Microsoft Graph cmdlets: $($missing -join ', '). Install/import the required Graph modules before running this script."
+    }
+}
+
+function Configure-GraphLoginOptions {
+    param([string]$DelegatedClientId)
+
+    if ([string]::IsNullOrWhiteSpace($DelegatedClientId)) {
+        return
+    }
+
+    $setGraphOption = Get-Command -Name "Set-MgGraphOption" -ErrorAction SilentlyContinue
+    if (-not $setGraphOption) {
+        return
+    }
+
+    try {
+        Set-MgGraphOption -DisableLoginByWAM $true -ErrorAction Stop
+        Write-Log -Message "Applied Graph SDK login option: DisableLoginByWAM=True for custom delegated client auth."
+    }
+    catch {
+        Write-Log -Level "WARN" -Message "Could not set Graph SDK login option DisableLoginByWAM: $($_.Exception.Message)"
     }
 }
 
@@ -236,7 +267,7 @@ function Discover-ActiveGdapCustomers {
 
     try {
         Write-Log -Message "Connecting to Microsoft Graph for GDAP customer discovery."
-        Connect-GraphDelegated -TenantId $PartnerTenantId -Scopes $discoveryScopes -UseDeviceCode:$UseDeviceCode -Phase "Discovery"
+        Connect-GraphDelegated -TenantId $PartnerTenantId -Scopes $discoveryScopes -DelegatedClientId $DelegatedClientId -UseDeviceCode:$UseDeviceCode -Phase "Discovery"
 
         $context = Get-MgContext -ErrorAction Stop
         Set-GraphProfileIfSupported -TenantId $context.TenantId
@@ -307,18 +338,27 @@ function Resolve-TargetTenants {
         }
     }
 
-    foreach ($tenantId in (Get-NormalizedTenantIdList -TenantIds $IncludeTenantId)) {
-        $tenantKey = $tenantId.ToLowerInvariant()
-        if (-not $targetsByTenant.ContainsKey($tenantKey)) {
-            $targetsByTenant[$tenantKey] = [pscustomobject]@{
-                TenantId            = $tenantId
-                CustomerDisplayName = $null
-                Source              = "IncludeOverride"
+    $resolved = @($targetsByTenant.Values | Sort-Object -Property TenantId)
+
+    $includeNormalized = @(Get-NormalizedTenantIdList -TenantIds $IncludeTenantId)
+    if ($includeNormalized.Count -gt 0) {
+        $includeSet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+        foreach ($tenantId in $includeNormalized) {
+            [void]$includeSet.Add($tenantId)
+        }
+
+        $resolved = @($resolved | Where-Object { $includeSet.Contains($_.TenantId) })
+
+        foreach ($tenantId in $includeNormalized) {
+            if (@($resolved | Where-Object { $_.TenantId -eq $tenantId }).Count -eq 0) {
+                $resolved += [pscustomobject]@{
+                    TenantId            = $tenantId
+                    CustomerDisplayName = $null
+                    Source              = "IncludeOverride"
+                }
             }
         }
     }
-
-    $resolved = @($targetsByTenant.Values | Sort-Object -Property TenantId)
 
     $excludeSet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
     foreach ($tenantId in (Get-NormalizedTenantIdList -TenantIds $ExcludeTenantId)) {
@@ -389,7 +429,7 @@ function Invoke-TenantEnterpriseAppOnboarding {
 
     try {
         Write-Log -Tenant $tenantId -Message "Connecting to customer tenant for enterprise app onboarding."
-        Connect-GraphDelegated -TenantId $tenantId -Scopes $onboardingScopes -UseDeviceCode:$UseDeviceCode -Phase "Tenant"
+        Connect-GraphDelegated -TenantId $tenantId -Scopes $onboardingScopes -DelegatedClientId $DelegatedClientId -UseDeviceCode:$UseDeviceCode -Phase "Tenant"
         Set-GraphProfileIfSupported -TenantId $tenantId
         $context = Get-MgContext -ErrorAction Stop
         Write-Log -Tenant $tenantId -Message "Connected. Tenant: $($context.TenantId) AuthType: $($context.AuthType)"
@@ -547,6 +587,7 @@ function Invoke-TenantEnterpriseAppOnboarding {
 }
 
 Assert-RequiredGraphCmdlets
+Configure-GraphLoginOptions -DelegatedClientId $DelegatedClientId
 
 $requiredPermissionBaseline = @(
     $RequiredApplicationPermission `
