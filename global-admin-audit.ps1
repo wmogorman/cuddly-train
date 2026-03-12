@@ -112,6 +112,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $globalAdminTemplateId = "62e90394-69f5-4237-9190-012177145e10"
+$script:TenantDisplayNameById = @{}
 
 function Write-Log {
     param(
@@ -176,6 +177,61 @@ function Get-TenantFailureMessage {
     }
 
     return $message
+}
+
+function Register-TenantDisplayName {
+    param(
+        [string]$TenantId,
+        [string]$TenantName
+    )
+
+    if ([string]::IsNullOrWhiteSpace($TenantId) -or [string]::IsNullOrWhiteSpace($TenantName)) {
+        return
+    }
+
+    $script:TenantDisplayNameById[$TenantId.Trim().ToLowerInvariant()] = $TenantName.Trim()
+}
+
+function Get-TenantDisplayNameFromCache {
+    param([string]$TenantId)
+
+    if ([string]::IsNullOrWhiteSpace($TenantId)) {
+        return $null
+    }
+
+    $key = $TenantId.Trim().ToLowerInvariant()
+    if ($script:TenantDisplayNameById.ContainsKey($key)) {
+        return [string]$script:TenantDisplayNameById[$key]
+    }
+
+    return $null
+}
+
+function Get-ConnectedTenantDisplayName {
+    param(
+        [string]$TenantId,
+        [string]$FallbackName
+    )
+
+    try {
+        $org = @(Get-MgOrganization -Property "displayName" -ErrorAction Stop | Select-Object -First 1)
+        if ($org.Count -gt 0) {
+            $displayName = [string]$org[0].DisplayName
+            if (-not [string]::IsNullOrWhiteSpace($displayName)) {
+                Register-TenantDisplayName -TenantId $TenantId -TenantName $displayName
+                return $displayName.Trim()
+            }
+        }
+    }
+    catch {
+        Write-Log -Level "WARN" -Tenant $TenantId -Message "Could not resolve tenant display name: $($_.Exception.Message)"
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($FallbackName)) {
+        return $FallbackName
+    }
+
+    return $TenantId
 }
 
 function Get-DirectoryObjectId {
@@ -274,6 +330,7 @@ function Assert-RequiredGraphCmdlets {
         "Connect-MgGraph",
         "Disconnect-MgGraph",
         "Get-MgContext",
+        "Get-MgOrganization",
         "Get-MgDirectoryRole",
         "Get-MgDirectoryRoleMember",
         "Get-MgGroup",
@@ -341,15 +398,18 @@ function Get-CustomerTenantIdFromRelationship {
 }
 
 function Set-GraphProfileIfSupported {
-    param([string]$TenantId)
+    param(
+        [string]$TenantId,
+        [string]$TenantLabel = $TenantId
+    )
 
     $selectProfile = Get-Command -Name "Select-MgProfile" -ErrorAction SilentlyContinue
     if ($selectProfile) {
         Select-MgProfile -Name "v1.0" -ErrorAction Stop | Out-Null
-        Write-Log -Tenant $TenantId -Message "Selected Microsoft Graph profile v1.0."
+        Write-Log -Tenant $TenantLabel -Message "Selected Microsoft Graph profile v1.0."
     }
     else {
-        Write-Log -Level "WARN" -Tenant $TenantId -Message "Select-MgProfile not available in this SDK version; using default Graph profile."
+        Write-Log -Level "WARN" -Tenant $TenantLabel -Message "Select-MgProfile not available in this SDK version; using default Graph profile."
     }
 }
 
@@ -439,9 +499,10 @@ function Discover-PartnerTenantTargets {
     )
 
     $discovered = [System.Collections.Generic.List[string]]::new()
+    $discoveryTenantLabel = $DiscoveryTenantId
 
     try {
-        Write-Log -Tenant $DiscoveryTenantId -Message "Connecting to discovery tenant for partner relationship lookup."
+        Write-Log -Tenant $discoveryTenantLabel -Message "Connecting to discovery tenant for partner relationship lookup."
         Connect-MgGraph `
             -ClientId $ClientId `
             -TenantId $DiscoveryTenantId `
@@ -449,15 +510,17 @@ function Discover-PartnerTenantTargets {
             -NoWelcome `
             -ErrorAction Stop | Out-Null
 
-        Set-GraphProfileIfSupported -TenantId $DiscoveryTenantId
+        Set-GraphProfileIfSupported -TenantId $DiscoveryTenantId -TenantLabel $discoveryTenantLabel
+        $discoveryTenantLabel = Get-ConnectedTenantDisplayName -TenantId $DiscoveryTenantId -FallbackName $DiscoveryTenantId
+        Register-TenantDisplayName -TenantId $DiscoveryTenantId -TenantName $discoveryTenantLabel
 
         if ($IncludeMspTenant) {
             $discovered.Add($DiscoveryTenantId)
-            Write-Log -Tenant $DiscoveryTenantId -Message "Including MSP tenant in target list."
+            Write-Log -Tenant $discoveryTenantLabel -Message "Including MSP tenant in target list."
         }
 
         $gdapDiscoveredCount = 0
-        $gdapRelationships = @(Invoke-WithRetry -Tenant $DiscoveryTenantId -Operation "Get GDAP relationships" -Script {
+        $gdapRelationships = @(Invoke-WithRetry -Tenant $discoveryTenantLabel -Operation "Get GDAP relationships" -Script {
                 Get-MgTenantRelationshipDelegatedAdminRelationship -All -ErrorAction Stop
             })
 
@@ -471,14 +534,25 @@ function Discover-PartnerTenantTargets {
             if (-not [string]::IsNullOrWhiteSpace($customerTenantId)) {
                 $discovered.Add($customerTenantId)
                 $gdapDiscoveredCount++
+
+                $customerDisplayName = $null
+                if ($relationship.Customer) {
+                    if ($relationship.Customer.PSObject.Properties.Name -contains "DisplayName") {
+                        $customerDisplayName = [string]$relationship.Customer.DisplayName
+                    }
+                    elseif ($relationship.Customer.PSObject.Properties.Name -contains "AdditionalProperties" -and $null -ne $relationship.Customer.AdditionalProperties) {
+                        $customerDisplayName = [string]$relationship.Customer.AdditionalProperties["displayName"]
+                    }
+                }
+                Register-TenantDisplayName -TenantId $customerTenantId -TenantName $customerDisplayName
             }
         }
 
-        Write-Log -Tenant $DiscoveryTenantId -Message "Discovered $gdapDiscoveredCount tenant(s) from active GDAP relationships."
+        Write-Log -Tenant $discoveryTenantLabel -Message "Discovered $gdapDiscoveredCount tenant(s) from active GDAP relationships."
 
         if ($DiscoveryMode -eq "GDAPAndContracts") {
             $contractDiscoveredCount = 0
-            $contracts = @(Invoke-WithRetry -Tenant $DiscoveryTenantId -Operation "Get customer contracts" -Script {
+            $contracts = @(Invoke-WithRetry -Tenant $discoveryTenantLabel -Operation "Get customer contracts" -Script {
                     Get-MgContract -All -ErrorAction Stop
                 })
 
@@ -494,7 +568,7 @@ function Discover-PartnerTenantTargets {
                 }
             }
 
-            Write-Log -Tenant $DiscoveryTenantId -Message "Discovered $contractDiscoveredCount tenant(s) from active contracts."
+            Write-Log -Tenant $discoveryTenantLabel -Message "Discovered $contractDiscoveredCount tenant(s) from active contracts."
         }
     }
     finally {
@@ -505,7 +579,7 @@ function Discover-PartnerTenantTargets {
             }
         }
         catch {
-            Write-Log -Level "WARN" -Tenant $DiscoveryTenantId -Message "Discovery disconnect failed: $($_.Exception.Message)"
+            Write-Log -Level "WARN" -Tenant $discoveryTenantLabel -Message "Discovery disconnect failed: $($_.Exception.Message)"
         }
     }
 
@@ -517,6 +591,7 @@ function Sync-TenantAuditGroup {
 
     $summary = [ordered]@{
         TenantId      = $TargetTenantId
+        TenantName    = $TargetTenantId
         Status        = "Success"
         GlobalAdmins  = 0
         GroupMembers  = 0
@@ -525,9 +600,15 @@ function Sync-TenantAuditGroup {
         WarningCount  = 0
         Error         = $null
     }
+    $tenantLogLabel = $summary.TenantName
+    $cachedTenantName = Get-TenantDisplayNameFromCache -TenantId $TargetTenantId
+    if (-not [string]::IsNullOrWhiteSpace($cachedTenantName)) {
+        $summary.TenantName = $cachedTenantName
+        $tenantLogLabel = $cachedTenantName
+    }
 
     try {
-        Write-Log -Tenant $TargetTenantId -Message "Connecting to Microsoft Graph"
+        Write-Log -Tenant $tenantLogLabel -Message "Connecting to Microsoft Graph"
         Connect-MgGraph `
             -ClientId $ClientId `
             -TenantId $TargetTenantId `
@@ -535,11 +616,13 @@ function Sync-TenantAuditGroup {
             -NoWelcome `
             -ErrorAction Stop | Out-Null
 
-        Set-GraphProfileIfSupported -TenantId $TargetTenantId
+        Set-GraphProfileIfSupported -TenantId $TargetTenantId -TenantLabel $tenantLogLabel
+        $summary.TenantName = Get-ConnectedTenantDisplayName -TenantId $TargetTenantId -FallbackName $summary.TenantName
+        $tenantLogLabel = $summary.TenantName
         $ctx = Get-MgContext -ErrorAction Stop
-        Write-Log -Tenant $TargetTenantId -Message "Connected. Tenant: $($ctx.TenantId) AppId: $($ctx.ClientId) AuthType: $($ctx.AuthType)"
+        Write-Log -Tenant $tenantLogLabel -Message "Connected. Tenant: $($summary.TenantName) AppId: $($ctx.ClientId) AuthType: $($ctx.AuthType)"
 
-        $matchingRoles = @(Invoke-WithRetry -Tenant $TargetTenantId -Operation "Get directory roles" -Script {
+        $matchingRoles = @(Invoke-WithRetry -Tenant $tenantLogLabel -Operation "Get directory roles" -Script {
                 Get-MgDirectoryRole -All -ErrorAction Stop | Where-Object {
                     $_.RoleTemplateId -eq $globalAdminTemplateId -or $_.DisplayName -eq "Global Administrator"
                 }
@@ -550,14 +633,14 @@ function Sync-TenantAuditGroup {
         }
 
         if ($matchingRoles.Count -gt 1) {
-            Write-Log -Level "WARN" -Tenant $TargetTenantId -Message "Multiple matching Global Administrator roles found; using the first."
+            Write-Log -Level "WARN" -Tenant $tenantLogLabel -Message "Multiple matching Global Administrator roles found; using the first."
             $summary.WarningCount++
         }
 
         $role = $matchingRoles[0]
-        Write-Log -Tenant $TargetTenantId -Message "Resolved role: $($role.DisplayName) [$($role.Id)]"
+        Write-Log -Tenant $tenantLogLabel -Message "Resolved role: $($role.DisplayName) [$($role.Id)]"
 
-        $globalAdmins = @(Invoke-WithRetry -Tenant $TargetTenantId -Operation "Get role members" -Script {
+        $globalAdmins = @(Invoke-WithRetry -Tenant $tenantLogLabel -Operation "Get role members" -Script {
                 Get-MgDirectoryRoleMember -DirectoryRoleId $role.Id -All -ErrorAction Stop
             })
 
@@ -570,10 +653,10 @@ function Sync-TenantAuditGroup {
         }
 
         $summary.GlobalAdmins = $globalAdminIds.Count
-        Write-Log -Tenant $TargetTenantId -Message "Found $($globalAdminIds.Count) Global Administrator member(s)."
+        Write-Log -Tenant $tenantLogLabel -Message "Found $($globalAdminIds.Count) Global Administrator member(s)."
 
         $escapedName = $GroupDisplayName.Replace("'", "''")
-        $matchingGroups = @(Invoke-WithRetry -Tenant $TargetTenantId -Operation "Get audit group by display name" -Script {
+        $matchingGroups = @(Invoke-WithRetry -Tenant $tenantLogLabel -Operation "Get audit group by display name" -Script {
                 Get-MgGroup -Filter "displayName eq '$escapedName'" -ConsistencyLevel eventual -All -ErrorAction Stop
             })
 
@@ -581,17 +664,17 @@ function Sync-TenantAuditGroup {
         $groupJustCreated = $false
         if ($matchingGroups.Count -gt 1) {
             $group = $matchingGroups | Sort-Object CreatedDateTime | Select-Object -First 1
-            Write-Log -Level "WARN" -Tenant $TargetTenantId -Message "Multiple groups named '$GroupDisplayName' found. Using '$($group.Id)'."
+            Write-Log -Level "WARN" -Tenant $tenantLogLabel -Message "Multiple groups named '$GroupDisplayName' found. Using '$($group.Id)'."
             $summary.WarningCount++
         }
         elseif ($matchingGroups.Count -eq 1) {
             $group = $matchingGroups[0]
-            Write-Log -Tenant $TargetTenantId -Message "Using existing group '$($group.DisplayName)' [$($group.Id)]"
+            Write-Log -Tenant $tenantLogLabel -Message "Using existing group '$($group.DisplayName)' [$($group.Id)]"
         }
         else {
-            Write-Log -Tenant $TargetTenantId -Message "Audit group not found: $GroupDisplayName"
+            Write-Log -Tenant $tenantLogLabel -Message "Audit group not found: $GroupDisplayName"
             if ($DryRun) {
-                Write-Log -Tenant $TargetTenantId -Message "DRY RUN: would create group '$GroupDisplayName'"
+                Write-Log -Tenant $tenantLogLabel -Message "DRY RUN: would create group '$GroupDisplayName'"
                 $group = [pscustomobject]@{
                     Id          = "<dry-run-group>"
                     DisplayName = $GroupDisplayName
@@ -600,7 +683,7 @@ function Sync-TenantAuditGroup {
             else {
                 $mailNickname = New-DeterministicMailNickname -DisplayName $GroupDisplayName -TenantId $TargetTenantId
                 try {
-                    $group = Invoke-WithRetry -Tenant $TargetTenantId -Operation "Create audit group" -Script {
+                    $group = Invoke-WithRetry -Tenant $tenantLogLabel -Operation "Create audit group" -Script {
                         New-MgGroup `
                             -DisplayName $GroupDisplayName `
                             -Description "Maintained by ActaMSP automation. Mirrors current Global Administrator role membership." `
@@ -609,17 +692,17 @@ function Sync-TenantAuditGroup {
                             -SecurityEnabled:$true `
                             -ErrorAction Stop
                     }
-                    Write-Log -Tenant $TargetTenantId -Message "Created group '$($group.DisplayName)' [$($group.Id)]"
+                    Write-Log -Tenant $tenantLogLabel -Message "Created group '$($group.DisplayName)' [$($group.Id)]"
                     $groupJustCreated = $true
                 }
                 catch {
                     if ($_.Exception.Message -match "(?i)mailnickname|already exists|objectconflict|another object with the same value") {
-                        Write-Log -Level "WARN" -Tenant $TargetTenantId -Message "Group create reported conflict for mailNickname '$mailNickname'; attempting to locate existing group."
+                        Write-Log -Level "WARN" -Tenant $tenantLogLabel -Message "Group create reported conflict for mailNickname '$mailNickname'; attempting to locate existing group."
                         $summary.WarningCount++
                         $groupByNickname = @(Get-MgGroup -Filter "mailNickname eq '$mailNickname'" -ConsistencyLevel eventual -All -ErrorAction Stop)
                         if ($groupByNickname.Count -ge 1) {
                             $group = $groupByNickname[0]
-                            Write-Log -Tenant $TargetTenantId -Message "Using existing group '$($group.DisplayName)' [$($group.Id)] found by mailNickname."
+                            Write-Log -Tenant $tenantLogLabel -Message "Using existing group '$($group.DisplayName)' [$($group.Id)] found by mailNickname."
                         }
                         else {
                             throw
@@ -635,10 +718,10 @@ function Sync-TenantAuditGroup {
         $currentMembers = @()
         if ($group.Id -ne "<dry-run-group>") {
             if ($groupJustCreated) {
-                Write-Log -Tenant $TargetTenantId -Message "Waiting for newly created group to become queryable."
+                Write-Log -Tenant $tenantLogLabel -Message "Waiting for newly created group to become queryable."
             }
 
-            $currentMembers = @(Invoke-WithRetry -Tenant $TargetTenantId -Operation "Get group members" -RetryOnNotFound:$groupJustCreated -Script {
+            $currentMembers = @(Invoke-WithRetry -Tenant $tenantLogLabel -Operation "Get group members" -RetryOnNotFound:$groupJustCreated -Script {
                     Get-MgGroupMember -GroupId $group.Id -All -ErrorAction Stop
                 })
         }
@@ -652,27 +735,27 @@ function Sync-TenantAuditGroup {
         }
 
         $summary.GroupMembers = $currentMemberIds.Count
-        Write-Log -Tenant $TargetTenantId -Message "Current audit group member count: $($currentMemberIds.Count)"
+        Write-Log -Tenant $tenantLogLabel -Message "Current audit group member count: $($currentMemberIds.Count)"
 
         $idsToAdd = @($globalAdminIds.Keys | Where-Object { -not $currentMemberIds.ContainsKey($_) })
         foreach ($id in $idsToAdd) {
             $display = Get-DirectoryObjectDisplay -Object $globalAdminIds[$id]
             if ($DryRun) {
-                Write-Log -Tenant $TargetTenantId -Message "DRY RUN: would add '$display' [$id] to audit group"
+                Write-Log -Tenant $tenantLogLabel -Message "DRY RUN: would add '$display' [$id] to audit group"
             }
             else {
                 try {
-                    Invoke-WithRetry -Tenant $TargetTenantId -Operation "Add group member" -RetryOnNotFound:$groupJustCreated -Script {
+                    Invoke-WithRetry -Tenant $tenantLogLabel -Operation "Add group member" -RetryOnNotFound:$groupJustCreated -Script {
                         New-MgGroupMemberByRef -GroupId $group.Id -BodyParameter @{
                             "@odata.id" = "https://graph.microsoft.com/v1.0/directoryObjects/$id"
                         } -ErrorAction Stop
                     } | Out-Null
-                    Write-Log -Tenant $TargetTenantId -Message "Added '$display' [$id] to audit group"
+                    Write-Log -Tenant $tenantLogLabel -Message "Added '$display' [$id] to audit group"
                     $summary.Added++
                 }
                 catch {
                     if ($_.Exception.Message -match "(?i)added object references already exist|already exist") {
-                        Write-Log -Level "WARN" -Tenant $TargetTenantId -Message "Member '$display' [$id] already exists in group."
+                        Write-Log -Level "WARN" -Tenant $tenantLogLabel -Message "Member '$display' [$id] already exists in group."
                         $summary.WarningCount++
                     }
                     else {
@@ -687,19 +770,19 @@ function Sync-TenantAuditGroup {
             foreach ($id in $idsToRemove) {
                 $display = Get-DirectoryObjectDisplay -Object $currentMemberIds[$id]
                 if ($DryRun) {
-                    Write-Log -Tenant $TargetTenantId -Message "DRY RUN: would remove '$display' [$id] from audit group"
+                    Write-Log -Tenant $tenantLogLabel -Message "DRY RUN: would remove '$display' [$id] from audit group"
                 }
                 else {
                     try {
-                        Invoke-WithRetry -Tenant $TargetTenantId -Operation "Remove group member" -RetryOnNotFound:$groupJustCreated -Script {
+                        Invoke-WithRetry -Tenant $tenantLogLabel -Operation "Remove group member" -RetryOnNotFound:$groupJustCreated -Script {
                             Remove-MgGroupMemberByRef -GroupId $group.Id -DirectoryObjectId $id -ErrorAction Stop
                         } | Out-Null
-                        Write-Log -Tenant $TargetTenantId -Message "Removed '$display' [$id] from audit group"
+                        Write-Log -Tenant $tenantLogLabel -Message "Removed '$display' [$id] from audit group"
                         $summary.Removed++
                     }
                     catch {
                         if ($_.Exception.Message -match "(?i)does not exist|resource.*not found|could not find") {
-                            Write-Log -Level "WARN" -Tenant $TargetTenantId -Message "Member '$display' [$id] is already absent from the group."
+                            Write-Log -Level "WARN" -Tenant $tenantLogLabel -Message "Member '$display' [$id] is already absent from the group."
                             $summary.WarningCount++
                         }
                         else {
@@ -710,12 +793,12 @@ function Sync-TenantAuditGroup {
             }
         }
 
-        Write-Log -Tenant $TargetTenantId -Message "Tenant sync complete."
+        Write-Log -Tenant $tenantLogLabel -Message "Tenant sync complete."
     }
     catch {
         $summary.Status = "Failed"
         $summary.Error = Get-TenantFailureMessage -ErrorObject $_
-        Write-Log -Level "ERROR" -Tenant $TargetTenantId -Message "Tenant sync failed: $($summary.Error)"
+        Write-Log -Level "ERROR" -Tenant $tenantLogLabel -Message "Tenant sync failed: $($summary.Error)"
     }
     finally {
         try {
@@ -725,7 +808,7 @@ function Sync-TenantAuditGroup {
             }
         }
         catch {
-            Write-Log -Level "WARN" -Tenant $TargetTenantId -Message "Disconnect-MgGraph failed: $($_.Exception.Message)"
+            Write-Log -Level "WARN" -Tenant $tenantLogLabel -Message "Disconnect-MgGraph failed: $($_.Exception.Message)"
         }
     }
 
@@ -782,8 +865,8 @@ foreach ($target in $targetTenants) {
 
 Write-Log -Message "Run summary:"
 $results `
-| Sort-Object TenantId `
-| Format-Table TenantId, Status, GlobalAdmins, GroupMembers, Added, Removed, WarningCount -AutoSize `
+| Sort-Object TenantName `
+| Format-Table TenantName, Status, GlobalAdmins, GroupMembers, Added, Removed, WarningCount -AutoSize `
 | Out-String `
 | ForEach-Object { $_.TrimEnd() } `
 | ForEach-Object {

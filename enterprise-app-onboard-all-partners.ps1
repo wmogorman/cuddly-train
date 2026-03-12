@@ -1,3 +1,71 @@
+<#
+USAGE NOTES - ENTERPRISE APP ONBOARDING (GDAP BATCH)
+
+Purpose
+- Onboard an existing multi-tenant app registration into customer tenants as an enterprise app
+  (service principal) and grant required Microsoft Graph application permissions.
+- Designed for phased rollout across GDAP customer tenants with clear per-tenant status output.
+
+What this script does per tenant
+1) Connects to Microsoft Graph using delegated auth.
+2) Ensures the target app's service principal exists in the customer tenant.
+3) Ensures required Graph app-role assignments are present for the target service principal.
+4) Marks tenant as PendingManualConsent if grant operations are blocked by consent/policy.
+5) Records tenant-level outcome and writes batch artifacts.
+
+Prerequisites
+- Microsoft Graph PowerShell modules installed (authentication, applications, service principal cmdlets).
+- Delegated operator account has GDAP role access and can perform app/consent operations.
+- For custom delegated sign-in app (`-DelegatedClientId`):
+  - Multi-tenant app registration.
+  - Public client flows enabled (if using device code).
+  - Required delegated Graph permissions and admin consent in partner tenant.
+- Target app registration (`-TargetAppId`) exists and is intended for cross-tenant onboarding.
+
+Targeting behavior
+- Primary source: active GDAP relationships discovered from `-PartnerTenantId` context.
+- `-IncludeTenantId` filters to the specified tenants (and includes listed tenants even if not found in discovery).
+- `-ExcludeTenantId` removes tenants after discovery/include resolution.
+
+Safety and behavior flags
+- `-WhatIf`: simulates create/grant operations.
+- `-StopOnError`: stops batch at first Failed tenant.
+- `-UseDeviceCode`: forces device-code sign-in path (with fallback handling in script).
+
+Default required application permissions
+- Directory.Read.All
+- RoleManagement.Read.Directory
+- Group.ReadWrite.All
+
+Tenant statuses
+- AlreadyCompliant: service principal and required grants already present.
+- Onboarded: missing items created/granted (or planned in WhatIf).
+- PendingManualConsent: app/consent operation blocked; admin consent follow-up required.
+- Failed: unrecoverable per-tenant error.
+
+Output artifacts
+- batch-results.json: detailed per-tenant results.
+- batch-results.csv: flattened per-tenant report.
+- batch-summary.json: aggregate counters and timing.
+
+Examples
+- Dry run for two tenants:
+  .\enterprise-app-onboard-all-partners.ps1 `
+    -PartnerTenantId "mspTenantGuid" `
+    -DelegatedClientId "delegatedClientAppGuid" `
+    -TargetAppId "targetAutomationAppGuid" `
+    -IncludeTenantId "tenantGuid1","tenantGuid2" `
+    -WhatIf -UseDeviceCode
+
+- Live wave with stop-on-first-failure:
+  .\enterprise-app-onboard-all-partners.ps1 `
+    -PartnerTenantId "mspTenantGuid" `
+    -DelegatedClientId "delegatedClientAppGuid" `
+    -TargetAppId "targetAutomationAppGuid" `
+    -IncludeTenantId "tenantGuid1","tenantGuid2","tenantGuid3" `
+    -StopOnError -UseDeviceCode
+#>
+
 [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = "High")]
 param(
     [string]$TargetAppId = "f45ddef0-f613-4c3d-92d1-6b80bf00e6cf",
@@ -82,14 +150,43 @@ function Get-AdminConsentUrl {
     return "https://login.microsoftonline.com/$TenantId/adminconsent?client_id=$AppId"
 }
 
+function Get-ConnectedTenantDisplayName {
+    param(
+        [string]$TenantId,
+        [string]$FallbackName
+    )
+
+    try {
+        $org = @(Get-MgOrganization -Property "displayName" -ErrorAction Stop | Select-Object -First 1)
+        if ($org.Count -gt 0) {
+            $displayName = [string]$org[0].DisplayName
+            if (-not [string]::IsNullOrWhiteSpace($displayName)) {
+                return $displayName.Trim()
+            }
+        }
+    }
+    catch {
+        Write-Log -Level "WARN" -Tenant $TenantId -Message "Could not resolve tenant display name: $($_.Exception.Message)"
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($FallbackName)) {
+        return $FallbackName
+    }
+
+    return $TenantId
+}
+
 function Connect-GraphDelegated {
     param(
         [string]$TenantId,
+        [string]$TenantLabel,
         [string[]]$Scopes,
         [string]$DelegatedClientId,
         [switch]$UseDeviceCode,
         [string]$Phase
     )
+
+    $tenantLogLabel = if ([string]::IsNullOrWhiteSpace($TenantLabel)) { $TenantId } else { $TenantLabel }
 
     $connectParams = @{
         Scopes       = $Scopes
@@ -122,7 +219,7 @@ function Connect-GraphDelegated {
         }
 
         if ($UseDeviceCode -and $isListenerIssue) {
-            Write-Log -Level "WARN" -Tenant $TenantId -Message "$Phase device-code sign-in hit a listener error; retrying with default interactive sign-in."
+            Write-Log -Level "WARN" -Tenant $tenantLogLabel -Message "$Phase device-code sign-in hit a listener error; retrying with default interactive sign-in."
             $retryParams = @{} + $connectParams
             [void]$retryParams.Remove("UseDeviceCode")
             Connect-MgGraph @retryParams | Out-Null
@@ -131,7 +228,7 @@ function Connect-GraphDelegated {
 
         if ($UseDeviceCode -or -not $isWamWindowIssue) {
             if (-not $UseDeviceCode -and $isListenerIssue) {
-                Write-Log -Level "WARN" -Tenant $TenantId -Message "$Phase interactive sign-in hit a listener error; retrying with device code."
+                Write-Log -Level "WARN" -Tenant $tenantLogLabel -Message "$Phase interactive sign-in hit a listener error; retrying with device code."
                 $retryParams = @{} + $connectParams
                 $retryParams["UseDeviceCode"] = $true
                 Connect-MgGraph @retryParams | Out-Null
@@ -140,7 +237,7 @@ function Connect-GraphDelegated {
             throw
         }
 
-        Write-Log -Level "WARN" -Tenant $TenantId -Message "$Phase interactive sign-in via WAM failed; retrying with device code."
+        Write-Log -Level "WARN" -Tenant $tenantLogLabel -Message "$Phase interactive sign-in via WAM failed; retrying with device code."
         $connectParams["UseDeviceCode"] = $true
         Connect-MgGraph @connectParams | Out-Null
     }
@@ -151,6 +248,7 @@ function Assert-RequiredGraphCmdlets {
         "Connect-MgGraph",
         "Disconnect-MgGraph",
         "Get-MgContext",
+        "Get-MgOrganization",
         "Get-MgTenantRelationshipDelegatedAdminRelationship",
         "Get-MgServicePrincipal",
         "New-MgServicePrincipal",
@@ -186,15 +284,18 @@ function Configure-GraphLoginOptions {
 }
 
 function Set-GraphProfileIfSupported {
-    param([string]$TenantId)
+    param(
+        [string]$TenantId,
+        [string]$TenantLabel = $TenantId
+    )
 
     $selectProfile = Get-Command -Name "Select-MgProfile" -ErrorAction SilentlyContinue
     if ($selectProfile) {
         Select-MgProfile -Name "v1.0" -ErrorAction Stop | Out-Null
-        Write-Log -Tenant $TenantId -Message "Selected Microsoft Graph profile v1.0."
+        Write-Log -Tenant $TenantLabel -Message "Selected Microsoft Graph profile v1.0."
     }
     else {
-        Write-Log -Level "WARN" -Tenant $TenantId -Message "Select-MgProfile not available in this SDK version; using default Graph profile."
+        Write-Log -Level "WARN" -Tenant $TenantLabel -Message "Select-MgProfile not available in this SDK version; using default Graph profile."
     }
 }
 
@@ -245,6 +346,7 @@ function Get-CustomerTenantIdFromRelationship {
 function Disconnect-GraphIfConnected {
     param(
         [string]$TenantId,
+        [string]$TenantLabel = $TenantId,
         [string]$Phase
     )
 
@@ -255,7 +357,7 @@ function Disconnect-GraphIfConnected {
         }
     }
     catch {
-        Write-Log -Level "WARN" -Tenant $TenantId -Message "$Phase disconnect failed: $($_.Exception.Message)"
+        Write-Log -Level "WARN" -Tenant $TenantLabel -Message "$Phase disconnect failed: $($_.Exception.Message)"
     }
 }
 
@@ -264,14 +366,16 @@ function Discover-ActiveGdapCustomers {
 
     $discoveryScopes = @("DelegatedAdminRelationship.Read.All")
     $customersByTenant = @{}
+    $discoveryTenantLabel = if ([string]::IsNullOrWhiteSpace($PartnerTenantId)) { "" } else { $PartnerTenantId }
 
     try {
         Write-Log -Message "Connecting to Microsoft Graph for GDAP customer discovery."
-        Connect-GraphDelegated -TenantId $PartnerTenantId -Scopes $discoveryScopes -DelegatedClientId $DelegatedClientId -UseDeviceCode:$UseDeviceCode -Phase "Discovery"
+        Connect-GraphDelegated -TenantId $PartnerTenantId -TenantLabel $discoveryTenantLabel -Scopes $discoveryScopes -DelegatedClientId $DelegatedClientId -UseDeviceCode:$UseDeviceCode -Phase "Discovery"
 
         $context = Get-MgContext -ErrorAction Stop
-        Set-GraphProfileIfSupported -TenantId $context.TenantId
-        Write-Log -Message "Discovery connected in tenant $($context.TenantId)."
+        $discoveryTenantLabel = Get-ConnectedTenantDisplayName -TenantId $context.TenantId -FallbackName $context.TenantId
+        Set-GraphProfileIfSupported -TenantId $context.TenantId -TenantLabel $discoveryTenantLabel
+        Write-Log -Tenant $discoveryTenantLabel -Message "Discovery connected."
 
         $relationships = @(Get-MgTenantRelationshipDelegatedAdminRelationship -All -ErrorAction Stop)
         foreach ($relationship in $relationships) {
@@ -308,7 +412,7 @@ function Discover-ActiveGdapCustomers {
         }
     }
     finally {
-        Disconnect-GraphIfConnected -TenantId $PartnerTenantId -Phase "Discovery"
+        Disconnect-GraphIfConnected -TenantId $PartnerTenantId -TenantLabel $discoveryTenantLabel -Phase "Discovery"
     }
 
     return @($customersByTenant.Values | Sort-Object -Property TenantId)
@@ -399,6 +503,7 @@ function Invoke-TenantEnterpriseAppOnboarding {
     $tenantId = [string]$TenantTarget.TenantId
     $result = [ordered]@{
         TenantId                    = $tenantId
+        TenantName                  = if ([string]::IsNullOrWhiteSpace([string]$TenantTarget.CustomerDisplayName)) { $tenantId } else { [string]$TenantTarget.CustomerDisplayName }
         CustomerDisplayName         = [string]$TenantTarget.CustomerDisplayName
         Source                      = [string]$TenantTarget.Source
         Status                      = "Failed"
@@ -421,6 +526,7 @@ function Invoke-TenantEnterpriseAppOnboarding {
     $changesPlanned = $false
     $manualConsentBlocked = $false
     $manualConsentErrors = [System.Collections.Generic.List[string]]::new()
+    $tenantLogLabel = $result.TenantName
     $onboardingScopes = @(
         "Application.ReadWrite.All",
         "AppRoleAssignment.ReadWrite.All",
@@ -428,11 +534,16 @@ function Invoke-TenantEnterpriseAppOnboarding {
     )
 
     try {
-        Write-Log -Tenant $tenantId -Message "Connecting to customer tenant for enterprise app onboarding."
-        Connect-GraphDelegated -TenantId $tenantId -Scopes $onboardingScopes -DelegatedClientId $DelegatedClientId -UseDeviceCode:$UseDeviceCode -Phase "Tenant"
-        Set-GraphProfileIfSupported -TenantId $tenantId
+        Write-Log -Tenant $tenantLogLabel -Message "Connecting to customer tenant for enterprise app onboarding."
+        Connect-GraphDelegated -TenantId $tenantId -TenantLabel $tenantLogLabel -Scopes $onboardingScopes -DelegatedClientId $DelegatedClientId -UseDeviceCode:$UseDeviceCode -Phase "Tenant"
         $context = Get-MgContext -ErrorAction Stop
-        Write-Log -Tenant $tenantId -Message "Connected. Tenant: $($context.TenantId) AuthType: $($context.AuthType)"
+        $result.TenantName = Get-ConnectedTenantDisplayName -TenantId $tenantId -FallbackName $tenantLogLabel
+        if ([string]::IsNullOrWhiteSpace($result.CustomerDisplayName)) {
+            $result.CustomerDisplayName = $result.TenantName
+        }
+        $tenantLogLabel = $result.TenantName
+        Set-GraphProfileIfSupported -TenantId $tenantId -TenantLabel $tenantLogLabel
+        Write-Log -Tenant $tenantLogLabel -Message "Connected. AuthType: $($context.AuthType)"
 
         $targetSpMatches = @(Get-MgServicePrincipal -Filter "appId eq '$TargetAppId'" -All -Property "id,appId,displayName")
         if ($targetSpMatches.Count -gt 1) {
@@ -580,7 +691,7 @@ function Invoke-TenantEnterpriseAppOnboarding {
         $result.EndTime = $endTime.ToString("o")
         $start = [DateTimeOffset]::Parse($result.StartTime)
         $result.DurationSeconds = [Math]::Round(($endTime - $start.DateTime).TotalSeconds, 2)
-        Disconnect-GraphIfConnected -TenantId $tenantId -Phase "Tenant"
+        Disconnect-GraphIfConnected -TenantId $tenantId -TenantLabel $tenantLogLabel -Phase "Tenant"
     }
 
     return [pscustomobject]$result
@@ -624,7 +735,7 @@ foreach ($target in $targets) {
     $results.Add($tenantResult)
 
     if ($tenantResult.Status -eq "PendingManualConsent" -and -not [string]::IsNullOrWhiteSpace($tenantResult.AdminConsentUrl)) {
-        Write-Log -Level "WARN" -Tenant $tenantResult.TenantId -Message ("Manual consent required. URL: {0}" -f $tenantResult.AdminConsentUrl)
+        Write-Log -Level "WARN" -Tenant $tenantResult.TenantName -Message ("Manual consent required. URL: {0}" -f $tenantResult.AdminConsentUrl)
     }
 
     if ($StopOnError -and $tenantResult.Status -eq "Failed") {
@@ -656,6 +767,7 @@ $results | ConvertTo-Json -Depth 20 | Set-Content -Path $resultsJsonPath -Encodi
 
 $csvRows = $results | ForEach-Object {
     [pscustomobject]@{
+        TenantName               = $_.TenantName
         TenantId                 = $_.TenantId
         CustomerDisplayName      = $_.CustomerDisplayName
         Source                   = $_.Source
@@ -679,8 +791,8 @@ $summary | ConvertTo-Json -Depth 10 | Set-Content -Path $summaryPath -Encoding U
 
 Write-Log -Message "Run summary:"
 $results `
-| Sort-Object TenantId `
-| Select-Object TenantId, Status, `
+| Sort-Object TenantName `
+| Select-Object TenantName, Status, `
     @{ Name = "Missing"; Expression = { @($_.MissingPermissionsBefore).Count } }, `
     @{ Name = "Granted"; Expression = { @($_.GrantedPermissions).Count } }, `
     @{ Name = "Pending"; Expression = { @($_.PendingPermissions).Count } } `
