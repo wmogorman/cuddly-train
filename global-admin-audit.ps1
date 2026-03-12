@@ -23,11 +23,12 @@ Prerequisites
 Targeting modes
 - Manual tenant list: pass -TenantId (array).
 - CSV tenant list: pass -TenantListPath with a "TenantId" column.
-- Auto-discovery: pass -AutoDiscoverTenants and -DiscoveryTenantId.
+- Auto-discovery is enabled by default and prompts for -DiscoveryTenantId if not supplied.
   - DiscoveryMode GDAP: active GDAP relationships only.
-  - DiscoveryMode GDAPAndContracts: active GDAP plus active customer contracts.
+  - DiscoveryMode GDAPAndContracts (default): active GDAP plus active customer contracts.
   - Use -IncludeMspTenant to include the MSP tenant itself in the run.
   - Use -IncludeTenantId and -ExcludeTenantId for overrides.
+  - Use -AutoDiscoverTenants:$false to disable discovery and run manual/CSV targets only.
 
 Safety and behavior flags
 - -DryRun: no write operations, logs intended actions only.
@@ -46,22 +47,22 @@ Recommended run order
 
 Examples
 - Manual dry run:
-  .\global-admin-audit.ps1 -TenantId "tenantA","tenantB" -DryRun
+  .\global-admin-audit.ps1 -AutoDiscoverTenants:$false -TenantId "tenantA","tenantB" -DryRun
 
 - Manual live sync with stale cleanup:
-  .\global-admin-audit.ps1 -TenantId "tenantA","tenantB" -StopOnError
+  .\global-admin-audit.ps1 -AutoDiscoverTenants:$false -TenantId "tenantA","tenantB" -StopOnError
 
 - Manual live sync without stale cleanup:
-  .\global-admin-audit.ps1 -TenantId "tenantA","tenantB" -RemoveStaleMembers:$false -StopOnError
+  .\global-admin-audit.ps1 -AutoDiscoverTenants:$false -TenantId "tenantA","tenantB" -RemoveStaleMembers:$false -StopOnError
 
 - CSV-driven dry run:
-  .\global-admin-audit.ps1 -TenantListPath .\tenants.csv -DryRun
+  .\global-admin-audit.ps1 -AutoDiscoverTenants:$false -TenantListPath .\tenants.csv -DryRun
 
 - Auto-discovery (GDAP only), include MSP tenant:
   .\global-admin-audit.ps1 -AutoDiscoverTenants -DiscoveryTenantId "mspTenantId" -DiscoveryMode GDAP -IncludeMspTenant -DryRun
 
 - Auto-discovery (GDAP + contracts), exclude known tenant(s):
-  .\global-admin-audit.ps1 -AutoDiscoverTenants -DiscoveryTenantId "mspTenantId" -DiscoveryMode GDAPAndContracts -ExcludeTenantId "tenantToSkip1","tenantToSkip2"
+  .\global-admin-audit.ps1 -DiscoveryTenantId "mspTenantId" -ExcludeTenantId "tenantToSkip1","tenantToSkip2"
 
 Exit behavior
 - Returns non-zero exit code if one or more tenant syncs fail.
@@ -76,14 +77,14 @@ param(
     [string]$TenantListPath,
 
     [Parameter(Mandatory = $false)]
-    [switch]$AutoDiscoverTenants,
+    [switch]$AutoDiscoverTenants = $true,
 
     [Parameter(Mandatory = $false)]
     [string]$DiscoveryTenantId,
 
     [Parameter(Mandatory = $false)]
     [ValidateSet("GDAP", "GDAPAndContracts")]
-    [string]$DiscoveryMode = "GDAP",
+    [string]$DiscoveryMode = "GDAPAndContracts",
 
     [Parameter(Mandatory = $false)]
     [switch]$IncludeMspTenant,
@@ -828,13 +829,12 @@ $resolvedDiscoveryTenantId = $DiscoveryTenantId
 $discoveredTargets = @()
 if ($AutoDiscoverTenants) {
     if ([string]::IsNullOrWhiteSpace($resolvedDiscoveryTenantId)) {
-        if ($manualTargets.Count -gt 0) {
-            $resolvedDiscoveryTenantId = $manualTargets[0]
-            Write-Log -Level "WARN" -Message "Auto-discovery enabled without -DiscoveryTenantId; using first manual tenant '$resolvedDiscoveryTenantId' as discovery tenant."
+        $resolvedDiscoveryTenantId = [string](Read-Host "Enter discovery tenant ID/domain for auto-discovery")
+        if ([string]::IsNullOrWhiteSpace($resolvedDiscoveryTenantId)) {
+            throw "Auto-discovery requires -DiscoveryTenantId. Re-run with -DiscoveryTenantId or provide a value at the prompt."
         }
-        else {
-            throw "Auto-discovery requires -DiscoveryTenantId or at least one manual tenant in -TenantId/-TenantListPath."
-        }
+        $resolvedDiscoveryTenantId = $resolvedDiscoveryTenantId.Trim()
+        Write-Log -Message "Using prompted discovery tenant '$resolvedDiscoveryTenantId'."
     }
 
     $discoveredTargets = Discover-PartnerTenantTargets `
