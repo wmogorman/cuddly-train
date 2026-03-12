@@ -4,15 +4,15 @@ USAGE NOTES - GLOBAL ADMIN AUDIT GROUP SYNC
 Purpose
 - Run from your MSP app registration context and keep a security group in each target tenant
   aligned to current "Global Administrator" role membership.
-- Script is idempotent and safe to rerun. It adds missing members every run and can optionally
-  remove stale members with -RemoveStaleMembers.
+- Script is idempotent and safe to rerun. It adds missing members every run and removes stale
+  members by default (disable with -RemoveStaleMembers:$false).
 
 What this script does per tenant
 1) Connects to Microsoft Graph using app-only certificate auth.
 2) Resolves the built-in Global Administrator role.
 3) Finds or creates the audit group (default: "ActaMSP Global Administrators Audit").
 4) Adds missing global admins to the group.
-5) Optionally removes members no longer in Global Administrator.
+5) Removes members no longer in Global Administrator (unless -RemoveStaleMembers:$false is used).
 
 Prerequisites
 - Microsoft Graph PowerShell modules installed (authentication, groups, directory management, partner as needed).
@@ -31,7 +31,7 @@ Targeting modes
 
 Safety and behavior flags
 - -DryRun: no write operations, logs intended actions only.
-- -RemoveStaleMembers: removes non-global-admin members from the audit group.
+- -RemoveStaleMembers: enabled by default; set -RemoveStaleMembers:$false to skip stale-member removals.
 - -StopOnError: stop after first tenant failure (otherwise continue and summarize).
 
 CSV format example
@@ -41,15 +41,18 @@ TenantId
 
 Recommended run order
 1) Dry run first.
-2) Run live without removals if first deployment.
-3) Enable -RemoveStaleMembers once validated.
+2) For first live deployment, consider disabling removals with -RemoveStaleMembers:$false.
+3) Run with default removals enabled once validated.
 
 Examples
 - Manual dry run:
   .\global-admin-audit.ps1 -TenantId "tenantA","tenantB" -DryRun
 
 - Manual live sync with stale cleanup:
-  .\global-admin-audit.ps1 -TenantId "tenantA","tenantB" -RemoveStaleMembers -StopOnError
+  .\global-admin-audit.ps1 -TenantId "tenantA","tenantB" -StopOnError
+
+- Manual live sync without stale cleanup:
+  .\global-admin-audit.ps1 -TenantId "tenantA","tenantB" -RemoveStaleMembers:$false -StopOnError
 
 - CSV-driven dry run:
   .\global-admin-audit.ps1 -TenantListPath .\tenants.csv -DryRun
@@ -58,7 +61,7 @@ Examples
   .\global-admin-audit.ps1 -AutoDiscoverTenants -DiscoveryTenantId "mspTenantId" -DiscoveryMode GDAP -IncludeMspTenant -DryRun
 
 - Auto-discovery (GDAP + contracts), exclude known tenant(s):
-  .\global-admin-audit.ps1 -AutoDiscoverTenants -DiscoveryTenantId "mspTenantId" -DiscoveryMode GDAPAndContracts -ExcludeTenantId "tenantToSkip1","tenantToSkip2" -RemoveStaleMembers
+  .\global-admin-audit.ps1 -AutoDiscoverTenants -DiscoveryTenantId "mspTenantId" -DiscoveryMode GDAPAndContracts -ExcludeTenantId "tenantToSkip1","tenantToSkip2"
 
 Exit behavior
 - Returns non-zero exit code if one or more tenant syncs fail.
@@ -104,7 +107,7 @@ param(
     [switch]$DryRun,
 
     [Parameter(Mandatory = $false)]
-    [switch]$RemoveStaleMembers,
+    [switch]$RemoveStaleMembers = $true,
 
     [Parameter(Mandatory = $false)]
     [switch]$StopOnError
