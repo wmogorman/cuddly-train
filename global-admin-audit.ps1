@@ -130,7 +130,7 @@ function Write-Log {
     Write-Host ("[{0}] [{1}] {2}{3}" -f (Get-Date -Format "yyyy-MM-dd HH:mm:ss"), $Level, $tenantPrefix, $Message)
 }
 
-function Get-ExceptionMessageText {
+function Get-ExceptionMessageParts {
     param([object]$ErrorObject)
 
     $exception = if ($ErrorObject -is [System.Management.Automation.ErrorRecord]) {
@@ -140,7 +140,7 @@ function Get-ExceptionMessageText {
         $ErrorObject
     }
     else {
-        return [string]$ErrorObject
+        return @([string]$ErrorObject)
     }
 
     $messages = [System.Collections.Generic.List[string]]::new()
@@ -165,22 +165,139 @@ function Get-ExceptionMessageText {
         }
     }
 
-    return @($messages | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique) -join " | "
+    return @($messages | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique)
+}
+
+function Get-GraphErrorContext {
+    param([string[]]$MessageParts)
+
+    $parts = @($MessageParts | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    $primaryMessage = $null
+    $errorCode = $null
+    $correlationId = $null
+    $traceId = $null
+    $timestamp = $null
+    $jsonErrorDescription = $null
+
+    foreach ($part in $parts) {
+        $trimmed = $part.Trim()
+        if ([string]::IsNullOrWhiteSpace($trimmed)) {
+            continue
+        }
+
+        if (-not $primaryMessage -and -not ($trimmed.StartsWith("{") -or $trimmed.StartsWith("["))) {
+            $primaryMessage = $trimmed
+        }
+
+        if ($trimmed.StartsWith("{")) {
+            try {
+                $parsed = $trimmed | ConvertFrom-Json -ErrorAction Stop
+                if ($parsed.error_description -and [string]::IsNullOrWhiteSpace($jsonErrorDescription)) {
+                    $jsonErrorDescription = [string]$parsed.error_description
+                }
+                if ($parsed.correlation_id -and [string]::IsNullOrWhiteSpace($correlationId)) {
+                    $correlationId = [string]$parsed.correlation_id
+                }
+                if ($parsed.trace_id -and [string]::IsNullOrWhiteSpace($traceId)) {
+                    $traceId = [string]$parsed.trace_id
+                }
+                if ($parsed.timestamp -and [string]::IsNullOrWhiteSpace($timestamp)) {
+                    $timestamp = [string]$parsed.timestamp
+                }
+                if ($parsed.error_codes -and $parsed.error_codes.Count -gt 0 -and [string]::IsNullOrWhiteSpace($errorCode)) {
+                    $firstCode = [string]$parsed.error_codes[0]
+                    if (-not [string]::IsNullOrWhiteSpace($firstCode)) {
+                        $errorCode = "AADSTS$firstCode"
+                    }
+                }
+            }
+            catch {
+                # Ignore non-JSON text that only looks like JSON.
+            }
+        }
+    }
+
+    if ([string]::IsNullOrWhiteSpace($primaryMessage) -and -not [string]::IsNullOrWhiteSpace($jsonErrorDescription)) {
+        $primaryMessage = $jsonErrorDescription
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($primaryMessage) -and $primaryMessage -match "(?i)Original exception:\s*(.+)$") {
+        $primaryMessage = [string]$Matches[1]
+    }
+
+    $fullText = ($parts -join " | ")
+    $searchText = if ([string]::IsNullOrWhiteSpace($primaryMessage)) { $fullText } else { "$primaryMessage | $fullText" }
+
+    if ([string]::IsNullOrWhiteSpace($errorCode) -and $searchText -match "(?i)\b(AADSTS\d{4,})\b") {
+        $errorCode = [string]$Matches[1].ToUpperInvariant()
+    }
+    if ([string]::IsNullOrWhiteSpace($correlationId) -and $searchText -match "(?i)Correlation ID:\s*([0-9a-f-]{36})") {
+        $correlationId = [string]$Matches[1]
+    }
+    if ([string]::IsNullOrWhiteSpace($traceId) -and $searchText -match "(?i)Trace ID:\s*([0-9a-f-]{36})") {
+        $traceId = [string]$Matches[1]
+    }
+    if ([string]::IsNullOrWhiteSpace($timestamp) -and $searchText -match "(?i)Timestamp:\s*([0-9:\-\.TZ]+)") {
+        $timestamp = [string]$Matches[1]
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($primaryMessage)) {
+        $primaryMessage = $primaryMessage -replace "(?i)\s*Trace ID:\s*[0-9a-f-]{36}", ""
+        $primaryMessage = $primaryMessage -replace "(?i)\s*Correlation ID:\s*[0-9a-f-]{36}", ""
+        $primaryMessage = $primaryMessage -replace "(?i)\s*Timestamp:\s*[0-9:\-\.TZ]+", ""
+        $primaryMessage = $primaryMessage -replace "\s{2,}", " "
+        $primaryMessage = $primaryMessage.Trim(" ", "|", ".")
+    }
+
+    return [pscustomobject]@{
+        PrimaryMessage = $primaryMessage
+        ErrorCode      = $errorCode
+        CorrelationId  = $correlationId
+        TraceId        = $traceId
+        Timestamp      = $timestamp
+        FullText       = $fullText
+    }
 }
 
 function Get-TenantFailureMessage {
     param([object]$ErrorObject)
 
-    $message = Get-ExceptionMessageText -ErrorObject $ErrorObject
+    $messageParts = Get-ExceptionMessageParts -ErrorObject $ErrorObject
+    $errorContext = Get-GraphErrorContext -MessageParts $messageParts
+    $fullText = [string]$errorContext.FullText
+    $errorCode = [string]$errorContext.ErrorCode
+    $primaryMessage = [string]$errorContext.PrimaryMessage
+    $friendlyMessage = $null
+    $contextDetails = [System.Collections.Generic.List[string]]::new()
 
-    if ($message -match "(?i)AADSTS7000229|missing service principal in the tenant") {
-        $message = "$message | Remediation: Enterprise app/service principal is missing in this tenant. Onboard the tenant first with enterprise-app-onboard-all-partners.ps1."
+    if ($errorCode -eq "AADSTS7000229" -or $fullText -match "(?i)missing service principal in the tenant") {
+        $friendlyMessage = "AADSTS7000229: Audit app is not onboarded in this tenant (enterprise app/service principal missing). Run enterprise-app-onboard-all-partners.ps1 for this tenant."
     }
-    elseif ($message -match "(?i)authorization_requestdenied|insufficient privileges|admin consent|forbidden") {
-        $message = "$message | Remediation: Confirm admin consent and app permissions are granted in this tenant for the audit app registration."
+    elseif ($fullText -match "(?i)authorization_requestdenied|insufficient privileges|admin consent|forbidden") {
+        $friendlyMessage = "Authorization/consent error: confirm required app permissions and admin consent are granted in this tenant."
+    }
+    else {
+        $friendlyMessage = if ([string]::IsNullOrWhiteSpace($primaryMessage)) { "Tenant sync failed due to an unknown Graph authentication error." } else { $primaryMessage }
     }
 
-    return $message
+    if (-not [string]::IsNullOrWhiteSpace($errorCode)) {
+        $contextDetails.Add("Code=$errorCode") | Out-Null
+    }
+    if (-not [string]::IsNullOrWhiteSpace($errorContext.CorrelationId)) {
+        $contextDetails.Add("CorrelationId=$($errorContext.CorrelationId)") | Out-Null
+    }
+    if (-not [string]::IsNullOrWhiteSpace($errorContext.TraceId)) {
+        $contextDetails.Add("TraceId=$($errorContext.TraceId)") | Out-Null
+    }
+    if (-not [string]::IsNullOrWhiteSpace($errorContext.Timestamp)) {
+        $contextDetails.Add("Timestamp=$($errorContext.Timestamp)") | Out-Null
+    }
+
+    if ($contextDetails.Count -gt 0) {
+        return "$friendlyMessage [$($contextDetails -join '; ')]"
+    }
+
+    return $friendlyMessage
 }
 
 function Register-TenantDisplayName {
