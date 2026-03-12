@@ -125,6 +125,59 @@ function Write-Log {
     Write-Host ("[{0}] [{1}] {2}{3}" -f (Get-Date -Format "yyyy-MM-dd HH:mm:ss"), $Level, $tenantPrefix, $Message)
 }
 
+function Get-ExceptionMessageText {
+    param([object]$ErrorObject)
+
+    $exception = if ($ErrorObject -is [System.Management.Automation.ErrorRecord]) {
+        $ErrorObject.Exception
+    }
+    elseif ($ErrorObject -is [System.Exception]) {
+        $ErrorObject
+    }
+    else {
+        return [string]$ErrorObject
+    }
+
+    $messages = [System.Collections.Generic.List[string]]::new()
+    while ($exception) {
+        if (-not [string]::IsNullOrWhiteSpace($exception.Message)) {
+            $messages.Add($exception.Message) | Out-Null
+        }
+
+        if ($exception.PSObject.Properties.Name -contains "ResponseBody") {
+            $responseBody = [string]$exception.ResponseBody
+            if (-not [string]::IsNullOrWhiteSpace($responseBody)) {
+                $messages.Add($responseBody) | Out-Null
+            }
+        }
+
+        $exception = $exception.InnerException
+    }
+
+    if ($ErrorObject -is [System.Management.Automation.ErrorRecord]) {
+        if ($ErrorObject.ErrorDetails -and -not [string]::IsNullOrWhiteSpace($ErrorObject.ErrorDetails.Message)) {
+            $messages.Add($ErrorObject.ErrorDetails.Message) | Out-Null
+        }
+    }
+
+    return @($messages | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique) -join " | "
+}
+
+function Get-TenantFailureMessage {
+    param([object]$ErrorObject)
+
+    $message = Get-ExceptionMessageText -ErrorObject $ErrorObject
+
+    if ($message -match "(?i)AADSTS7000229|missing service principal in the tenant") {
+        $message = "$message | Remediation: Enterprise app/service principal is missing in this tenant. Onboard the tenant first with enterprise-app-onboard-all-partners.ps1."
+    }
+    elseif ($message -match "(?i)authorization_requestdenied|insufficient privileges|admin consent|forbidden") {
+        $message = "$message | Remediation: Confirm admin consent and app permissions are granted in this tenant for the audit app registration."
+    }
+
+    return $message
+}
+
 function Get-DirectoryObjectId {
     param($Object)
 
@@ -661,7 +714,7 @@ function Sync-TenantAuditGroup {
     }
     catch {
         $summary.Status = "Failed"
-        $summary.Error = $_.Exception.Message
+        $summary.Error = Get-TenantFailureMessage -ErrorObject $_
         Write-Log -Level "ERROR" -Tenant $TargetTenantId -Message "Tenant sync failed: $($summary.Error)"
     }
     finally {
