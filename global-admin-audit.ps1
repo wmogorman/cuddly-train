@@ -300,6 +300,70 @@ function Get-TenantFailureMessage {
     return $friendlyMessage
 }
 
+function Get-FormattedGraphAuthError {
+    param(
+        [object]$ErrorObject,
+        [string]$Operation,
+        [string]$TenantId,
+        [string]$ClientId,
+        [string]$CertificateThumbprint,
+        [string[]]$Scopes
+    )
+
+    $messageParts = @(Get-ExceptionMessageParts -ErrorObject $ErrorObject)
+    $errorContext = Get-GraphErrorContext -MessageParts $messageParts
+    $details = [System.Collections.Generic.List[string]]::new()
+
+    if (-not [string]::IsNullOrWhiteSpace($TenantId)) {
+        $details.Add("TenantId=$TenantId") | Out-Null
+    }
+    if (-not [string]::IsNullOrWhiteSpace($ClientId)) {
+        $details.Add("ClientId=$ClientId") | Out-Null
+    }
+    if (-not [string]::IsNullOrWhiteSpace($CertificateThumbprint)) {
+        $details.Add("Thumbprint=$CertificateThumbprint") | Out-Null
+    }
+    if ($Scopes -and $Scopes.Count -gt 0) {
+        $details.Add("Scopes=$($Scopes -join ',')") | Out-Null
+    }
+    if (-not [string]::IsNullOrWhiteSpace($errorContext.ErrorCode)) {
+        $details.Add("Code=$($errorContext.ErrorCode)") | Out-Null
+    }
+    if (-not [string]::IsNullOrWhiteSpace($errorContext.CorrelationId)) {
+        $details.Add("CorrelationId=$($errorContext.CorrelationId)") | Out-Null
+    }
+    if (-not [string]::IsNullOrWhiteSpace($errorContext.TraceId)) {
+        $details.Add("TraceId=$($errorContext.TraceId)") | Out-Null
+    }
+    if (-not [string]::IsNullOrWhiteSpace($errorContext.Timestamp)) {
+        $details.Add("Timestamp=$($errorContext.Timestamp)") | Out-Null
+    }
+
+    $primaryMessage = [string]$errorContext.PrimaryMessage
+    if ([string]::IsNullOrWhiteSpace($primaryMessage)) {
+        $primaryMessage = "Microsoft Graph authentication failed."
+    }
+
+    $rawText = [string]$errorContext.FullText
+    $isGenericCertificateError = (
+        $rawText -match "(?i)ClientCertificateCredential authentication failed" -and
+        [string]::IsNullOrWhiteSpace($errorContext.ErrorCode)
+    )
+
+    $suffix = if ($details.Count -gt 0) { " [$($details -join '; ')]" } else { "" }
+    $message = "$Operation failed. $primaryMessage$suffix"
+
+    if ($isGenericCertificateError) {
+        $message += " Possible causes: the app registration is missing the uploaded public certificate, the uploaded certificate does not match the local private key, the wrong app or tenant ID was used, or certificate propagation has not completed yet."
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($rawText) -and $rawText -ne $primaryMessage) {
+        $message += " RawAuthError: $rawText"
+    }
+
+    return $message
+}
+
 function Register-TenantDisplayName {
     param(
         [string]$TenantId,
@@ -624,12 +688,22 @@ function Discover-PartnerTenantTargets {
 
     try {
         Write-Log -Tenant $discoveryTenantLabel -Message "Connecting to discovery tenant for partner relationship lookup."
-        Connect-MgGraph `
-            -ClientId $ClientId `
-            -TenantId $DiscoveryTenantId `
-            -CertificateThumbprint $Thumbprint `
-            -NoWelcome `
-            -ErrorAction Stop | Out-Null
+        try {
+            Connect-MgGraph `
+                -ClientId $ClientId `
+                -TenantId $DiscoveryTenantId `
+                -CertificateThumbprint $Thumbprint `
+                -NoWelcome `
+                -ErrorAction Stop | Out-Null
+        }
+        catch {
+            throw (Get-FormattedGraphAuthError `
+                    -ErrorObject $_ `
+                    -Operation "Partner discovery Graph connect" `
+                    -TenantId $DiscoveryTenantId `
+                    -ClientId $ClientId `
+                    -CertificateThumbprint $Thumbprint)
+        }
 
         Set-GraphProfileIfSupported -TenantId $DiscoveryTenantId -TenantLabel $discoveryTenantLabel
         $discoveryTenantLabel = Get-ConnectedTenantDisplayName -TenantId $DiscoveryTenantId -FallbackName $DiscoveryTenantId
@@ -730,12 +804,22 @@ function Sync-TenantAuditGroup {
 
     try {
         Write-Log -Tenant $tenantLogLabel -Message "Connecting to Microsoft Graph"
-        Connect-MgGraph `
-            -ClientId $ClientId `
-            -TenantId $TargetTenantId `
-            -CertificateThumbprint $Thumbprint `
-            -NoWelcome `
-            -ErrorAction Stop | Out-Null
+        try {
+            Connect-MgGraph `
+                -ClientId $ClientId `
+                -TenantId $TargetTenantId `
+                -CertificateThumbprint $Thumbprint `
+                -NoWelcome `
+                -ErrorAction Stop | Out-Null
+        }
+        catch {
+            throw (Get-FormattedGraphAuthError `
+                    -ErrorObject $_ `
+                    -Operation "Tenant sync Graph connect" `
+                    -TenantId $TargetTenantId `
+                    -ClientId $ClientId `
+                    -CertificateThumbprint $Thumbprint)
+        }
 
         Set-GraphProfileIfSupported -TenantId $TargetTenantId -TenantLabel $tenantLogLabel
         $summary.TenantName = Get-ConnectedTenantDisplayName -TenantId $TargetTenantId -FallbackName $summary.TenantName

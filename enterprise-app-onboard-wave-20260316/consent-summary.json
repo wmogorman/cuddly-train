@@ -1,0 +1,29 @@
+{
+  "PartnerTenantId": "9f50b569-9e79-47a5-bbe6-f362934d55a0",
+  "DiscoveryMode": "GDAPAndContracts",
+  "TenantListPath": "",
+  "TargetAppId": "f45ddef0-f613-4c3d-92d1-6b80bf00e6cf",
+  "DiscoveryClientId": "f45ddef0-f613-4c3d-92d1-6b80bf00e6cf",
+  "VerificationClientId": "f45ddef0-f613-4c3d-92d1-6b80bf00e6cf",
+  "OutputDirectory": ".\\enterprise-app-onboard-wave-20260316",
+  "BatchStartTime": "2026-03-16T16:02:31.2783885-05:00",
+  "BatchEndTime": "2026-03-16T16:03:37.5770764-05:00",
+  "DurationSeconds": 66.3,
+  "TrackerRowCount": 49,
+  "CurrentTargetCount": 49,
+  "VerificationSkipped": false,
+  "ApprovedForVerification": 49,
+  "VerifiedCount": 44,
+  "FinalStateCounts": {
+    "Verified": 44,
+    "NeedsInvestigation": 5
+  },
+  "PartnerAttemptStatusCounts": {
+    "PartnerApproved": 44,
+    "NotStarted": 5
+  },
+  "VerifiedStatusCounts": {
+    "Verified": 44,
+    "MissingServicePrincipal": 5
+  }
+}

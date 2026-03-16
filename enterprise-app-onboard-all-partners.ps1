@@ -9,8 +9,8 @@ Purpose
   automation.
 
 What this script does
-1) Discovers active GDAP customer tenants from the partner tenant when `-PartnerTenantId` is provided.
-   Discovery uses the same app-only certificate path as `global-admin-audit.ps1`.
+1) Discovers customer tenants from the partner tenant when `-PartnerTenantId` is provided.
+   Discovery uses the same app-only certificate path and discovery modes as `global-admin-audit.ps1`.
 2) Resolves the final target list using discovery plus `-TenantListPath`, `-IncludeTenantId`,
    and `-ExcludeTenantId`.
 3) Writes or updates an editable consent tracker CSV/JSON while preserving manual statuses/notes.
@@ -36,8 +36,8 @@ Editable tracker fields
 - `Notes`: free text
 
 Verification behavior
-- Verification runs only for rows whose `PartnerAttemptStatus` is `PartnerApproved`,
-  `CustomerApproved`, or `Approved`.
+- Unless `-SkipVerification` is used, verification probes all current target tenants on rerun so
+  successful consents can be detected automatically.
 - Verification uses app-only certificate auth and checks:
   - target service principal exists
   - required Graph application permissions are granted
@@ -51,15 +51,17 @@ Examples
 - Initial tracker generation from GDAP discovery:
   .\enterprise-app-onboard-all-partners.ps1 `
     -PartnerTenantId "partnerTenantGuid" `
-    -VerificationClientId "appClientGuid" `
-    -VerificationThumbprint "certThumbprint"
+    -DiscoveryMode GDAPAndContracts `
+    -DiscoveryClientId "onboardingAppClientGuid" `
+    -DiscoveryThumbprint "onboardingCertThumbprint"
 
 - Target a smaller wave:
   .\enterprise-app-onboard-all-partners.ps1 `
     -PartnerTenantId "partnerTenantGuid" `
+    -DiscoveryMode GDAPAndContracts `
     -IncludeTenantId "tenantGuid1","tenantGuid2" `
-    -VerificationClientId "appClientGuid" `
-    -VerificationThumbprint "certThumbprint"
+    -DiscoveryClientId "onboardingAppClientGuid" `
+    -DiscoveryThumbprint "onboardingCertThumbprint"
 
 - CSV-driven tracker generation without discovery:
   .\enterprise-app-onboard-all-partners.ps1 `
@@ -75,6 +77,8 @@ Examples
 param(
     [string]$TargetAppId = "f45ddef0-f613-4c3d-92d1-6b80bf00e6cf",
     [string]$PartnerTenantId,
+    [ValidateSet("GDAP", "GDAPAndContracts")]
+    [string]$DiscoveryMode = "GDAPAndContracts",
     [string]$TenantListPath,
     [string]$DelegatedClientId,
     [switch]$UseDeviceCode,
@@ -85,6 +89,8 @@ param(
         "RoleManagement.Read.Directory",
         "Group.ReadWrite.All"
     ),
+    [string]$DiscoveryClientId = "9f2a8506-8c22-498f-9d9f-c778f2599da8",
+    [string]$DiscoveryThumbprint = "D0278AED132F9C816A815A4BFFF0F48CE8FAECEF",
     [string]$VerificationClientId = "f45ddef0-f613-4c3d-92d1-6b80bf00e6cf",
     [string]$VerificationThumbprint = "D0278AED132F9C816A815A4BFFF0F48CE8FAECEF",
     [string]$OutputDirectory = (Join-Path -Path $PSScriptRoot -ChildPath ("enterprise-app-onboard-wave-" + (Get-Date -Format "yyyyMMdd-HHmmss"))),
@@ -155,6 +161,176 @@ function Get-ExceptionMessageText {
         Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
         Select-Object -Unique
     ) -join " | "
+}
+
+function Get-ExceptionMessageParts {
+    param([object]$ErrorObject)
+
+    $messageText = Get-ExceptionMessageText -ErrorObject $ErrorObject
+    if ([string]::IsNullOrWhiteSpace($messageText)) {
+        return @()
+    }
+
+    return @(
+        $messageText -split '\s*\|\s*' |
+        Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+        Select-Object -Unique
+    )
+}
+
+function Get-GraphErrorContext {
+    param([string[]]$MessageParts)
+
+    $parts = @($MessageParts | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    $primaryMessage = $null
+    $errorCode = $null
+    $correlationId = $null
+    $traceId = $null
+    $timestamp = $null
+    $jsonErrorDescription = $null
+
+    foreach ($part in $parts) {
+        $trimmed = $part.Trim()
+        if ([string]::IsNullOrWhiteSpace($trimmed)) {
+            continue
+        }
+
+        if (-not $primaryMessage -and -not ($trimmed.StartsWith("{") -or $trimmed.StartsWith("["))) {
+            $primaryMessage = $trimmed
+        }
+
+        if ($trimmed.StartsWith("{")) {
+            try {
+                $parsed = $trimmed | ConvertFrom-Json -ErrorAction Stop
+                if ($parsed.error_description -and [string]::IsNullOrWhiteSpace($jsonErrorDescription)) {
+                    $jsonErrorDescription = [string]$parsed.error_description
+                }
+                if ($parsed.correlation_id -and [string]::IsNullOrWhiteSpace($correlationId)) {
+                    $correlationId = [string]$parsed.correlation_id
+                }
+                if ($parsed.trace_id -and [string]::IsNullOrWhiteSpace($traceId)) {
+                    $traceId = [string]$parsed.trace_id
+                }
+                if ($parsed.timestamp -and [string]::IsNullOrWhiteSpace($timestamp)) {
+                    $timestamp = [string]$parsed.timestamp
+                }
+                if ($parsed.error_codes -and $parsed.error_codes.Count -gt 0 -and [string]::IsNullOrWhiteSpace($errorCode)) {
+                    $firstCode = [string]$parsed.error_codes[0]
+                    if (-not [string]::IsNullOrWhiteSpace($firstCode)) {
+                        $errorCode = "AADSTS$firstCode"
+                    }
+                }
+            }
+            catch {
+                # Ignore non-JSON text that only looks like JSON.
+            }
+        }
+    }
+
+    if ([string]::IsNullOrWhiteSpace($primaryMessage) -and -not [string]::IsNullOrWhiteSpace($jsonErrorDescription)) {
+        $primaryMessage = $jsonErrorDescription
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($primaryMessage) -and $primaryMessage -match "(?i)Original exception:\s*(.+)$") {
+        $primaryMessage = [string]$Matches[1]
+    }
+
+    $fullText = ($parts -join " | ")
+    $searchText = if ([string]::IsNullOrWhiteSpace($primaryMessage)) { $fullText } else { "$primaryMessage | $fullText" }
+
+    if ([string]::IsNullOrWhiteSpace($errorCode) -and $searchText -match "(?i)\b(AADSTS\d{4,})\b") {
+        $errorCode = [string]$Matches[1].ToUpperInvariant()
+    }
+    if ([string]::IsNullOrWhiteSpace($correlationId) -and $searchText -match "(?i)Correlation ID:\s*([0-9a-f-]{36})") {
+        $correlationId = [string]$Matches[1]
+    }
+    if ([string]::IsNullOrWhiteSpace($traceId) -and $searchText -match "(?i)Trace ID:\s*([0-9a-f-]{36})") {
+        $traceId = [string]$Matches[1]
+    }
+    if ([string]::IsNullOrWhiteSpace($timestamp) -and $searchText -match "(?i)Timestamp:\s*([0-9:\-\.TZ]+)") {
+        $timestamp = [string]$Matches[1]
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($primaryMessage)) {
+        $primaryMessage = $primaryMessage -replace "(?i)\s*Trace ID:\s*[0-9a-f-]{36}", ""
+        $primaryMessage = $primaryMessage -replace "(?i)\s*Correlation ID:\s*[0-9a-f-]{36}", ""
+        $primaryMessage = $primaryMessage -replace "(?i)\s*Timestamp:\s*[0-9:\-\.TZ]+", ""
+        $primaryMessage = $primaryMessage -replace "\s{2,}", " "
+        $primaryMessage = $primaryMessage.Trim(" ", "|", ".")
+    }
+
+    [pscustomobject]@{
+        PrimaryMessage = $primaryMessage
+        ErrorCode      = $errorCode
+        CorrelationId  = $correlationId
+        TraceId        = $traceId
+        Timestamp      = $timestamp
+        FullText       = $fullText
+    }
+}
+
+function Get-FormattedGraphAuthError {
+    param(
+        [object]$ErrorObject,
+        [string]$Operation,
+        [string]$TenantId,
+        [string]$ClientId,
+        [string]$CertificateThumbprint,
+        [string[]]$Scopes
+    )
+
+    $messageParts = @(Get-ExceptionMessageParts -ErrorObject $ErrorObject)
+    $errorContext = Get-GraphErrorContext -MessageParts $messageParts
+    $details = [System.Collections.Generic.List[string]]::new()
+
+    if (-not [string]::IsNullOrWhiteSpace($TenantId)) {
+        $details.Add("TenantId=$TenantId") | Out-Null
+    }
+    if (-not [string]::IsNullOrWhiteSpace($ClientId)) {
+        $details.Add("ClientId=$ClientId") | Out-Null
+    }
+    if (-not [string]::IsNullOrWhiteSpace($CertificateThumbprint)) {
+        $details.Add("Thumbprint=$CertificateThumbprint") | Out-Null
+    }
+    if ($Scopes -and $Scopes.Count -gt 0) {
+        $details.Add("Scopes=$($Scopes -join ',')") | Out-Null
+    }
+    if (-not [string]::IsNullOrWhiteSpace($errorContext.ErrorCode)) {
+        $details.Add("Code=$($errorContext.ErrorCode)") | Out-Null
+    }
+    if (-not [string]::IsNullOrWhiteSpace($errorContext.CorrelationId)) {
+        $details.Add("CorrelationId=$($errorContext.CorrelationId)") | Out-Null
+    }
+    if (-not [string]::IsNullOrWhiteSpace($errorContext.TraceId)) {
+        $details.Add("TraceId=$($errorContext.TraceId)") | Out-Null
+    }
+    if (-not [string]::IsNullOrWhiteSpace($errorContext.Timestamp)) {
+        $details.Add("Timestamp=$($errorContext.Timestamp)") | Out-Null
+    }
+
+    $primaryMessage = [string]$errorContext.PrimaryMessage
+    if ([string]::IsNullOrWhiteSpace($primaryMessage)) {
+        $primaryMessage = "Microsoft Graph authentication failed."
+    }
+
+    $rawText = [string]$errorContext.FullText
+    $isGenericCertificateError = (
+        $rawText -match "(?i)ClientCertificateCredential authentication failed" -and
+        [string]::IsNullOrWhiteSpace($errorContext.ErrorCode)
+    )
+
+    $suffix = if ($details.Count -gt 0) { " [$($details -join '; ')]" } else { "" }
+    $message = "$Operation failed. $primaryMessage$suffix"
+
+    if ($isGenericCertificateError) {
+        $message += " Possible causes: the app registration is missing the uploaded public certificate, the uploaded certificate does not match the local private key, the wrong app or tenant ID was used, or certificate propagation has not completed yet."
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($rawText) -and $rawText -ne $primaryMessage) {
+        $message += " RawAuthError: $rawText"
+    }
+
+    return $message
 }
 
 function Invoke-WithoutWhatIfPreference {
@@ -228,7 +404,11 @@ function Import-RequiredGraphModules {
 }
 
 function Assert-RequiredGraphCmdlets {
-    param([switch]$RequireDiscovery)
+    param(
+        [switch]$RequireDiscovery,
+        [ValidateSet("GDAP", "GDAPAndContracts")]
+        [string]$DiscoveryMode
+    )
 
     $requiredCmdlets = @(
         "Connect-MgGraph",
@@ -241,6 +421,9 @@ function Assert-RequiredGraphCmdlets {
 
     if ($RequireDiscovery) {
         $requiredCmdlets += "Get-MgTenantRelationshipDelegatedAdminRelationship"
+        if ($DiscoveryMode -eq "GDAPAndContracts") {
+            $requiredCmdlets += "Get-MgContract"
+        }
     }
 
     $missing = @($requiredCmdlets | Where-Object { -not (Get-Command -Name $_ -ErrorAction SilentlyContinue) })
@@ -526,7 +709,12 @@ function Connect-GraphDelegated {
         }
     }
     catch {
-        $message = Get-ExceptionMessageText -ErrorObject $_
+        $message = Get-FormattedGraphAuthError `
+            -ErrorObject $_ `
+            -Operation "Delegated Graph connect" `
+            -TenantId $TenantId `
+            -ClientId $DelegatedClientId `
+            -Scopes $Scopes
         $isAuthTimeout = $message -match "(?i)timed out after 120 seconds due to inactivity"
         if (-not [string]::IsNullOrWhiteSpace($DelegatedClientId)) {
             throw "Delegated discovery auth failed for custom client '$DelegatedClientId'. $message Re-run without -DelegatedClientId, or pre-connect manually with Connect-MgGraph and then rerun the script."
@@ -557,10 +745,20 @@ function Connect-GraphAppOnly {
         ContextScope          = "Process"
     }
 
-    Invoke-WithoutWhatIfPreference -ScriptBlock {
-        param($Params)
-        Connect-MgGraph @Params | Out-Null
-    } -ArgumentList @($connectParams)
+    try {
+        Invoke-WithoutWhatIfPreference -ScriptBlock {
+            param($Params)
+            Connect-MgGraph @Params | Out-Null
+        } -ArgumentList @($connectParams)
+    }
+    catch {
+        throw (Get-FormattedGraphAuthError `
+                -ErrorObject $_ `
+                -Operation "App-only Graph connect" `
+                -TenantId $TenantId `
+                -ClientId $ClientId `
+                -CertificateThumbprint $CertificateThumbprint)
+    }
 
     Set-GraphProfileIfSupported -TenantId $TenantId -TenantLabel $TenantLabel
 }
@@ -635,6 +833,8 @@ function Get-CustomerTenantIdFromRelationship {
 function Discover-ActiveGdapCustomers {
     param(
         [string]$PartnerTenantId,
+        [ValidateSet("GDAP", "GDAPAndContracts")]
+        [string]$DiscoveryMode,
         [string]$DiscoveryClientId,
         [string]$DiscoveryThumbprint
     )
@@ -658,6 +858,7 @@ function Discover-ActiveGdapCustomers {
         $discoveryTenantLabel = Get-ConnectedTenantDisplayName -TenantId $context.TenantId -FallbackName $context.TenantId
         Write-Log -Tenant $discoveryTenantLabel -Message "Discovery connected."
 
+        $gdapDiscoveredCount = 0
         $relationships = @(Invoke-WithRetry -Tenant $discoveryTenantLabel -Operation "Get GDAP relationships" -Script {
                 Get-MgTenantRelationshipDelegatedAdminRelationship -All -ErrorAction Stop
             })
@@ -695,6 +896,48 @@ function Discover-ActiveGdapCustomers {
                 RelationshipId      = [string]$relationship.Id
                 RelationshipEndDate = [string]$relationship.EndDateTime
             }
+            $gdapDiscoveredCount++
+        }
+
+        Write-Log -Tenant $discoveryTenantLabel -Message "Discovered $gdapDiscoveredCount tenant(s) from active GDAP relationships."
+
+        if ($DiscoveryMode -eq "GDAPAndContracts") {
+            $contractDiscoveredCount = 0
+            $contracts = @(Invoke-WithRetry -Tenant $discoveryTenantLabel -Operation "Get customer contracts" -Script {
+                    Get-MgContract -All -ErrorAction Stop
+                })
+
+            foreach ($contract in $contracts) {
+                if ($null -ne $contract.DeletedDateTime) {
+                    continue
+                }
+
+                $tenantId = [string]$contract.CustomerId
+                if ([string]::IsNullOrWhiteSpace($tenantId)) {
+                    continue
+                }
+
+                $tenantKey = $tenantId.Trim().ToLowerInvariant()
+                if (-not $customersByTenant.ContainsKey($tenantKey)) {
+                    $customersByTenant[$tenantKey] = [pscustomobject]@{
+                        TenantId            = $tenantId.Trim()
+                        CustomerDisplayName = [string]$contract.DisplayName
+                        Source              = "Contract"
+                        RelationshipId      = $null
+                        RelationshipEndDate = $null
+                    }
+                }
+                elseif (
+                    [string]::IsNullOrWhiteSpace([string]$customersByTenant[$tenantKey].CustomerDisplayName) -and
+                    -not [string]::IsNullOrWhiteSpace([string]$contract.DisplayName)
+                ) {
+                    $customersByTenant[$tenantKey].CustomerDisplayName = [string]$contract.DisplayName
+                }
+
+                $contractDiscoveredCount++
+            }
+
+            Write-Log -Tenant $discoveryTenantLabel -Message "Discovered $contractDiscoveredCount tenant(s) from active contracts."
         }
     }
     finally {
@@ -1017,8 +1260,7 @@ function Merge-ConsentTrackerRows {
 function Should-VerifyTrackerRow {
     param([object]$TrackerRow)
 
-    $status = [string]$TrackerRow.PartnerAttemptStatus
-    return $status -in @("Approved", "PartnerApproved", "CustomerApproved")
+    return $true
 }
 
 function Resolve-GraphAppRoleId {
@@ -1144,8 +1386,15 @@ function Test-TenantConsentVerification {
         }
     }
     catch {
-        $result.VerifiedStatus = "VerificationFailed"
-        $result.VerificationError = Get-ExceptionMessageText -ErrorObject $_
+        $errorMessage = Get-ExceptionMessageText -ErrorObject $_
+        if ($errorMessage -match "(?i)AADSTS7000229|missing service principal in the tenant") {
+            $result.VerifiedStatus = "MissingServicePrincipal"
+            $result.VerificationError = "Target app is not onboarded in this tenant."
+        }
+        else {
+            $result.VerifiedStatus = "VerificationFailed"
+            $result.VerificationError = $errorMessage
+        }
     }
     finally {
         Disconnect-GraphIfConnected -TenantLabel $tenantLabel -Phase "Verification"
@@ -1217,7 +1466,7 @@ function Get-CountsByPropertyValue {
 Import-RequiredGraphModules
 
 $requireDiscovery = -not [string]::IsNullOrWhiteSpace($PartnerTenantId)
-Assert-RequiredGraphCmdlets -RequireDiscovery:$requireDiscovery
+Assert-RequiredGraphCmdlets -RequireDiscovery:$requireDiscovery -DiscoveryMode $DiscoveryMode
 if (-not [string]::IsNullOrWhiteSpace($DelegatedClientId) -or $UseDeviceCode) {
     Write-Log -Level "WARN" -Message "Delegated discovery inputs are ignored. Discovery now uses app-only certificate auth, matching global-admin-audit.ps1."
 }
@@ -1250,16 +1499,17 @@ if ($tenantListTargets.Count -gt 0) {
 
 $discoveredCustomers = @()
 if ($requireDiscovery) {
-    if ([string]::IsNullOrWhiteSpace($VerificationClientId)) {
-        throw "VerificationClientId is required for app-only discovery when -PartnerTenantId is supplied."
+    if ([string]::IsNullOrWhiteSpace($DiscoveryClientId)) {
+        throw "DiscoveryClientId is required for app-only discovery when -PartnerTenantId is supplied."
     }
 
-    Assert-VerificationPrerequisites -CertificateThumbprint $VerificationThumbprint
+    Assert-VerificationPrerequisites -CertificateThumbprint $DiscoveryThumbprint
     $discoveredCustomers = @(Discover-ActiveGdapCustomers `
             -PartnerTenantId $PartnerTenantId `
-            -DiscoveryClientId $VerificationClientId `
-            -DiscoveryThumbprint $VerificationThumbprint)
-    Write-Log -Message "Discovered $($discoveredCustomers.Count) active GDAP customer tenant(s)."
+            -DiscoveryMode $DiscoveryMode `
+            -DiscoveryClientId $DiscoveryClientId `
+            -DiscoveryThumbprint $DiscoveryThumbprint)
+    Write-Log -Message "Discovered $($discoveredCustomers.Count) customer tenant(s) using discovery mode '$DiscoveryMode'."
 }
 elseif ([string]::IsNullOrWhiteSpace($TenantListPath)) {
     Write-Log -Level "WARN" -Message "PartnerTenantId not supplied. Discovery skipped."
@@ -1309,6 +1559,17 @@ if (-not $SkipVerification) {
             -RequiredApplicationPermission $requiredPermissionBaseline
 
         $trackerRow.CustomerDisplayName = $verificationResult.CustomerDisplayName
+        if (
+            $verificationResult.VerifiedStatus -eq "Verified" -and
+            [string]$trackerRow.PartnerAttemptStatus -eq "NotStarted"
+        ) {
+            if ([string]$trackerRow.ConsentActor -eq "Customer") {
+                $trackerRow.PartnerAttemptStatus = "CustomerApproved"
+            }
+            else {
+                $trackerRow.PartnerAttemptStatus = "PartnerApproved"
+            }
+        }
         $trackerRow.VerifiedStatus = $verificationResult.VerifiedStatus
         $trackerRow.ServicePrincipalId = $verificationResult.ServicePrincipalId
         $trackerRow.MissingPermissions = $verificationResult.MissingPermissions
@@ -1351,8 +1612,10 @@ $batchEnd = Get-Date
 $currentTargetRows = @($trackerRows | Where-Object { $_.IsCurrentTarget })
 $summary = [ordered]@{
     PartnerTenantId            = $PartnerTenantId
+    DiscoveryMode              = $DiscoveryMode
     TenantListPath             = $TenantListPath
     TargetAppId                = $TargetAppId
+    DiscoveryClientId          = $DiscoveryClientId
     VerificationClientId       = $VerificationClientId
     OutputDirectory            = $OutputDirectory
     BatchStartTime             = $batchStart.ToString("o")
