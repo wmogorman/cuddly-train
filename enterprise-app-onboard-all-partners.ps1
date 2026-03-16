@@ -88,6 +88,54 @@ $ErrorActionPreference = "Stop"
 
 $graphResourceAppId = "00000003-0000-0000-c000-000000000000"
 
+function Get-GraphAuthenticationModuleVersion {
+    $module = Get-Module -Name "Microsoft.Graph.Authentication" -ListAvailable `
+        | Sort-Object -Property Version -Descending `
+        | Select-Object -First 1
+
+    if ($null -eq $module) {
+        return $null
+    }
+
+    return [Version]$module.Version
+}
+
+function Test-DesktopGraphAuthRuntimeRisk {
+    if ($PSVersionTable.PSEdition -ne "Desktop") {
+        return $false
+    }
+
+    $graphAuthVersion = Get-GraphAuthenticationModuleVersion
+    if ($null -eq $graphAuthVersion) {
+        return $false
+    }
+
+    return ($graphAuthVersion -ge [Version]"2.26.0")
+}
+
+function Get-DesktopGraphAuthRuntimeGuidance {
+    $graphAuthVersion = Get-GraphAuthenticationModuleVersion
+    $graphAuthVersionText = if ($null -eq $graphAuthVersion) { "unknown" } else { $graphAuthVersion.ToString() }
+
+    return "Microsoft Graph PowerShell authentication is unstable in Windows PowerShell 5.1 with Microsoft.Graph.Authentication $graphAuthVersionText. Run this script in PowerShell 7+, or downgrade the Graph PowerShell modules to a known-good 5.1 version such as 2.24.x/2.25.x before retrying."
+}
+
+function Invoke-WithoutWhatIfPreference {
+    param(
+        [scriptblock]$ScriptBlock,
+        [object[]]$ArgumentList = @()
+    )
+
+    $originalWhatIfPreference = $WhatIfPreference
+    try {
+        $WhatIfPreference = $false
+        & $ScriptBlock @ArgumentList
+    }
+    finally {
+        $WhatIfPreference = $originalWhatIfPreference
+    }
+}
+
 function Write-Log {
     param(
         [string]$Message,
@@ -205,7 +253,10 @@ function Connect-GraphDelegated {
     }
 
     try {
-        Connect-MgGraph @connectParams | Out-Null
+        Invoke-WithoutWhatIfPreference -ScriptBlock {
+            param($Params)
+            Connect-MgGraph @Params | Out-Null
+        } -ArgumentList @($connectParams)
         return
     }
     catch {
@@ -213,16 +264,24 @@ function Connect-GraphDelegated {
         $isUnauthorizedGraphPsClient = $message -match "(?i)AADSTS90099|Microsoft Graph Command Line Tools|has not been authorized in the tenant"
         $isListenerIssue = $message -match "(?i)writing to a listener|EventSourceException"
         $isWamWindowIssue = $message -match "(?i)window handle|wam"
+        $hasDesktopGraphAuthRisk = Test-DesktopGraphAuthRuntimeRisk
 
         if ($isUnauthorizedGraphPsClient -and [string]::IsNullOrWhiteSpace($DelegatedClientId)) {
             throw "Delegated auth failed because the default Graph PowerShell client app (14d82eec-204b-4c2f-b7e8-296a70dab67e) is not authorized in tenant '$TenantId' (AADSTS90099). Re-run with -DelegatedClientId '<your partner-approved app client id>'."
+        }
+
+        if ($isListenerIssue -and $hasDesktopGraphAuthRisk) {
+            throw (Get-DesktopGraphAuthRuntimeGuidance)
         }
 
         if ($UseDeviceCode -and $isListenerIssue) {
             Write-Log -Level "WARN" -Tenant $tenantLogLabel -Message "$Phase device-code sign-in hit a listener error; retrying with default interactive sign-in."
             $retryParams = @{} + $connectParams
             [void]$retryParams.Remove("UseDeviceCode")
-            Connect-MgGraph @retryParams | Out-Null
+            Invoke-WithoutWhatIfPreference -ScriptBlock {
+                param($Params)
+                Connect-MgGraph @Params | Out-Null
+            } -ArgumentList @($retryParams)
             return
         }
 
@@ -231,7 +290,10 @@ function Connect-GraphDelegated {
                 Write-Log -Level "WARN" -Tenant $tenantLogLabel -Message "$Phase interactive sign-in hit a listener error; retrying with device code."
                 $retryParams = @{} + $connectParams
                 $retryParams["UseDeviceCode"] = $true
-                Connect-MgGraph @retryParams | Out-Null
+                Invoke-WithoutWhatIfPreference -ScriptBlock {
+                    param($Params)
+                    Connect-MgGraph @Params | Out-Null
+                } -ArgumentList @($retryParams)
                 return
             }
             throw
@@ -239,7 +301,25 @@ function Connect-GraphDelegated {
 
         Write-Log -Level "WARN" -Tenant $tenantLogLabel -Message "$Phase interactive sign-in via WAM failed; retrying with device code."
         $connectParams["UseDeviceCode"] = $true
-        Connect-MgGraph @connectParams | Out-Null
+        Invoke-WithoutWhatIfPreference -ScriptBlock {
+            param($Params)
+            Connect-MgGraph @Params | Out-Null
+        } -ArgumentList @($connectParams)
+    }
+}
+
+function Import-RequiredGraphModules {
+    $requiredModules = @(
+        "Microsoft.Graph.Authentication",
+        "Microsoft.Graph.Applications",
+        "Microsoft.Graph.Identity.Partner"
+    )
+
+    foreach ($moduleName in $requiredModules) {
+        Invoke-WithoutWhatIfPreference -ScriptBlock {
+            param($RequiredModuleName)
+            Import-Module -Name $RequiredModuleName -ErrorAction Stop | Out-Null
+        } -ArgumentList @($moduleName)
     }
 }
 
@@ -275,7 +355,9 @@ function Configure-GraphLoginOptions {
     }
 
     try {
-        Set-MgGraphOption -DisableLoginByWAM $true -ErrorAction Stop
+        Invoke-WithoutWhatIfPreference -ScriptBlock {
+            Set-MgGraphOption -DisableLoginByWAM $true -ErrorAction Stop
+        }
         Write-Log -Message "Applied Graph SDK login option: DisableLoginByWAM=True for custom delegated client auth."
     }
     catch {
@@ -353,7 +435,9 @@ function Disconnect-GraphIfConnected {
     try {
         $ctx = Get-MgContext -ErrorAction SilentlyContinue
         if ($ctx) {
-            Disconnect-MgGraph -ErrorAction Stop | Out-Null
+            Invoke-WithoutWhatIfPreference -ScriptBlock {
+                Disconnect-MgGraph -ErrorAction Stop | Out-Null
+            }
         }
     }
     catch {
@@ -697,6 +781,7 @@ function Invoke-TenantEnterpriseAppOnboarding {
     return [pscustomobject]$result
 }
 
+Import-RequiredGraphModules
 Assert-RequiredGraphCmdlets
 Configure-GraphLoginOptions -DelegatedClientId $DelegatedClientId
 
