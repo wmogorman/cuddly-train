@@ -1,75 +1,81 @@
 <#
-USAGE NOTES - ENTERPRISE APP ONBOARDING (GDAP BATCH)
+USAGE NOTES - ENTERPRISE APP CONSENT WAVE TRACKER
 
 Purpose
-- Onboard an existing multi-tenant app registration into customer tenants as an enterprise app
-  (service principal) and grant required Microsoft Graph application permissions.
-- Designed for phased rollout across GDAP customer tenants with clear per-tenant status output.
+- Prepare and maintain a tenant-wide admin consent wave for the multi-tenant app registration
+  `ActaMSP_GDAP_Application`.
+- Keep the tenant list, consent URLs, manual rollout state, and app-only verification results in
+  one place so the 47-tenant wave can be completed without relying on brittle delegated auth
+  automation.
 
-What this script does per tenant
-1) Connects to Microsoft Graph using delegated auth.
-2) Ensures the target app's service principal exists in the customer tenant.
-3) Ensures required Graph app-role assignments are present for the target service principal.
-4) Marks tenant as PendingManualConsent if grant operations are blocked by consent/policy.
-5) Records tenant-level outcome and writes batch artifacts.
+What this script does
+1) Discovers active GDAP customer tenants from the partner tenant when `-PartnerTenantId` is provided.
+   Discovery uses the same app-only certificate path as `global-admin-audit.ps1`.
+2) Resolves the final target list using discovery plus `-TenantListPath`, `-IncludeTenantId`,
+   and `-ExcludeTenantId`.
+3) Writes or updates an editable consent tracker CSV/JSON while preserving manual statuses/notes.
+4) Verifies tenants already marked as approved by connecting app-only with the target app's
+   certificate and checking that the service principal and required Graph application permissions
+   exist.
 
-Prerequisites
-- Microsoft Graph PowerShell modules installed (authentication, applications, service principal cmdlets).
-- Delegated operator account has GDAP role access and can perform app/consent operations.
-- For custom delegated sign-in app (`-DelegatedClientId`):
-  - Multi-tenant app registration.
-  - Public client flows enabled (if using device code).
-  - Required delegated Graph permissions and admin consent in partner tenant.
-- Target app registration (`-TargetAppId`) exists and is intended for cross-tenant onboarding.
+What this script does not do
+- It does not try to perform the customer-tenant admin consent itself.
+- It does not depend on the custom delegated app as the critical path for the rollout.
 
-Targeting behavior
-- Primary source: active GDAP relationships discovered from `-PartnerTenantId` context.
-- `-IncludeTenantId` filters to the specified tenants (and includes listed tenants even if not found in discovery).
-- `-ExcludeTenantId` removes tenants after discovery/include resolution.
+Editable tracker fields
+- `ConsentActor`: `Partner` or `Customer`
+- `PartnerAttemptStatus`: recommended values
+  - `NotStarted`
+  - `PartnerApproved`
+  - `CustomerFallback`
+  - `CustomerApproved`
+  - `BlockedByPolicy`
+  - `MissingGdapRole`
+  - `UnexpectedError`
+- `FallbackRequired`: `True` / `False`
+- `Notes`: free text
 
-Safety and behavior flags
-- `-WhatIf`: simulates create/grant operations.
-- `-StopOnError`: stops batch at first Failed tenant.
-- `-UseDeviceCode`: forces device-code sign-in path (with fallback handling in script).
+Verification behavior
+- Verification runs only for rows whose `PartnerAttemptStatus` is `PartnerApproved`,
+  `CustomerApproved`, or `Approved`.
+- Verification uses app-only certificate auth and checks:
+  - target service principal exists
+  - required Graph application permissions are granted
 
-Default required application permissions
-- Directory.Read.All
-- RoleManagement.Read.Directory
-- Group.ReadWrite.All
-
-Tenant statuses
-- AlreadyCompliant: service principal and required grants already present.
-- Onboarded: missing items created/granted (or planned in WhatIf).
-- PendingManualConsent: app/consent operation blocked; admin consent follow-up required.
-- Failed: unrecoverable per-tenant error.
-
-Output artifacts
-- batch-results.json: detailed per-tenant results.
-- batch-results.csv: flattened per-tenant report.
-- batch-summary.json: aggregate counters and timing.
+Tracker reruns
+- Rerunning the script refreshes discovery/system fields but preserves manual tracker fields.
+- If you rerun against an existing `-OutputDirectory` without discovery inputs, the script will
+  reuse the existing tracker and verify any rows already marked approved.
 
 Examples
-- Dry run for two tenants:
+- Initial tracker generation from GDAP discovery:
   .\enterprise-app-onboard-all-partners.ps1 `
-    -PartnerTenantId "mspTenantGuid" `
-    -DelegatedClientId "delegatedClientAppGuid" `
-    -TargetAppId "targetAutomationAppGuid" `
-    -IncludeTenantId "tenantGuid1","tenantGuid2" `
-    -WhatIf -UseDeviceCode
+    -PartnerTenantId "partnerTenantGuid" `
+    -VerificationClientId "appClientGuid" `
+    -VerificationThumbprint "certThumbprint"
 
-- Live wave with stop-on-first-failure:
+- Target a smaller wave:
   .\enterprise-app-onboard-all-partners.ps1 `
-    -PartnerTenantId "mspTenantGuid" `
-    -DelegatedClientId "delegatedClientAppGuid" `
-    -TargetAppId "targetAutomationAppGuid" `
-    -IncludeTenantId "tenantGuid1","tenantGuid2","tenantGuid3" `
-    -StopOnError -UseDeviceCode
+    -PartnerTenantId "partnerTenantGuid" `
+    -IncludeTenantId "tenantGuid1","tenantGuid2" `
+    -VerificationClientId "appClientGuid" `
+    -VerificationThumbprint "certThumbprint"
+
+- CSV-driven tracker generation without discovery:
+  .\enterprise-app-onboard-all-partners.ps1 `
+    -TenantListPath .\tenants.csv `
+    -SkipVerification
+
+- Verification-only rerun against an existing tracker directory:
+  .\enterprise-app-onboard-all-partners.ps1 `
+    -OutputDirectory ".\enterprise-app-onboard-wave-20260316-1"
 #>
 
-[CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = "High")]
+[CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = "Low")]
 param(
     [string]$TargetAppId = "f45ddef0-f613-4c3d-92d1-6b80bf00e6cf",
     [string]$PartnerTenantId,
+    [string]$TenantListPath,
     [string]$DelegatedClientId,
     [switch]$UseDeviceCode,
     [string[]]$IncludeTenantId,
@@ -79,7 +85,10 @@ param(
         "RoleManagement.Read.Directory",
         "Group.ReadWrite.All"
     ),
-    [string]$OutputDirectory = (Join-Path -Path $PSScriptRoot -ChildPath ("enterprise-app-onboard-batch-" + (Get-Date -Format "yyyyMMdd-HHmmss"))),
+    [string]$VerificationClientId = "f45ddef0-f613-4c3d-92d1-6b80bf00e6cf",
+    [string]$VerificationThumbprint = "D0278AED132F9C816A815A4BFFF0F48CE8FAECEF",
+    [string]$OutputDirectory = (Join-Path -Path $PSScriptRoot -ChildPath ("enterprise-app-onboard-wave-" + (Get-Date -Format "yyyyMMdd-HHmmss"))),
+    [switch]$SkipVerification,
     [switch]$StopOnError
 )
 
@@ -87,54 +96,12 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 $graphResourceAppId = "00000003-0000-0000-c000-000000000000"
-
-function Get-GraphAuthenticationModuleVersion {
-    $module = Get-Module -Name "Microsoft.Graph.Authentication" -ListAvailable `
-        | Sort-Object -Property Version -Descending `
-        | Select-Object -First 1
-
-    if ($null -eq $module) {
-        return $null
-    }
-
-    return [Version]$module.Version
-}
-
-function Test-DesktopGraphAuthRuntimeRisk {
-    if ($PSVersionTable.PSEdition -ne "Desktop") {
-        return $false
-    }
-
-    $graphAuthVersion = Get-GraphAuthenticationModuleVersion
-    if ($null -eq $graphAuthVersion) {
-        return $false
-    }
-
-    return ($graphAuthVersion -ge [Version]"2.26.0")
-}
-
-function Get-DesktopGraphAuthRuntimeGuidance {
-    $graphAuthVersion = Get-GraphAuthenticationModuleVersion
-    $graphAuthVersionText = if ($null -eq $graphAuthVersion) { "unknown" } else { $graphAuthVersion.ToString() }
-
-    return "Microsoft Graph PowerShell authentication is unstable in Windows PowerShell 5.1 with Microsoft.Graph.Authentication $graphAuthVersionText. Run this script in PowerShell 7+, or downgrade the Graph PowerShell modules to a known-good 5.1 version such as 2.24.x/2.25.x before retrying."
-}
-
-function Invoke-WithoutWhatIfPreference {
-    param(
-        [scriptblock]$ScriptBlock,
-        [object[]]$ArgumentList = @()
-    )
-
-    $originalWhatIfPreference = $WhatIfPreference
-    try {
-        $WhatIfPreference = $false
-        & $ScriptBlock @ArgumentList
-    }
-    finally {
-        $WhatIfPreference = $originalWhatIfPreference
-    }
-}
+$script:TrackerEditableFields = @(
+    "ConsentActor",
+    "PartnerAttemptStatus",
+    "FallbackRequired",
+    "Notes"
+)
 
 function Write-Log {
     param(
@@ -166,6 +133,14 @@ function Get-ExceptionMessageText {
         if (-not [string]::IsNullOrWhiteSpace($exception.Message)) {
             $messages.Add($exception.Message) | Out-Null
         }
+
+        if ($exception.PSObject.Properties.Name -contains "ResponseBody") {
+            $responseBody = [string]$exception.ResponseBody
+            if (-not [string]::IsNullOrWhiteSpace($responseBody)) {
+                $messages.Add($responseBody) | Out-Null
+            }
+        }
+
         $exception = $exception.InnerException
     }
 
@@ -175,166 +150,98 @@ function Get-ExceptionMessageText {
         }
     }
 
-    return @($messages | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique) -join " | "
+    return @(
+        $messages |
+        Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+        Select-Object -Unique
+    ) -join " | "
 }
 
-function Test-IsManualConsentRequiredError {
-    param([object]$ErrorObject)
-
-    $message = Get-ExceptionMessageText -ErrorObject $ErrorObject
-    if ([string]::IsNullOrWhiteSpace($message)) {
-        return $false
-    }
-
-    return ($message -match "(?i)authorization_requestdenied|insufficient privileges|forbidden|access denied|consent|admin consent|permission grant|does not have permission")
-}
-
-function Get-AdminConsentUrl {
+function Invoke-WithoutWhatIfPreference {
     param(
-        [string]$TenantId,
-        [string]$AppId
+        [scriptblock]$ScriptBlock,
+        [object[]]$ArgumentList = @()
     )
 
-    return "https://login.microsoftonline.com/$TenantId/adminconsent?client_id=$AppId"
-}
-
-function Get-ConnectedTenantDisplayName {
-    param(
-        [string]$TenantId,
-        [string]$FallbackName
-    )
-
+    $originalWhatIfPreference = $WhatIfPreference
+    $originalGlobalWhatIfPreference = $global:WhatIfPreference
     try {
-        $org = @(Get-MgOrganization -Property "displayName" -ErrorAction Stop | Select-Object -First 1)
-        if ($org.Count -gt 0) {
-            $displayName = [string]$org[0].DisplayName
-            if (-not [string]::IsNullOrWhiteSpace($displayName)) {
-                return $displayName.Trim()
-            }
-        }
+        $WhatIfPreference = $false
+        $global:WhatIfPreference = $false
+        & $ScriptBlock @ArgumentList
     }
-    catch {
-        Write-Log -Level "WARN" -Tenant $TenantId -Message "Could not resolve tenant display name: $($_.Exception.Message)"
+    finally {
+        $WhatIfPreference = $originalWhatIfPreference
+        $global:WhatIfPreference = $originalGlobalWhatIfPreference
     }
-
-    if (-not [string]::IsNullOrWhiteSpace($FallbackName)) {
-        return $FallbackName
-    }
-
-    return $TenantId
 }
 
-function Connect-GraphDelegated {
-    param(
-        [string]$TenantId,
-        [string]$TenantLabel,
-        [string[]]$Scopes,
-        [string]$DelegatedClientId,
-        [switch]$UseDeviceCode,
-        [string]$Phase
-    )
+function Resolve-ModuleImportTarget {
+    param([string]$ModuleName)
 
-    $tenantLogLabel = if ([string]::IsNullOrWhiteSpace($TenantLabel)) { $TenantId } else { $TenantLabel }
-
-    $connectParams = @{
-        Scopes       = $Scopes
-        NoWelcome    = $true
-        ErrorAction  = "Stop"
-        ContextScope = "Process"
-    }
-    if (-not [string]::IsNullOrWhiteSpace($TenantId)) {
-        $connectParams["TenantId"] = $TenantId
-    }
-    if (-not [string]::IsNullOrWhiteSpace($DelegatedClientId)) {
-        $connectParams["ClientId"] = $DelegatedClientId
-    }
-    if ($UseDeviceCode) {
-        $connectParams["UseDeviceCode"] = $true
+    $availableModule = Get-Module -Name $ModuleName -ListAvailable `
+        | Sort-Object -Property Version -Descending `
+        | Select-Object -First 1
+    if ($availableModule) {
+        return $availableModule.Path
     }
 
-    try {
-        Invoke-WithoutWhatIfPreference -ScriptBlock {
-            param($Params)
-            Connect-MgGraph @Params | Out-Null
-        } -ArgumentList @($connectParams)
-        return
+    $legacyUserModuleRoot = Join-Path -Path $HOME -ChildPath "Documents\WindowsPowerShell\Modules"
+    if (-not (Test-Path -LiteralPath $legacyUserModuleRoot)) {
+        return $null
     }
-    catch {
-        $message = Get-ExceptionMessageText -ErrorObject $_
-        $isUnauthorizedGraphPsClient = $message -match "(?i)AADSTS90099|Microsoft Graph Command Line Tools|has not been authorized in the tenant"
-        $isListenerIssue = $message -match "(?i)writing to a listener|EventSourceException"
-        $isWamWindowIssue = $message -match "(?i)window handle|wam"
-        $hasDesktopGraphAuthRisk = Test-DesktopGraphAuthRuntimeRisk
 
-        if ($isUnauthorizedGraphPsClient -and [string]::IsNullOrWhiteSpace($DelegatedClientId)) {
-            throw "Delegated auth failed because the default Graph PowerShell client app (14d82eec-204b-4c2f-b7e8-296a70dab67e) is not authorized in tenant '$TenantId' (AADSTS90099). Re-run with -DelegatedClientId '<your partner-approved app client id>'."
-        }
-
-        if ($isListenerIssue -and $hasDesktopGraphAuthRisk) {
-            throw (Get-DesktopGraphAuthRuntimeGuidance)
-        }
-
-        if ($UseDeviceCode -and $isListenerIssue) {
-            Write-Log -Level "WARN" -Tenant $tenantLogLabel -Message "$Phase device-code sign-in hit a listener error; retrying with default interactive sign-in."
-            $retryParams = @{} + $connectParams
-            [void]$retryParams.Remove("UseDeviceCode")
-            Invoke-WithoutWhatIfPreference -ScriptBlock {
-                param($Params)
-                Connect-MgGraph @Params | Out-Null
-            } -ArgumentList @($retryParams)
-            return
-        }
-
-        if ($UseDeviceCode -or -not $isWamWindowIssue) {
-            if (-not $UseDeviceCode -and $isListenerIssue) {
-                Write-Log -Level "WARN" -Tenant $tenantLogLabel -Message "$Phase interactive sign-in hit a listener error; retrying with device code."
-                $retryParams = @{} + $connectParams
-                $retryParams["UseDeviceCode"] = $true
-                Invoke-WithoutWhatIfPreference -ScriptBlock {
-                    param($Params)
-                    Connect-MgGraph @Params | Out-Null
-                } -ArgumentList @($retryParams)
-                return
-            }
-            throw
-        }
-
-        Write-Log -Level "WARN" -Tenant $tenantLogLabel -Message "$Phase interactive sign-in via WAM failed; retrying with device code."
-        $connectParams["UseDeviceCode"] = $true
-        Invoke-WithoutWhatIfPreference -ScriptBlock {
-            param($Params)
-            Connect-MgGraph @Params | Out-Null
-        } -ArgumentList @($connectParams)
+    $moduleRoot = Join-Path -Path $legacyUserModuleRoot -ChildPath $ModuleName
+    if (-not (Test-Path -LiteralPath $moduleRoot)) {
+        return $null
     }
+
+    $manifest = Get-ChildItem -Path $moduleRoot -Recurse -Filter ($ModuleName + ".psd1") -File -ErrorAction SilentlyContinue `
+        | Sort-Object -Property FullName -Descending `
+        | Select-Object -First 1
+    if ($manifest) {
+        return $manifest.FullName
+    }
+
+    return $null
 }
 
 function Import-RequiredGraphModules {
     $requiredModules = @(
         "Microsoft.Graph.Authentication",
         "Microsoft.Graph.Applications",
+        "Microsoft.Graph.Identity.DirectoryManagement",
         "Microsoft.Graph.Identity.Partner"
     )
 
     foreach ($moduleName in $requiredModules) {
+        $moduleImportTarget = Resolve-ModuleImportTarget -ModuleName $moduleName
+        if ([string]::IsNullOrWhiteSpace($moduleImportTarget)) {
+            throw "Required Microsoft Graph module '$moduleName' was not found in the current PowerShell module path or legacy WindowsPowerShell module path."
+        }
+
         Invoke-WithoutWhatIfPreference -ScriptBlock {
-            param($RequiredModuleName)
-            Import-Module -Name $RequiredModuleName -ErrorAction Stop | Out-Null
-        } -ArgumentList @($moduleName)
+            param($RequiredModuleImportTarget)
+            Import-Module -Name $RequiredModuleImportTarget -ErrorAction Stop | Out-Null
+        } -ArgumentList @($moduleImportTarget)
     }
 }
 
 function Assert-RequiredGraphCmdlets {
+    param([switch]$RequireDiscovery)
+
     $requiredCmdlets = @(
         "Connect-MgGraph",
         "Disconnect-MgGraph",
         "Get-MgContext",
         "Get-MgOrganization",
-        "Get-MgTenantRelationshipDelegatedAdminRelationship",
         "Get-MgServicePrincipal",
-        "New-MgServicePrincipal",
-        "Get-MgServicePrincipalAppRoleAssignment",
-        "New-MgServicePrincipalAppRoleAssignment"
+        "Get-MgServicePrincipalAppRoleAssignment"
     )
+
+    if ($RequireDiscovery) {
+        $requiredCmdlets += "Get-MgTenantRelationshipDelegatedAdminRelationship"
+    }
 
     $missing = @($requiredCmdlets | Where-Object { -not (Get-Command -Name $_ -ErrorAction SilentlyContinue) })
     if ($missing.Count -gt 0) {
@@ -372,12 +279,34 @@ function Set-GraphProfileIfSupported {
     )
 
     $selectProfile = Get-Command -Name "Select-MgProfile" -ErrorAction SilentlyContinue
-    if ($selectProfile) {
-        Select-MgProfile -Name "v1.0" -ErrorAction Stop | Out-Null
-        Write-Log -Tenant $TenantLabel -Message "Selected Microsoft Graph profile v1.0."
+    if (-not $selectProfile) {
+        return
     }
-    else {
-        Write-Log -Level "WARN" -Tenant $TenantLabel -Message "Select-MgProfile not available in this SDK version; using default Graph profile."
+
+    try {
+        Select-MgProfile -Name "v1.0" -ErrorAction Stop | Out-Null
+    }
+    catch {
+        Write-Log -Level "WARN" -Tenant $TenantLabel -Message "Could not select Graph profile v1.0: $($_.Exception.Message)"
+    }
+}
+
+function Disconnect-GraphIfConnected {
+    param(
+        [string]$TenantLabel = "",
+        [string]$Phase = "Graph"
+    )
+
+    try {
+        $ctx = Get-MgContext -ErrorAction SilentlyContinue
+        if ($ctx) {
+            Invoke-WithoutWhatIfPreference -ScriptBlock {
+                Disconnect-MgGraph -ErrorAction Stop | Out-Null
+            }
+        }
+    }
+    catch {
+        Write-Log -Level "WARN" -Tenant $TenantLabel -Message "$Phase disconnect failed: $($_.Exception.Message)"
     }
 }
 
@@ -389,11 +318,289 @@ function Get-NormalizedTenantIdList {
     }
 
     return @(
-        $TenantIds `
-        | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } `
-        | ForEach-Object { $_.Trim() } `
-        | Sort-Object -Unique
+        $TenantIds |
+        Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+        ForEach-Object { $_.Trim() } |
+        Sort-Object -Unique
     )
+}
+
+function Get-TenantListTargets {
+    param([string]$TenantListPath)
+
+    if ([string]::IsNullOrWhiteSpace($TenantListPath)) {
+        return @()
+    }
+
+    if (-not (Test-Path -LiteralPath $TenantListPath)) {
+        throw "Tenant list file not found: $TenantListPath"
+    }
+
+    $rows = @(Import-Csv -LiteralPath $TenantListPath)
+    if (-not $rows -or $rows.Count -eq 0) {
+        throw "Tenant list file is empty: $TenantListPath"
+    }
+
+    $tenantColumn = $rows[0].PSObject.Properties.Name | Where-Object { $_ -imatch "^tenantid$" } | Select-Object -First 1
+    if (-not $tenantColumn) {
+        throw "Tenant list file must include a 'TenantId' column: $TenantListPath"
+    }
+
+    $displayColumn = $rows[0].PSObject.Properties.Name | Where-Object { $_ -imatch "^(customerdisplayname|displayname|tenantname)$" } | Select-Object -First 1
+    $sourceColumn = $rows[0].PSObject.Properties.Name | Where-Object { $_ -imatch "^source$" } | Select-Object -First 1
+
+    $targetsByTenant = @{}
+    foreach ($row in $rows) {
+        $tenantId = [string]$row.$tenantColumn
+        if ([string]::IsNullOrWhiteSpace($tenantId)) {
+            continue
+        }
+
+        $tenantId = $tenantId.Trim()
+        $tenantKey = $tenantId.ToLowerInvariant()
+        $displayName = if ($displayColumn) { [string]$row.$displayColumn } else { $null }
+        $source = if ($sourceColumn) { [string]$row.$sourceColumn } else { $null }
+        if ([string]::IsNullOrWhiteSpace($source)) {
+            $source = "TenantList"
+        }
+
+        if (-not $targetsByTenant.ContainsKey($tenantKey)) {
+            $targetsByTenant[$tenantKey] = [pscustomobject]@{
+                TenantId            = $tenantId
+                CustomerDisplayName = $displayName
+                Source              = $source
+                RelationshipId      = $null
+                RelationshipEndDate = $null
+            }
+            continue
+        }
+
+        $existing = $targetsByTenant[$tenantKey]
+        if ([string]::IsNullOrWhiteSpace([string]$existing.CustomerDisplayName) -and -not [string]::IsNullOrWhiteSpace($displayName)) {
+            $existing.CustomerDisplayName = $displayName
+        }
+        if ([string]::IsNullOrWhiteSpace([string]$existing.Source) -and -not [string]::IsNullOrWhiteSpace($source)) {
+            $existing.Source = $source
+        }
+    }
+
+    return @($targetsByTenant.Values | Sort-Object -Property TenantId)
+}
+
+function Get-FirstNonEmptyValue {
+    param([object[]]$Value)
+
+    foreach ($candidate in $Value) {
+        $text = [string]$candidate
+        if (-not [string]::IsNullOrWhiteSpace($text)) {
+            return $text.Trim()
+        }
+    }
+
+    return $null
+}
+
+function ConvertTo-TrackerBoolean {
+    param(
+        [object]$Value,
+        [bool]$Default = $false
+    )
+
+    if ($Value -is [bool]) {
+        return [bool]$Value
+    }
+
+    $text = [string]$Value
+    if ([string]::IsNullOrWhiteSpace($text)) {
+        return $Default
+    }
+
+    switch -Regex ($text.Trim()) {
+        '^(?i:true|yes|y|1)$' { return $true }
+        '^(?i:false|no|n|0)$' { return $false }
+        default { return $Default }
+    }
+}
+
+function Get-AdminConsentUrl {
+    param(
+        [string]$TenantId,
+        [string]$AppId
+    )
+
+    return "https://login.microsoftonline.com/$TenantId/adminconsent?client_id=$AppId"
+}
+
+function Get-ConnectedTenantDisplayName {
+    param(
+        [string]$TenantId,
+        [string]$FallbackName
+    )
+
+    try {
+        $org = @(Get-MgOrganization -Property "displayName" -ErrorAction Stop | Select-Object -First 1)
+        if ($org.Count -gt 0) {
+            $displayName = [string]$org[0].DisplayName
+            if (-not [string]::IsNullOrWhiteSpace($displayName)) {
+                return $displayName.Trim()
+            }
+        }
+    }
+    catch {
+        Write-Log -Level "WARN" -Tenant $TenantId -Message "Could not resolve tenant display name: $($_.Exception.Message)"
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($FallbackName)) {
+        return $FallbackName
+    }
+
+    return $TenantId
+}
+
+function Test-ContextHasScope {
+    param(
+        [object]$Context,
+        [string]$Scope
+    )
+
+    if ($null -eq $Context -or -not $Context.Scopes) {
+        return $false
+    }
+
+    return @($Context.Scopes | Where-Object { [string]$_ -eq $Scope }).Count -gt 0
+}
+
+function Connect-GraphDelegated {
+    param(
+        [string]$TenantId,
+        [string]$TenantLabel,
+        [string[]]$Scopes,
+        [string]$DelegatedClientId,
+        [switch]$UseDeviceCode,
+        [string]$Phase
+    )
+
+    $tenantLogLabel = if ([string]::IsNullOrWhiteSpace($TenantLabel)) { $TenantId } else { $TenantLabel }
+    $existingContext = Get-MgContext -ErrorAction SilentlyContinue
+    if (
+        $existingContext -and
+        $existingContext.AuthType -eq "Delegated" -and
+        ([string]::IsNullOrWhiteSpace($TenantId) -or [string]$existingContext.TenantId -eq $TenantId)
+    ) {
+        $missingScopes = @($Scopes | Where-Object { -not (Test-ContextHasScope -Context $existingContext -Scope $_) })
+        if ($missingScopes.Count -eq 0) {
+            Write-Log -Tenant $tenantLogLabel -Message "Reusing existing delegated Microsoft Graph context."
+            return [pscustomobject]@{
+                ConnectedByScript = $false
+                TenantId          = [string]$existingContext.TenantId
+            }
+        }
+    }
+
+    $connectParams = @{
+        Scopes       = $Scopes
+        NoWelcome    = $true
+        ErrorAction  = "Stop"
+        ContextScope = "Process"
+    }
+    if (-not [string]::IsNullOrWhiteSpace($TenantId)) {
+        $connectParams["TenantId"] = $TenantId
+    }
+    if (-not [string]::IsNullOrWhiteSpace($DelegatedClientId)) {
+        $connectParams["ClientId"] = $DelegatedClientId
+    }
+    if ($UseDeviceCode) {
+        $connectParams["UseDeviceCode"] = $true
+    }
+
+    try {
+        Invoke-WithoutWhatIfPreference -ScriptBlock {
+            param($Params)
+            Connect-MgGraph @Params | Out-Null
+        } -ArgumentList @($connectParams)
+
+        $context = Get-MgContext -ErrorAction Stop
+        return [pscustomobject]@{
+            ConnectedByScript = $true
+            TenantId          = [string]$context.TenantId
+        }
+    }
+    catch {
+        $message = Get-ExceptionMessageText -ErrorObject $_
+        $isAuthTimeout = $message -match "(?i)timed out after 120 seconds due to inactivity"
+        if (-not [string]::IsNullOrWhiteSpace($DelegatedClientId)) {
+            throw "Delegated discovery auth failed for custom client '$DelegatedClientId'. $message Re-run without -DelegatedClientId, or pre-connect manually with Connect-MgGraph and then rerun the script."
+        }
+
+        if ($isAuthTimeout) {
+            throw "Delegated discovery auth timed out before interactive completion. Pre-connect manually in the same PowerShell 7 session with: Connect-MgGraph -TenantId '$TenantId' -Scopes '$($Scopes -join ''',''')' -NoWelcome. After it succeeds, rerun this script in the same session without -UseDeviceCode."
+        }
+
+        throw
+    }
+}
+
+function Connect-GraphAppOnly {
+    param(
+        [string]$TenantId,
+        [string]$TenantLabel,
+        [string]$ClientId,
+        [string]$CertificateThumbprint
+    )
+
+    $connectParams = @{
+        ClientId              = $ClientId
+        TenantId              = $TenantId
+        CertificateThumbprint = $CertificateThumbprint
+        NoWelcome             = $true
+        ErrorAction           = "Stop"
+        ContextScope          = "Process"
+    }
+
+    Invoke-WithoutWhatIfPreference -ScriptBlock {
+        param($Params)
+        Connect-MgGraph @Params | Out-Null
+    } -ArgumentList @($connectParams)
+
+    Set-GraphProfileIfSupported -TenantId $TenantId -TenantLabel $TenantLabel
+}
+
+function Invoke-WithRetry {
+    param(
+        [scriptblock]$Script,
+        [string]$Operation,
+        [string]$Tenant,
+        [int]$MaxAttempts = 5
+    )
+
+    $attempt = 1
+    while ($true) {
+        try {
+            return & $Script
+        }
+        catch {
+            $message = Get-ExceptionMessageText -ErrorObject $_
+            $statusCode = $null
+
+            if ($_.Exception.PSObject.Properties.Name -contains "ResponseStatusCode") {
+                $statusCode = [int]$_.Exception.ResponseStatusCode
+            }
+
+            $isRetryable = (
+                ($statusCode -in @(429, 500, 502, 503, 504)) -or
+                ($message -match "(?i)too many requests|temporarily unavailable|timeout|throttl|gateway|service unavailable")
+            )
+
+            if (-not $isRetryable -or $attempt -ge $MaxAttempts) {
+                throw
+            }
+
+            $delaySeconds = [Math]::Min([int][Math]::Pow(2, $attempt), 30) + (Get-Random -Minimum 0 -Maximum 3)
+            Write-Log -Level "WARN" -Tenant $Tenant -Message "$Operation failed (attempt $attempt/$MaxAttempts): $message. Retrying in $delaySeconds second(s)."
+            Start-Sleep -Seconds $delaySeconds
+            $attempt++
+        }
+    }
 }
 
 function Get-CustomerTenantIdFromRelationship {
@@ -425,43 +632,36 @@ function Get-CustomerTenantIdFromRelationship {
     return $null
 }
 
-function Disconnect-GraphIfConnected {
+function Discover-ActiveGdapCustomers {
     param(
-        [string]$TenantId,
-        [string]$TenantLabel = $TenantId,
-        [string]$Phase
+        [string]$PartnerTenantId,
+        [string]$DiscoveryClientId,
+        [string]$DiscoveryThumbprint
     )
 
-    try {
-        $ctx = Get-MgContext -ErrorAction SilentlyContinue
-        if ($ctx) {
-            Invoke-WithoutWhatIfPreference -ScriptBlock {
-                Disconnect-MgGraph -ErrorAction Stop | Out-Null
-            }
-        }
+    if ([string]::IsNullOrWhiteSpace($PartnerTenantId)) {
+        return @()
     }
-    catch {
-        Write-Log -Level "WARN" -Tenant $TenantLabel -Message "$Phase disconnect failed: $($_.Exception.Message)"
-    }
-}
 
-function Discover-ActiveGdapCustomers {
-    param([string]$PartnerTenantId)
-
-    $discoveryScopes = @("DelegatedAdminRelationship.Read.All")
     $customersByTenant = @{}
-    $discoveryTenantLabel = if ([string]::IsNullOrWhiteSpace($PartnerTenantId)) { "" } else { $PartnerTenantId }
+    $discoveryTenantLabel = $PartnerTenantId
 
     try {
         Write-Log -Message "Connecting to Microsoft Graph for GDAP customer discovery."
-        Connect-GraphDelegated -TenantId $PartnerTenantId -TenantLabel $discoveryTenantLabel -Scopes $discoveryScopes -DelegatedClientId $DelegatedClientId -UseDeviceCode:$UseDeviceCode -Phase "Discovery"
+        Connect-GraphAppOnly `
+            -TenantId $PartnerTenantId `
+            -TenantLabel $discoveryTenantLabel `
+            -ClientId $DiscoveryClientId `
+            -CertificateThumbprint $DiscoveryThumbprint
 
         $context = Get-MgContext -ErrorAction Stop
         $discoveryTenantLabel = Get-ConnectedTenantDisplayName -TenantId $context.TenantId -FallbackName $context.TenantId
-        Set-GraphProfileIfSupported -TenantId $context.TenantId -TenantLabel $discoveryTenantLabel
         Write-Log -Tenant $discoveryTenantLabel -Message "Discovery connected."
 
-        $relationships = @(Get-MgTenantRelationshipDelegatedAdminRelationship -All -ErrorAction Stop)
+        $relationships = @(Invoke-WithRetry -Tenant $discoveryTenantLabel -Operation "Get GDAP relationships" -Script {
+                Get-MgTenantRelationshipDelegatedAdminRelationship -All -ErrorAction Stop
+            })
+
         foreach ($relationship in $relationships) {
             $status = [string]$relationship.Status
             if (-not ($status -match "^(?i)active$")) {
@@ -474,29 +674,31 @@ function Discover-ActiveGdapCustomers {
             }
 
             $tenantKey = $tenantId.Trim().ToLowerInvariant()
-            if (-not $customersByTenant.ContainsKey($tenantKey)) {
-                $customerDisplayName = $null
-                if ($relationship.Customer) {
-                    if ($relationship.Customer.PSObject.Properties.Name -contains "DisplayName" -and -not [string]::IsNullOrWhiteSpace([string]$relationship.Customer.DisplayName)) {
-                        $customerDisplayName = [string]$relationship.Customer.DisplayName
-                    }
-                    elseif ($relationship.Customer.PSObject.Properties.Name -contains "AdditionalProperties" -and $null -ne $relationship.Customer.AdditionalProperties) {
-                        $customerDisplayName = [string]$relationship.Customer.AdditionalProperties["displayName"]
-                    }
-                }
+            if ($customersByTenant.ContainsKey($tenantKey)) {
+                continue
+            }
 
-                $customersByTenant[$tenantKey] = [pscustomobject]@{
-                    TenantId             = $tenantId.Trim()
-                    CustomerDisplayName  = $customerDisplayName
-                    Source               = "GDAP"
-                    RelationshipId       = [string]$relationship.Id
-                    RelationshipEndDate  = [string]$relationship.EndDateTime
+            $customerDisplayName = $null
+            if ($relationship.Customer) {
+                if ($relationship.Customer.PSObject.Properties.Name -contains "DisplayName" -and -not [string]::IsNullOrWhiteSpace([string]$relationship.Customer.DisplayName)) {
+                    $customerDisplayName = [string]$relationship.Customer.DisplayName
                 }
+                elseif ($relationship.Customer.PSObject.Properties.Name -contains "AdditionalProperties" -and $null -ne $relationship.Customer.AdditionalProperties) {
+                    $customerDisplayName = [string]$relationship.Customer.AdditionalProperties["displayName"]
+                }
+            }
+
+            $customersByTenant[$tenantKey] = [pscustomobject]@{
+                TenantId            = $tenantId.Trim()
+                CustomerDisplayName = $customerDisplayName
+                Source              = "GDAP"
+                RelationshipId      = [string]$relationship.Id
+                RelationshipEndDate = [string]$relationship.EndDateTime
             }
         }
     }
     finally {
-        Disconnect-GraphIfConnected -TenantId $PartnerTenantId -TenantLabel $discoveryTenantLabel -Phase "Discovery"
+        Disconnect-GraphIfConnected -TenantLabel $discoveryTenantLabel -Phase "Discovery"
     }
 
     return @($customersByTenant.Values | Sort-Object -Property TenantId)
@@ -505,6 +707,7 @@ function Discover-ActiveGdapCustomers {
 function Resolve-TargetTenants {
     param(
         [object[]]$DiscoveredTenants,
+        [object[]]$TenantListTargets,
         [string[]]$IncludeTenantId,
         [string[]]$ExcludeTenantId
     )
@@ -522,8 +725,35 @@ function Resolve-TargetTenants {
                 TenantId            = $tenantId
                 CustomerDisplayName = [string]$entry.CustomerDisplayName
                 Source              = [string]$entry.Source
+                RelationshipId      = [string]$entry.RelationshipId
+                RelationshipEndDate = [string]$entry.RelationshipEndDate
             }
         }
+    }
+
+    foreach ($entry in $TenantListTargets) {
+        if ($null -eq $entry -or [string]::IsNullOrWhiteSpace([string]$entry.TenantId)) {
+            continue
+        }
+
+        $tenantId = [string]$entry.TenantId
+        $tenantKey = $tenantId.ToLowerInvariant()
+        if (-not $targetsByTenant.ContainsKey($tenantKey)) {
+            $targetsByTenant[$tenantKey] = [pscustomobject]@{
+                TenantId            = $tenantId
+                CustomerDisplayName = [string]$entry.CustomerDisplayName
+                Source              = [string]$entry.Source
+                RelationshipId      = [string]$entry.RelationshipId
+                RelationshipEndDate = [string]$entry.RelationshipEndDate
+            }
+            continue
+        }
+
+        $existing = $targetsByTenant[$tenantKey]
+        $existing.CustomerDisplayName = Get-FirstNonEmptyValue @([string]$entry.CustomerDisplayName, [string]$existing.CustomerDisplayName, $tenantId)
+        $existing.Source = Get-FirstNonEmptyValue @([string]$entry.Source, [string]$existing.Source, "")
+        $existing.RelationshipId = Get-FirstNonEmptyValue @([string]$existing.RelationshipId, [string]$entry.RelationshipId, "")
+        $existing.RelationshipEndDate = Get-FirstNonEmptyValue @([string]$existing.RelationshipEndDate, [string]$entry.RelationshipEndDate, "")
     }
 
     $resolved = @($targetsByTenant.Values | Sort-Object -Property TenantId)
@@ -543,6 +773,8 @@ function Resolve-TargetTenants {
                     TenantId            = $tenantId
                     CustomerDisplayName = $null
                     Source              = "IncludeOverride"
+                    RelationshipId      = $null
+                    RelationshipEndDate = $null
                 }
             }
         }
@@ -557,7 +789,236 @@ function Resolve-TargetTenants {
         $resolved = @($resolved | Where-Object { -not $excludeSet.Contains($_.TenantId) })
     }
 
-    return $resolved
+    return @(
+        $resolved |
+        Sort-Object @{
+            Expression = {
+                if ([string]::IsNullOrWhiteSpace([string]$_.CustomerDisplayName)) {
+                    [string]$_.TenantId
+                }
+                else {
+                    [string]$_.CustomerDisplayName
+                }
+            }
+        }, TenantId
+    )
+}
+
+function Get-ExistingTrackerRows {
+    param([string]$TrackerCsvPath)
+
+    if (-not (Test-Path -LiteralPath $TrackerCsvPath)) {
+        return @()
+    }
+
+    return @(Import-Csv -Path $TrackerCsvPath)
+}
+
+function Resolve-FinalState {
+    param(
+        [string]$PartnerAttemptStatus,
+        [string]$ConsentActor,
+        [bool]$FallbackRequired,
+        [string]$VerifiedStatus
+    )
+
+    if ($VerifiedStatus -eq "Verified") {
+        return "Verified"
+    }
+
+    if ($PartnerAttemptStatus -eq "BlockedByPolicy") {
+        return "BlockedByPolicy"
+    }
+
+    if ($FallbackRequired -or $ConsentActor -eq "Customer" -or $PartnerAttemptStatus -eq "CustomerFallback") {
+        return "CustomerFallback"
+    }
+
+    return "NeedsInvestigation"
+}
+
+function New-ConsentTrackerRow {
+    param(
+        [string]$TenantId,
+        [string]$CustomerDisplayName,
+        [string]$Source,
+        [string]$RelationshipId,
+        [string]$RelationshipEndDate,
+        [bool]$IsCurrentTarget,
+        [object]$ExistingRow,
+        [string]$TargetAppId,
+        [string]$PreparedAt
+    )
+
+    $existingConsentActor = $null
+    $existingPartnerAttemptStatus = $null
+    $existingVerifiedStatus = $null
+    $existingFallbackRequired = $null
+    $existingNotes = $null
+    $existingCustomerDisplayName = $null
+    $existingSource = $null
+    $existingRelationshipId = $null
+    $existingRelationshipEndDate = $null
+    $existingServicePrincipalId = $null
+    $existingMissingPermissions = $null
+    $existingVerificationError = $null
+    $existingVerifiedAt = $null
+
+    if ($null -ne $ExistingRow) {
+        $existingConsentActor = $ExistingRow.ConsentActor
+        $existingPartnerAttemptStatus = $ExistingRow.PartnerAttemptStatus
+        $existingVerifiedStatus = $ExistingRow.VerifiedStatus
+        $existingFallbackRequired = $ExistingRow.FallbackRequired
+        $existingNotes = $ExistingRow.Notes
+        $existingCustomerDisplayName = $ExistingRow.CustomerDisplayName
+        $existingSource = $ExistingRow.Source
+        $existingRelationshipId = $ExistingRow.RelationshipId
+        $existingRelationshipEndDate = $ExistingRow.RelationshipEndDate
+        $existingServicePrincipalId = $ExistingRow.ServicePrincipalId
+        $existingMissingPermissions = $ExistingRow.MissingPermissions
+        $existingVerificationError = $ExistingRow.VerificationError
+        $existingVerifiedAt = $ExistingRow.VerifiedAt
+    }
+
+    $consentActor = Get-FirstNonEmptyValue @($existingConsentActor, "Partner")
+    $partnerAttemptStatus = Get-FirstNonEmptyValue @($existingPartnerAttemptStatus, "NotStarted")
+    $verifiedStatus = Get-FirstNonEmptyValue @($existingVerifiedStatus, "NotChecked")
+    $fallbackRequired = ConvertTo-TrackerBoolean -Value $existingFallbackRequired -Default $false
+    $notes = Get-FirstNonEmptyValue @($existingNotes, "")
+    if ($null -eq $notes) {
+        $notes = ""
+    }
+
+    $resolvedDisplayName = Get-FirstNonEmptyValue @($CustomerDisplayName, $existingCustomerDisplayName, $TenantId)
+    $resolvedSource = Get-FirstNonEmptyValue @($Source, $existingSource, "")
+    $resolvedRelationshipId = Get-FirstNonEmptyValue @($RelationshipId, $existingRelationshipId, "")
+    $resolvedRelationshipEndDate = Get-FirstNonEmptyValue @($RelationshipEndDate, $existingRelationshipEndDate, "")
+    $servicePrincipalId = Get-FirstNonEmptyValue @($existingServicePrincipalId, "")
+    $missingPermissions = Get-FirstNonEmptyValue @($existingMissingPermissions, "")
+    $verificationError = Get-FirstNonEmptyValue @($existingVerificationError, "")
+    $verifiedAt = Get-FirstNonEmptyValue @($existingVerifiedAt, "")
+    $finalState = Resolve-FinalState `
+        -PartnerAttemptStatus $partnerAttemptStatus `
+        -ConsentActor $consentActor `
+        -FallbackRequired $fallbackRequired `
+        -VerifiedStatus $verifiedStatus
+
+    return [pscustomobject][ordered]@{
+        TenantId             = $TenantId
+        CustomerDisplayName  = $resolvedDisplayName
+        ConsentUrl           = Get-AdminConsentUrl -TenantId $TenantId -AppId $TargetAppId
+        ConsentActor         = $consentActor
+        PartnerAttemptStatus = $partnerAttemptStatus
+        FallbackRequired     = $fallbackRequired
+        VerifiedStatus       = $verifiedStatus
+        Notes                = $notes
+        IsCurrentTarget      = $IsCurrentTarget
+        Source               = $resolvedSource
+        RelationshipId       = $resolvedRelationshipId
+        RelationshipEndDate  = $resolvedRelationshipEndDate
+        FinalState           = $finalState
+        ServicePrincipalId   = $servicePrincipalId
+        MissingPermissions   = $missingPermissions
+        VerificationError    = $verificationError
+        VerifiedAt           = $verifiedAt
+        LastPreparedAt       = $PreparedAt
+    }
+}
+
+function Merge-ConsentTrackerRows {
+    param(
+        [object[]]$Targets,
+        [object[]]$ExistingRows,
+        [string]$TargetAppId,
+        [string]$PreparedAt
+    )
+
+    $existingByTenant = @{}
+    foreach ($existingRow in $ExistingRows) {
+        $tenantId = [string]$existingRow.TenantId
+        if ([string]::IsNullOrWhiteSpace($tenantId)) {
+            continue
+        }
+
+        $existingByTenant[$tenantId.ToLowerInvariant()] = $existingRow
+    }
+
+    $merged = [System.Collections.Generic.List[object]]::new()
+    $currentTenantKeys = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+
+    if ($Targets.Count -gt 0) {
+        foreach ($target in $Targets) {
+            $tenantId = [string]$target.TenantId
+            $tenantKey = $tenantId.ToLowerInvariant()
+            [void]$currentTenantKeys.Add($tenantKey)
+
+            $existingRow = $null
+            if ($existingByTenant.ContainsKey($tenantKey)) {
+                $existingRow = $existingByTenant[$tenantKey]
+            }
+
+            $merged.Add((New-ConsentTrackerRow `
+                        -TenantId $tenantId `
+                        -CustomerDisplayName ([string]$target.CustomerDisplayName) `
+                        -Source ([string]$target.Source) `
+                        -RelationshipId ([string]$target.RelationshipId) `
+                        -RelationshipEndDate ([string]$target.RelationshipEndDate) `
+                        -IsCurrentTarget $true `
+                        -ExistingRow $existingRow `
+                        -TargetAppId $TargetAppId `
+                        -PreparedAt $PreparedAt))
+        }
+
+        foreach ($existingRow in $ExistingRows) {
+            $tenantId = [string]$existingRow.TenantId
+            if ([string]::IsNullOrWhiteSpace($tenantId)) {
+                continue
+            }
+
+            if ($currentTenantKeys.Contains($tenantId)) {
+                continue
+            }
+
+            $merged.Add((New-ConsentTrackerRow `
+                        -TenantId $tenantId `
+                        -CustomerDisplayName ([string]$existingRow.CustomerDisplayName) `
+                        -Source ([string]$existingRow.Source) `
+                        -RelationshipId ([string]$existingRow.RelationshipId) `
+                        -RelationshipEndDate ([string]$existingRow.RelationshipEndDate) `
+                        -IsCurrentTarget $false `
+                        -ExistingRow $existingRow `
+                        -TargetAppId $TargetAppId `
+                        -PreparedAt $PreparedAt))
+        }
+    }
+    else {
+        foreach ($existingRow in $ExistingRows) {
+            $tenantId = [string]$existingRow.TenantId
+            if ([string]::IsNullOrWhiteSpace($tenantId)) {
+                continue
+            }
+
+            $merged.Add((New-ConsentTrackerRow `
+                        -TenantId $tenantId `
+                        -CustomerDisplayName ([string]$existingRow.CustomerDisplayName) `
+                        -Source ([string]$existingRow.Source) `
+                        -RelationshipId ([string]$existingRow.RelationshipId) `
+                        -RelationshipEndDate ([string]$existingRow.RelationshipEndDate) `
+                        -IsCurrentTarget (ConvertTo-TrackerBoolean -Value $existingRow.IsCurrentTarget -Default $true) `
+                        -ExistingRow $existingRow `
+                        -TargetAppId $TargetAppId `
+                        -PreparedAt $PreparedAt))
+        }
+    }
+
+    return @($merged)
+}
+
+function Should-VerifyTrackerRow {
+    param([object]$TrackerRow)
+
+    $status = [string]$TrackerRow.PartnerAttemptStatus
+    return $status -in @("Approved", "PartnerApproved", "CustomerApproved")
 }
 
 function Resolve-GraphAppRoleId {
@@ -577,331 +1038,361 @@ function Resolve-GraphAppRoleId {
     return $role.Id
 }
 
-function Invoke-TenantEnterpriseAppOnboarding {
+function Assert-VerificationPrerequisites {
+    param([string]$CertificateThumbprint)
+
+    $matchingCertificates = @(Get-ChildItem Cert:\CurrentUser\My,Cert:\LocalMachine\My -ErrorAction SilentlyContinue | Where-Object {
+            $_.Thumbprint -eq $CertificateThumbprint
+        })
+
+    if ($matchingCertificates.Count -eq 0) {
+        throw "Verification certificate thumbprint '$CertificateThumbprint' was not found in Cert:\CurrentUser\My or Cert:\LocalMachine\My."
+    }
+}
+
+function Test-TenantConsentVerification {
     param(
-        [object]$TenantTarget,
+        [object]$TrackerRow,
+        [string]$VerificationClientId,
+        [string]$VerificationThumbprint,
         [string]$TargetAppId,
         [string[]]$RequiredApplicationPermission
     )
 
-    $tenantId = [string]$TenantTarget.TenantId
+    $tenantId = [string]$TrackerRow.TenantId
+    $tenantLabel = Get-FirstNonEmptyValue @($TrackerRow.CustomerDisplayName, $tenantId)
     $result = [ordered]@{
-        TenantId                    = $tenantId
-        TenantName                  = if ([string]::IsNullOrWhiteSpace([string]$TenantTarget.CustomerDisplayName)) { $tenantId } else { [string]$TenantTarget.CustomerDisplayName }
-        CustomerDisplayName         = [string]$TenantTarget.CustomerDisplayName
-        Source                      = [string]$TenantTarget.Source
-        Status                      = "Failed"
-        ServicePrincipalId          = $null
-        ServicePrincipalCreated     = $false
-        RequiredPermissions         = @($RequiredApplicationPermission | Sort-Object -Unique)
-        MissingPermissionsBefore    = @()
-        GrantedPermissions          = @()
-        PendingPermissions          = @()
-        ActionLog                   = @()
-        AdminConsentUrl             = $null
-        Error                       = $null
-        StartTime                   = (Get-Date).ToString("o")
-        EndTime                     = $null
-        DurationSeconds             = $null
-        WhatIf                      = [bool]$WhatIfPreference
+        TenantId            = $tenantId
+        CustomerDisplayName = $tenantLabel
+        VerifiedStatus      = "VerificationFailed"
+        ServicePrincipalId  = ""
+        MissingPermissions  = ""
+        VerificationError   = ""
+        VerifiedAt          = (Get-Date).ToString("o")
+        FinalState          = $null
+        ShouldStop          = $false
     }
 
-    $changesApplied = $false
-    $changesPlanned = $false
-    $manualConsentBlocked = $false
-    $manualConsentErrors = [System.Collections.Generic.List[string]]::new()
-    $tenantLogLabel = $result.TenantName
-    $onboardingScopes = @(
-        "Application.ReadWrite.All",
-        "AppRoleAssignment.ReadWrite.All",
-        "Directory.Read.All"
-    )
-
     try {
-        Write-Log -Tenant $tenantLogLabel -Message "Connecting to customer tenant for enterprise app onboarding."
-        Connect-GraphDelegated -TenantId $tenantId -TenantLabel $tenantLogLabel -Scopes $onboardingScopes -DelegatedClientId $DelegatedClientId -UseDeviceCode:$UseDeviceCode -Phase "Tenant"
-        $context = Get-MgContext -ErrorAction Stop
-        $result.TenantName = Get-ConnectedTenantDisplayName -TenantId $tenantId -FallbackName $tenantLogLabel
-        if ([string]::IsNullOrWhiteSpace($result.CustomerDisplayName)) {
-            $result.CustomerDisplayName = $result.TenantName
-        }
-        $tenantLogLabel = $result.TenantName
-        Set-GraphProfileIfSupported -TenantId $tenantId -TenantLabel $tenantLogLabel
-        Write-Log -Tenant $tenantLogLabel -Message "Connected. AuthType: $($context.AuthType)"
+        Write-Log -Tenant $tenantLabel -Message "Verifying app consent via app-only Graph connection."
+        Connect-GraphAppOnly `
+            -TenantId $tenantId `
+            -TenantLabel $tenantLabel `
+            -ClientId $VerificationClientId `
+            -CertificateThumbprint $VerificationThumbprint
 
-        $targetSpMatches = @(Get-MgServicePrincipal -Filter "appId eq '$TargetAppId'" -All -Property "id,appId,displayName")
+        $resolvedTenantName = Get-ConnectedTenantDisplayName -TenantId $tenantId -FallbackName $tenantLabel
+        $result.CustomerDisplayName = $resolvedTenantName
+        $tenantLabel = $resolvedTenantName
+
+        $targetSpMatches = @(Invoke-WithRetry -Tenant $tenantLabel -Operation "Get target service principal" -Script {
+                Get-MgServicePrincipal -Filter "appId eq '$TargetAppId'" -All -Property "id,appId,displayName" -ErrorAction Stop
+            })
+        if ($targetSpMatches.Count -eq 0) {
+            $result.VerifiedStatus = "MissingServicePrincipal"
+            $result.VerificationError = "Target service principal not found."
+            return [pscustomobject]$result
+        }
         if ($targetSpMatches.Count -gt 1) {
-            $ids = ($targetSpMatches | ForEach-Object { $_.Id }) -join ", "
-            throw "Multiple service principals found for appId $TargetAppId. Resolve duplicates before continuing. IDs: $ids"
-        }
-
-        $targetSp = $null
-        if ($targetSpMatches.Count -eq 1) {
-            $targetSp = $targetSpMatches[0]
-            $result.ServicePrincipalId = [string]$targetSp.Id
-            $result.ActionLog += "ServicePrincipalAlreadyPresent"
-        }
-        else {
-            $result.ActionLog += "ServicePrincipalMissing"
-            if ($PSCmdlet.ShouldProcess($tenantId, "Create service principal for appId $TargetAppId")) {
-                try {
-                    $targetSp = New-MgServicePrincipal -AppId $TargetAppId -ErrorAction Stop
-                    $result.ServicePrincipalId = [string]$targetSp.Id
-                    $result.ServicePrincipalCreated = $true
-                    $result.ActionLog += "ServicePrincipalCreated"
-                    $changesApplied = $true
-                }
-                catch {
-                    if (Test-IsManualConsentRequiredError -ErrorObject $_) {
-                        $manualConsentBlocked = $true
-                        $result.ActionLog += "ServicePrincipalCreateBlockedPendingManualConsent"
-                        $manualConsentErrors.Add((Get-ExceptionMessageText -ErrorObject $_)) | Out-Null
-                    }
-                    else {
-                        throw
-                    }
-                }
-            }
-            else {
-                $changesPlanned = $true
-                $result.ActionLog += "PlannedServicePrincipalCreate"
-            }
-        }
-
-        if (-not $targetSp -and $manualConsentBlocked) {
-            $result.PendingPermissions = @($result.RequiredPermissions)
-            $result.AdminConsentUrl = Get-AdminConsentUrl -TenantId $tenantId -AppId $TargetAppId
-            $result.Status = "PendingManualConsent"
-            $result.Error = ($manualConsentErrors | Select-Object -Unique) -join " | "
+            $result.VerifiedStatus = "VerificationFailed"
+            $result.VerificationError = "Multiple service principals found for appId $TargetAppId."
+            $result.ShouldStop = $true
             return [pscustomobject]$result
         }
 
-        if (-not $targetSp) {
-            $result.MissingPermissionsBefore = @($result.RequiredPermissions)
-            $result.ActionLog += "PermissionChecksSkippedNoServicePrincipal"
-            $result.Status = if ($changesPlanned) { "Onboarded" } else { "Failed" }
-            if (-not $changesPlanned) {
-                $result.Error = "Service principal does not exist and was not created."
-            }
-            return [pscustomobject]$result
-        }
+        $targetSp = $targetSpMatches[0]
+        $result.ServicePrincipalId = [string]$targetSp.Id
 
-        $graphSpMatches = @(Get-MgServicePrincipal -Filter "appId eq '$graphResourceAppId'" -All -Property "id,appId,displayName,appRoles")
+        $graphSpMatches = @(Invoke-WithRetry -Tenant $tenantLabel -Operation "Get Microsoft Graph service principal" -Script {
+                Get-MgServicePrincipal -Filter "appId eq '$graphResourceAppId'" -All -Property "id,appId,displayName,appRoles" -ErrorAction Stop
+            })
         if ($graphSpMatches.Count -eq 0) {
             throw "Microsoft Graph resource service principal not found in tenant."
         }
         if ($graphSpMatches.Count -gt 1) {
             throw "Multiple Microsoft Graph resource service principals found in tenant."
         }
-        $graphSp = $graphSpMatches[0]
 
-        $existingAssignments = @(Get-MgServicePrincipalAppRoleAssignment -ServicePrincipalId $targetSp.Id -All -ErrorAction Stop)
+        $graphSp = $graphSpMatches[0]
+        $existingAssignments = @(Invoke-WithRetry -Tenant $tenantLabel -Operation "Get target app role assignments" -Script {
+                Get-MgServicePrincipalAppRoleAssignment -ServicePrincipalId $targetSp.Id -All -ErrorAction Stop
+            })
+
         $assignmentKeys = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
         foreach ($assignment in $existingAssignments) {
             [void]$assignmentKeys.Add("$($assignment.ResourceId)|$($assignment.AppRoleId)")
         }
 
         $missingPermissions = [System.Collections.Generic.List[string]]::new()
-        $permissionRoleMap = @{}
-        foreach ($permission in $result.RequiredPermissions) {
+        foreach ($permission in $RequiredApplicationPermission) {
             $roleId = Resolve-GraphAppRoleId -GraphSp $graphSp -PermissionValue $permission
-            $permissionRoleMap[$permission] = $roleId
             $assignmentKey = "$($graphSp.Id)|$roleId"
             if (-not $assignmentKeys.Contains($assignmentKey)) {
                 $missingPermissions.Add($permission) | Out-Null
             }
         }
-        $result.MissingPermissionsBefore = @($missingPermissions)
 
-        foreach ($permission in $missingPermissions) {
-            $roleId = $permissionRoleMap[$permission]
-            $assignmentKey = "$($graphSp.Id)|$roleId"
-            if ($PSCmdlet.ShouldProcess($tenantId, "Grant application permission '$permission' to appId $TargetAppId")) {
-                try {
-                    New-MgServicePrincipalAppRoleAssignment `
-                        -ServicePrincipalId $targetSp.Id `
-                        -PrincipalId $targetSp.Id `
-                        -ResourceId $graphSp.Id `
-                        -AppRoleId $roleId `
-                        -ErrorAction Stop | Out-Null
-
-                    [void]$assignmentKeys.Add($assignmentKey)
-                    $result.GrantedPermissions += $permission
-                    $changesApplied = $true
-                    $result.ActionLog += "Granted:$permission"
-                }
-                catch {
-                    if ($_.Exception.Message -match "(?i)already exists|added object references already exist") {
-                        [void]$assignmentKeys.Add($assignmentKey)
-                        $result.ActionLog += "AlreadyGranted:$permission"
-                        continue
-                    }
-
-                    if (Test-IsManualConsentRequiredError -ErrorObject $_) {
-                        $manualConsentBlocked = $true
-                        $result.PendingPermissions += $permission
-                        $result.ActionLog += "GrantBlockedPendingManualConsent:$permission"
-                        $manualConsentErrors.Add((Get-ExceptionMessageText -ErrorObject $_)) | Out-Null
-                    }
-                    else {
-                        throw
-                    }
-                }
-            }
-            else {
-                $changesPlanned = $true
-                $result.ActionLog += "PlannedGrant:$permission"
-            }
-        }
-
-        if ($manualConsentBlocked -or $result.PendingPermissions.Count -gt 0) {
-            $result.Status = "PendingManualConsent"
-            $result.AdminConsentUrl = Get-AdminConsentUrl -TenantId $tenantId -AppId $TargetAppId
-            $result.Error = ($manualConsentErrors | Select-Object -Unique) -join " | "
-        }
-        elseif ($changesApplied -or $changesPlanned -or $result.MissingPermissionsBefore.Count -gt 0) {
-            $result.Status = "Onboarded"
+        if ($missingPermissions.Count -eq 0) {
+            $result.VerifiedStatus = "Verified"
+            $result.VerificationError = ""
+            $result.MissingPermissions = ""
         }
         else {
-            $result.Status = "AlreadyCompliant"
+            $result.VerifiedStatus = "MissingPermissions"
+            $result.VerificationError = "Missing required application permissions."
+            $result.MissingPermissions = (@($missingPermissions) -join ";")
         }
     }
     catch {
-        $result.Status = "Failed"
-        $result.Error = Get-ExceptionMessageText -ErrorObject $_
+        $result.VerifiedStatus = "VerificationFailed"
+        $result.VerificationError = Get-ExceptionMessageText -ErrorObject $_
     }
     finally {
-        $endTime = Get-Date
-        $result.EndTime = $endTime.ToString("o")
-        $start = [DateTimeOffset]::Parse($result.StartTime)
-        $result.DurationSeconds = [Math]::Round(($endTime - $start.DateTime).TotalSeconds, 2)
-        Disconnect-GraphIfConnected -TenantId $tenantId -TenantLabel $tenantLogLabel -Phase "Tenant"
+        Disconnect-GraphIfConnected -TenantLabel $tenantLabel -Phase "Verification"
     }
 
     return [pscustomobject]$result
 }
 
+function Ensure-OutputDirectory {
+    param([string]$Path)
+
+    if (Test-Path -LiteralPath $Path) {
+        return
+    }
+
+    Invoke-WithoutWhatIfPreference -ScriptBlock {
+        param($DirectoryPath)
+        New-Item -Path $DirectoryPath -ItemType Directory -Force | Out-Null
+    } -ArgumentList @($Path)
+}
+
+function Write-JsonFile {
+    param(
+        [string]$Path,
+        [object]$InputObject,
+        [int]$Depth = 10
+    )
+
+    Invoke-WithoutWhatIfPreference -ScriptBlock {
+        param($JsonPath, $JsonInputObject, $JsonDepth)
+        $JsonInputObject | ConvertTo-Json -Depth $JsonDepth | Set-Content -Path $JsonPath -Encoding UTF8
+    } -ArgumentList @($Path, $InputObject, $Depth)
+}
+
+function Write-CsvFile {
+    param(
+        [string]$Path,
+        [object[]]$InputObject
+    )
+
+    Invoke-WithoutWhatIfPreference -ScriptBlock {
+        param($CsvPath, $CsvInputObject)
+        $CsvInputObject | Export-Csv -Path $CsvPath -NoTypeInformation -Encoding UTF8
+    } -ArgumentList @($Path, $InputObject)
+}
+
+function Get-CountsByPropertyValue {
+    param(
+        [object[]]$Rows,
+        [string]$PropertyName
+    )
+
+    $counts = [ordered]@{}
+    foreach ($row in $Rows) {
+        $value = [string]$row.$PropertyName
+        if ([string]::IsNullOrWhiteSpace($value)) {
+            $value = "<blank>"
+        }
+
+        if (-not $counts.Contains($value)) {
+            $counts[$value] = 0
+        }
+        $counts[$value]++
+    }
+
+    return $counts
+}
+
 Import-RequiredGraphModules
-Assert-RequiredGraphCmdlets
-Configure-GraphLoginOptions -DelegatedClientId $DelegatedClientId
+
+$requireDiscovery = -not [string]::IsNullOrWhiteSpace($PartnerTenantId)
+Assert-RequiredGraphCmdlets -RequireDiscovery:$requireDiscovery
+if (-not [string]::IsNullOrWhiteSpace($DelegatedClientId) -or $UseDeviceCode) {
+    Write-Log -Level "WARN" -Message "Delegated discovery inputs are ignored. Discovery now uses app-only certificate auth, matching global-admin-audit.ps1."
+}
 
 $requiredPermissionBaseline = @(
-    $RequiredApplicationPermission `
-    | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } `
-    | ForEach-Object { $_.Trim() } `
-    | Sort-Object -Unique
+    $RequiredApplicationPermission |
+    Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+    ForEach-Object { $_.Trim() } |
+    Sort-Object -Unique
 )
 if ($requiredPermissionBaseline.Count -eq 0) {
     throw "At least one value must be supplied to -RequiredApplicationPermission."
 }
 
+Ensure-OutputDirectory -Path $OutputDirectory
+
+$trackerCsvPath = Join-Path -Path $OutputDirectory -ChildPath "consent-tracker.csv"
+$trackerJsonPath = Join-Path -Path $OutputDirectory -ChildPath "consent-tracker.json"
+$verificationCsvPath = Join-Path -Path $OutputDirectory -ChildPath "verification-results.csv"
+$verificationJsonPath = Join-Path -Path $OutputDirectory -ChildPath "verification-results.json"
+$summaryPath = Join-Path -Path $OutputDirectory -ChildPath "consent-summary.json"
+
 $batchStart = Get-Date
-$discoveredCustomers = @(Discover-ActiveGdapCustomers -PartnerTenantId $PartnerTenantId)
-Write-Log -Message "Discovered $($discoveredCustomers.Count) active GDAP customer tenant(s)."
-
-$targets = @(Resolve-TargetTenants -DiscoveredTenants $discoveredCustomers -IncludeTenantId $IncludeTenantId -ExcludeTenantId $ExcludeTenantId)
-if ($targets.Count -eq 0) {
-    throw "No target tenants resolved after discovery/include/exclude processing."
+$preparedAt = $batchStart.ToString("o")
+$existingTrackerRows = @(Get-ExistingTrackerRows -TrackerCsvPath $trackerCsvPath)
+$tenantListTargets = @(Get-TenantListTargets -TenantListPath $TenantListPath)
+if ($tenantListTargets.Count -gt 0) {
+    Write-Log -Message "Loaded $($tenantListTargets.Count) tenant(s) from tenant list '$TenantListPath'."
 }
 
-Write-Log -Message ("Starting enterprise app onboarding for {0} tenant(s)." -f $targets.Count)
+$discoveredCustomers = @()
+if ($requireDiscovery) {
+    if ([string]::IsNullOrWhiteSpace($VerificationClientId)) {
+        throw "VerificationClientId is required for app-only discovery when -PartnerTenantId is supplied."
+    }
 
-if (-not (Test-Path -LiteralPath $OutputDirectory)) {
-    New-Item -Path $OutputDirectory -ItemType Directory -Force | Out-Null
+    Assert-VerificationPrerequisites -CertificateThumbprint $VerificationThumbprint
+    $discoveredCustomers = @(Discover-ActiveGdapCustomers `
+            -PartnerTenantId $PartnerTenantId `
+            -DiscoveryClientId $VerificationClientId `
+            -DiscoveryThumbprint $VerificationThumbprint)
+    Write-Log -Message "Discovered $($discoveredCustomers.Count) active GDAP customer tenant(s)."
+}
+elseif ([string]::IsNullOrWhiteSpace($TenantListPath)) {
+    Write-Log -Level "WARN" -Message "PartnerTenantId not supplied. Discovery skipped."
 }
 
-$results = [System.Collections.Generic.List[object]]::new()
-foreach ($target in $targets) {
-    $tenantResult = Invoke-TenantEnterpriseAppOnboarding `
-        -TenantTarget $target `
+$targets = @(Resolve-TargetTenants `
+        -DiscoveredTenants $discoveredCustomers `
+        -TenantListTargets $tenantListTargets `
+        -IncludeTenantId $IncludeTenantId `
+        -ExcludeTenantId $ExcludeTenantId)
+if ($targets.Count -eq 0 -and $existingTrackerRows.Count -eq 0) {
+    throw "No target tenants resolved. Supply -PartnerTenantId for discovery, -TenantListPath for CSV-driven targets, -IncludeTenantId for explicit tenants, or reuse an existing tracker."
+}
+
+if ($targets.Count -eq 0 -and $existingTrackerRows.Count -gt 0) {
+    Write-Log -Level "WARN" -Message "No current targets resolved. Reusing the existing tracker in '$OutputDirectory'."
+}
+else {
+    Write-Log -Message ("Prepared {0} current target tenant(s)." -f $targets.Count)
+}
+
+$trackerRows = @(Merge-ConsentTrackerRows `
+        -Targets $targets `
+        -ExistingRows $existingTrackerRows `
         -TargetAppId $TargetAppId `
-        -RequiredApplicationPermission $requiredPermissionBaseline
+        -PreparedAt $preparedAt)
 
-    $results.Add($tenantResult)
+$rowsToVerify = @($trackerRows | Where-Object { $_.IsCurrentTarget -and (Should-VerifyTrackerRow -TrackerRow $_) })
+if ($SkipVerification) {
+    Write-Log -Message "Verification skipped by request."
+}
+elseif ($rowsToVerify.Count -eq 0) {
+    Write-Log -Message "No tracker rows are currently marked approved for verification."
+}
+else {
+    Assert-VerificationPrerequisites -CertificateThumbprint $VerificationThumbprint
+}
 
-    if ($tenantResult.Status -eq "PendingManualConsent" -and -not [string]::IsNullOrWhiteSpace($tenantResult.AdminConsentUrl)) {
-        Write-Log -Level "WARN" -Tenant $tenantResult.TenantName -Message ("Manual consent required. URL: {0}" -f $tenantResult.AdminConsentUrl)
+$verificationResults = [System.Collections.Generic.List[object]]::new()
+if (-not $SkipVerification) {
+    foreach ($trackerRow in $rowsToVerify) {
+        $verificationResult = Test-TenantConsentVerification `
+            -TrackerRow $trackerRow `
+            -VerificationClientId $VerificationClientId `
+            -VerificationThumbprint $VerificationThumbprint `
+            -TargetAppId $TargetAppId `
+            -RequiredApplicationPermission $requiredPermissionBaseline
+
+        $trackerRow.CustomerDisplayName = $verificationResult.CustomerDisplayName
+        $trackerRow.VerifiedStatus = $verificationResult.VerifiedStatus
+        $trackerRow.ServicePrincipalId = $verificationResult.ServicePrincipalId
+        $trackerRow.MissingPermissions = $verificationResult.MissingPermissions
+        $trackerRow.VerificationError = $verificationResult.VerificationError
+        $trackerRow.VerifiedAt = $verificationResult.VerifiedAt
+        $trackerRow.FinalState = Resolve-FinalState `
+            -PartnerAttemptStatus ([string]$trackerRow.PartnerAttemptStatus) `
+            -ConsentActor ([string]$trackerRow.ConsentActor) `
+            -FallbackRequired ([bool]$trackerRow.FallbackRequired) `
+            -VerifiedStatus ([string]$trackerRow.VerifiedStatus)
+
+        $verificationResults.Add([pscustomobject][ordered]@{
+                TenantId             = $trackerRow.TenantId
+                CustomerDisplayName  = $trackerRow.CustomerDisplayName
+                PartnerAttemptStatus = $trackerRow.PartnerAttemptStatus
+                VerifiedStatus       = $trackerRow.VerifiedStatus
+                FinalState           = $trackerRow.FinalState
+                ServicePrincipalId   = $trackerRow.ServicePrincipalId
+                MissingPermissions   = $trackerRow.MissingPermissions
+                VerificationError    = $trackerRow.VerificationError
+                VerifiedAt           = $trackerRow.VerifiedAt
+            })
+
+        if ($StopOnError -and $verificationResult.ShouldStop) {
+            Write-Log -Level "WARN" -Message "Stopping early because -StopOnError was specified."
+            break
+        }
     }
+}
 
-    if ($StopOnError -and $tenantResult.Status -eq "Failed") {
-        Write-Log -Level "WARN" -Message "Stopping early because -StopOnError was specified."
-        break
-    }
+foreach ($trackerRow in $trackerRows) {
+    $trackerRow.FinalState = Resolve-FinalState `
+        -PartnerAttemptStatus ([string]$trackerRow.PartnerAttemptStatus) `
+        -ConsentActor ([string]$trackerRow.ConsentActor) `
+        -FallbackRequired ([bool]$trackerRow.FallbackRequired) `
+        -VerifiedStatus ([string]$trackerRow.VerifiedStatus)
 }
 
 $batchEnd = Get-Date
+$currentTargetRows = @($trackerRows | Where-Object { $_.IsCurrentTarget })
 $summary = [ordered]@{
-    PartnerTenantId       = $PartnerTenantId
-    TargetAppId           = $TargetAppId
-    BatchStartTime        = $batchStart.ToString("o")
-    BatchEndTime          = $batchEnd.ToString("o")
-    DurationSeconds       = [Math]::Round(($batchEnd - $batchStart).TotalSeconds, 2)
-    Total                 = $results.Count
-    AlreadyCompliant      = @($results | Where-Object { $_.Status -eq "AlreadyCompliant" }).Count
-    Onboarded             = @($results | Where-Object { $_.Status -eq "Onboarded" }).Count
-    PendingManualConsent  = @($results | Where-Object { $_.Status -eq "PendingManualConsent" }).Count
-    Failed                = @($results | Where-Object { $_.Status -eq "Failed" }).Count
-    WhatIf                = [bool]$WhatIfPreference
+    PartnerTenantId            = $PartnerTenantId
+    TenantListPath             = $TenantListPath
+    TargetAppId                = $TargetAppId
+    VerificationClientId       = $VerificationClientId
+    OutputDirectory            = $OutputDirectory
+    BatchStartTime             = $batchStart.ToString("o")
+    BatchEndTime               = $batchEnd.ToString("o")
+    DurationSeconds            = [Math]::Round(($batchEnd - $batchStart).TotalSeconds, 2)
+    TrackerRowCount            = $trackerRows.Count
+    CurrentTargetCount         = $currentTargetRows.Count
+    VerificationSkipped        = [bool]$SkipVerification
+    ApprovedForVerification    = $rowsToVerify.Count
+    VerifiedCount              = @($currentTargetRows | Where-Object { $_.VerifiedStatus -eq "Verified" }).Count
+    FinalStateCounts           = Get-CountsByPropertyValue -Rows $currentTargetRows -PropertyName "FinalState"
+    PartnerAttemptStatusCounts = Get-CountsByPropertyValue -Rows $currentTargetRows -PropertyName "PartnerAttemptStatus"
+    VerifiedStatusCounts       = Get-CountsByPropertyValue -Rows $currentTargetRows -PropertyName "VerifiedStatus"
 }
 
-$resultsJsonPath = Join-Path -Path $OutputDirectory -ChildPath "batch-results.json"
-$resultsCsvPath = Join-Path -Path $OutputDirectory -ChildPath "batch-results.csv"
-$summaryPath = Join-Path -Path $OutputDirectory -ChildPath "batch-summary.json"
+Write-CsvFile -Path $trackerCsvPath -InputObject $trackerRows
+Write-JsonFile -Path $trackerJsonPath -InputObject $trackerRows -Depth 10
+Write-CsvFile -Path $verificationCsvPath -InputObject @($verificationResults)
+Write-JsonFile -Path $verificationJsonPath -InputObject @($verificationResults) -Depth 10
+Write-JsonFile -Path $summaryPath -InputObject $summary -Depth 10
 
-$results | ConvertTo-Json -Depth 20 | Set-Content -Path $resultsJsonPath -Encoding UTF8
-
-$csvRows = $results | ForEach-Object {
-    [pscustomobject]@{
-        TenantName               = $_.TenantName
-        TenantId                 = $_.TenantId
-        CustomerDisplayName      = $_.CustomerDisplayName
-        Source                   = $_.Source
-        Status                   = $_.Status
-        ServicePrincipalId       = $_.ServicePrincipalId
-        ServicePrincipalCreated  = $_.ServicePrincipalCreated
-        RequiredPermissions      = (@($_.RequiredPermissions) -join ";")
-        MissingPermissionsBefore = (@($_.MissingPermissionsBefore) -join ";")
-        GrantedPermissions       = (@($_.GrantedPermissions) -join ";")
-        PendingPermissions       = (@($_.PendingPermissions) -join ";")
-        AdminConsentUrl          = $_.AdminConsentUrl
-        Error                    = $_.Error
-        StartTime                = $_.StartTime
-        EndTime                  = $_.EndTime
-        DurationSeconds          = $_.DurationSeconds
-        WhatIf                   = $_.WhatIf
-    }
-}
-$csvRows | Export-Csv -Path $resultsCsvPath -NoTypeInformation -Encoding UTF8
-$summary | ConvertTo-Json -Depth 10 | Set-Content -Path $summaryPath -Encoding UTF8
-
-Write-Log -Message "Run summary:"
-$results `
-| Sort-Object TenantName `
-| Select-Object TenantName, Status, `
-    @{ Name = "Missing"; Expression = { @($_.MissingPermissionsBefore).Count } }, `
-    @{ Name = "Granted"; Expression = { @($_.GrantedPermissions).Count } }, `
-    @{ Name = "Pending"; Expression = { @($_.PendingPermissions).Count } } `
-| Format-Table -AutoSize `
-| Out-String `
-| ForEach-Object { $_.TrimEnd() } `
-| ForEach-Object {
+Write-Log -Message "Consent wave summary:"
+$currentTargetRows |
+Sort-Object CustomerDisplayName, TenantId |
+Select-Object CustomerDisplayName, TenantId, ConsentActor, PartnerAttemptStatus, VerifiedStatus, FinalState |
+Format-Table -AutoSize |
+Out-String |
+ForEach-Object { $_.TrimEnd() } |
+ForEach-Object {
     if (-not [string]::IsNullOrWhiteSpace($_)) {
         Write-Host $_
     }
 }
 
 Write-Log -Message "Artifacts written:"
-Write-Host "  $resultsJsonPath"
-Write-Host "  $resultsCsvPath"
+Write-Host "  $trackerCsvPath"
+Write-Host "  $trackerJsonPath"
+Write-Host "  $verificationCsvPath"
+Write-Host "  $verificationJsonPath"
 Write-Host "  $summaryPath"
 
-if ($summary.Failed -gt 0) {
-    Write-Log -Level "ERROR" -Message "$($summary.Failed) tenant(s) failed."
-    exit 1
-}
-
-if ($summary.PendingManualConsent -gt 0) {
-    Write-Log -Level "WARN" -Message "$($summary.PendingManualConsent) tenant(s) require manual consent follow-up."
-}
-
+Write-Log -Message "Editable tracker fields preserved on rerun: $($script:TrackerEditableFields -join ', ')"
 Write-Log -Message "Complete."
