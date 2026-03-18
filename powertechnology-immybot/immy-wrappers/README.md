@@ -2,6 +2,8 @@
 
 These are the scripts intended to be pasted into Immy tasks or software action scripts. They assume you created a `File` parameter named `PTIPayloadZip`. At runtime the wrappers look for Immy's extracted-folder companion variable `PTIPayloadZipFolder` and, during local testing, can also accept either an extracted folder path or the zip file path itself.
 
+The combined task wrappers also accept common Immy maintenance-task variables such as `TenantName`, `TenantSlug`, `ComputerName`, and `ComputerSlug`, and they include a hidden catch-all parameter for additional Immy runtime arguments so they do not fail when Immy injects extra context values at runtime.
+
 All wrappers should run in the `System` execution context because they target the endpoint directly.
 
 ## Files

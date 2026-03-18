@@ -112,6 +112,10 @@ Recommended secure Immy variables:
 - `PTI_HpDriverSourcePath`
 - `PTI_HpInfRelativePath`
 - `PTI_HpDriverName`
+
+`PTI_ApprovedSecurityProducts` is evaluated as a semicolon-delimited regex list. If a tenant uses multiple Datto products, use a broader value such as `Datto` or list each product explicitly, for example `Datto EDR;Datto AV`.
+
+The PTI baseline is reboot-aware for Dell cleanup. If the only remaining verify findings are Dell products that commonly unregister after restart, the baseline writes a reboot marker during `Set`, and the combined wrapper treats that state as a reboot checkpoint instead of a hard verify failure until the next boot clears the marker.
 - `PTI_Office2007StandardSourcePath`
 - `PTI_Office2007StandardInstallerRelativePath`
 - `PTI_Office2007StandardInstallArguments`

@@ -25,6 +25,53 @@ $ErrorActionPreference = 'Stop'
 
 . (Join-Path -Path $PSScriptRoot -ChildPath 'pti-common.ps1')
 $script:PTICmdlet = $PSCmdlet
+$script:PTIRebootRequired = $false
+$script:PTIRebootReasons = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+$script:PTIRebootMarkerPath = 'C:\ProgramData\PTI\State\pti-workstation-baseline.reboot.json'
+
+function Get-PTILastBootTimeUtc {
+    try {
+        $os = Get-CimInstance -ClassName Win32_OperatingSystem -ErrorAction Stop
+        return ([datetime]$os.LastBootUpTime).ToUniversalTime()
+    }
+    catch {
+        return (Get-Date).ToUniversalTime()
+    }
+}
+
+function Set-PTIRebootRequired {
+    param(
+        [string]$Reason
+    )
+
+    $script:PTIRebootRequired = $true
+    if (-not [string]::IsNullOrWhiteSpace($Reason)) {
+        $isNewReason = $script:PTIRebootReasons.Add($Reason)
+        if ($isNewReason) {
+            Write-PTILog -Message "Marked PTI baseline reboot-required: $Reason" -Level 'WARN' -LogPath $LogPath
+        }
+    }
+}
+
+function Clear-PTIRebootMarker {
+    if (Test-Path -LiteralPath $script:PTIRebootMarkerPath) {
+        Remove-Item -LiteralPath $script:PTIRebootMarkerPath -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Set-PTIRebootMarker {
+    $markerDirectory = Split-Path -Path $script:PTIRebootMarkerPath -Parent
+    Ensure-PTIDirectory -Path $markerDirectory
+
+    $marker = [pscustomobject]@{
+        RequestedAtUtc     = (Get-Date).ToUniversalTime().ToString('o')
+        BootTimeAtRequestUtc = (Get-PTILastBootTimeUtc).ToString('o')
+        Reasons            = @($script:PTIRebootReasons | Sort-Object)
+    }
+
+    $marker | ConvertTo-Json -Depth 4 | Set-Content -Path $script:PTIRebootMarkerPath -Encoding ASCII -Force
+    Write-PTILog -Message "Wrote PTI reboot marker: $script:PTIRebootMarkerPath" -Level 'WARN' -LogPath $LogPath
+}
 
 function Set-RegistryDwordValue {
     param(
@@ -68,12 +115,37 @@ function Convert-UninstallStringToCommand {
         $arguments = $trimmed.Substring($closingIndex + 1).Trim()
     }
     else {
-        $segments = $trimmed -split '\s+', 2
-        $filePath = $segments[0]
-        $arguments = if ($segments.Count -gt 1) { $segments[1] } else { '' }
+        $commandMatch = [regex]::Match(
+            $trimmed,
+            '^(?<FilePath>.+?\.(?:exe|com|cmd|bat|msi))(?<Arguments>\s.*)?$',
+            [System.Text.RegularExpressions.RegexOptions]::IgnoreCase
+        )
+
+        if ($commandMatch.Success) {
+            $filePath = $commandMatch.Groups['FilePath'].Value.Trim()
+            $arguments = $commandMatch.Groups['Arguments'].Value.Trim()
+        }
+        else {
+            $segments = $trimmed -split '\s+', 2
+            $filePath = $segments[0]
+            $arguments = if ($segments.Count -gt 1) { $segments[1] } else { '' }
+        }
     }
 
-    if ($filePath -match '^(?i)msiexec(?:\.exe)?$') {
+    if ($filePath -match '(?i)\.msi$') {
+        $arguments = ('/x "{0}" {1}' -f $filePath, $arguments).Trim()
+
+        if ($arguments -notmatch '(?i)/qn') {
+            $arguments = ($arguments + ' /qn').Trim()
+        }
+
+        if ($arguments -notmatch '(?i)/norestart') {
+            $arguments = ($arguments + ' /norestart').Trim()
+        }
+
+        $filePath = 'msiexec.exe'
+    }
+    elseif ($filePath -match '^(?i)msiexec(?:\.exe)?$') {
         if ($arguments -notmatch '(?i)(^|\s)/x(\s|$)' -and $arguments -match '(?i)(^|\s)/i(\s|$)') {
             $arguments = [regex]::Replace($arguments, '(?i)(^|\s)/i(\s|$)', ' /x ')
         }
@@ -101,51 +173,238 @@ function Convert-UninstallStringToCommand {
     }
 }
 
+function Get-ProgramPropertyValue {
+    param(
+        [Parameter(Mandatory = $true)]
+        [psobject]$InputObject,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Name
+    )
+
+    $property = $InputObject.PSObject.Properties[$Name]
+    if ($null -ne $property) {
+        return [string]$property.Value
+    }
+
+    return $null
+}
+
+function Get-MsiProductCodeFromProgram {
+    param(
+        [Parameter(Mandatory = $true)]
+        [psobject]$Program
+    )
+
+    $guidPattern = '(?i)\{[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}\}'
+
+    $windowsInstaller = Get-ProgramPropertyValue -InputObject $Program -Name 'WindowsInstaller'
+    $psChildName = Get-ProgramPropertyValue -InputObject $Program -Name 'PSChildName'
+    if ($windowsInstaller -eq '1' -and $psChildName -match "^$guidPattern$") {
+        return $Matches[0]
+    }
+
+    foreach ($propertyName in @('QuietUninstallString', 'UninstallString')) {
+        $commandLine = Get-ProgramPropertyValue -InputObject $Program -Name $propertyName
+        if (-not [string]::IsNullOrWhiteSpace($commandLine) -and $commandLine -match $guidPattern) {
+            return $Matches[0]
+        }
+    }
+
+    return $null
+}
+
+function Get-InstalledProgramMatches {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string[]]$DisplayNamePatterns
+    )
+
+    return @(
+        Get-PTIInstalledPrograms | Where-Object {
+            $displayName = $_.DisplayName
+            foreach ($pattern in $DisplayNamePatterns) {
+                if ($displayName -match $pattern) {
+                    return $true
+                }
+            }
+
+            return $false
+        }
+    )
+}
+
+function Test-ProgramStillInstalled {
+    param(
+        [Parameter(Mandatory = $true)]
+        [psobject]$Program
+    )
+
+    $programKey = Get-ProgramPropertyValue -InputObject $Program -Name 'PSChildName'
+    $programName = Get-ProgramPropertyValue -InputObject $Program -Name 'DisplayName'
+
+    $matches = @(
+        Get-PTIInstalledPrograms | Where-Object {
+            $candidateKey = Get-ProgramPropertyValue -InputObject $_ -Name 'PSChildName'
+            $candidateName = Get-ProgramPropertyValue -InputObject $_ -Name 'DisplayName'
+
+            if (-not [string]::IsNullOrWhiteSpace($programKey) -and -not [string]::IsNullOrWhiteSpace($candidateKey)) {
+                return $candidateKey -eq $programKey
+            }
+
+            return $candidateName -eq $programName
+        }
+    )
+
+    return ($matches.Count -gt 0)
+}
+
+function Wait-ForProgramUnregister {
+    param(
+        [Parameter(Mandatory = $true)]
+        [psobject]$Program,
+
+        [int]$TimeoutSeconds = 45,
+
+        [int]$PollSeconds = 5
+    )
+
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    do {
+        if (-not (Test-ProgramStillInstalled -Program $Program)) {
+            return $true
+        }
+
+        Start-Sleep -Seconds $PollSeconds
+    } while ((Get-Date) -lt $deadline)
+
+    return (-not (Test-ProgramStillInstalled -Program $Program))
+}
+
+function Invoke-RawUninstallCommand {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$CommandLine,
+
+        [Parameter(Mandatory = $true)]
+        [string]$DisplayName
+    )
+
+    $argumentList = '/d /s /c ""{0}""' -f $CommandLine
+    $exitCode = Invoke-PTIProcess -FilePath 'cmd.exe' -ArgumentList $argumentList -WorkingDirectory $env:SystemRoot -LogPath $LogPath
+    if ($exitCode -in @(1641, 3010)) {
+        Set-PTIRebootRequired -Reason "Application uninstall requested reboot: $DisplayName"
+    }
+
+    return $exitCode
+}
+
 function Invoke-UninstallByDisplayName {
     param(
         [Parameter(Mandatory = $true)]
         [string[]]$DisplayNamePatterns
     )
 
-    $matches = @(Get-PTIInstalledPrograms | Where-Object {
-        $displayName = $_.DisplayName
-        foreach ($pattern in $DisplayNamePatterns) {
-            if ($displayName -match $pattern) {
-                return $true
-            }
-        }
-
-        return $false
-    })
+    $matches = @(Get-InstalledProgramMatches -DisplayNamePatterns $DisplayNamePatterns)
 
     foreach ($program in $matches) {
-        $commandLine = if (-not [string]::IsNullOrWhiteSpace($program.QuietUninstallString)) {
-            $program.QuietUninstallString
-        }
-        else {
-            $program.UninstallString
-        }
+        $quietUninstall = Get-ProgramPropertyValue -InputObject $program -Name 'QuietUninstallString'
+        $regularUninstall = Get-ProgramPropertyValue -InputObject $program -Name 'UninstallString'
+        $msiProductCode = Get-MsiProductCodeFromProgram -Program $program
 
-        if ([string]::IsNullOrWhiteSpace($commandLine)) {
+        if ([string]::IsNullOrWhiteSpace($quietUninstall) -and [string]::IsNullOrWhiteSpace($regularUninstall) -and [string]::IsNullOrWhiteSpace($msiProductCode)) {
             Write-PTILog -Message "No uninstall string found for [$($program.DisplayName)]." -Level 'WARN' -LogPath $LogPath
             continue
         }
 
-        $command = Convert-UninstallStringToCommand -CommandLine $commandLine
-        if (-not $command) {
-            Write-PTILog -Message "Could not parse uninstall command for [$($program.DisplayName)]." -Level 'WARN' -LogPath $LogPath
-            continue
-        }
-
         if ($PSCmdlet.ShouldProcess($program.DisplayName, 'Uninstall application')) {
-            try {
-                Invoke-PTIProcess -FilePath $command.FilePath -ArgumentList $command.ArgumentList -WorkingDirectory (Split-Path -Path $command.FilePath -Parent) -LogPath $LogPath | Out-Null
+            $attemptSucceeded = $false
+
+            if (-not [string]::IsNullOrWhiteSpace($quietUninstall)) {
+                try {
+                    Write-PTILog -Message "Trying raw quiet uninstall string for [$($program.DisplayName)]." -LogPath $LogPath
+                    Invoke-RawUninstallCommand -CommandLine $quietUninstall -DisplayName $program.DisplayName | Out-Null
+                    if (Wait-ForProgramUnregister -Program $program -TimeoutSeconds 45 -PollSeconds 5) {
+                        $attemptSucceeded = $true
+                    }
+                }
+                catch {
+                    Write-PTILog -Message "Quiet uninstall failed for [$($program.DisplayName)]: $($_.Exception.Message)" -Level 'WARN' -LogPath $LogPath
+                }
             }
-            catch {
-                Write-PTILog -Message "Uninstall failed for [$($program.DisplayName)]: $($_.Exception.Message)" -Level 'WARN' -LogPath $LogPath
+
+            if (-not $attemptSucceeded -and -not [string]::IsNullOrWhiteSpace($regularUninstall)) {
+                $command = Convert-UninstallStringToCommand -CommandLine $regularUninstall
+                if ($command) {
+                    try {
+                        $workingDirectory = if ([System.IO.Path]::IsPathRooted($command.FilePath)) {
+                            Split-Path -Path $command.FilePath -Parent
+                        }
+                        else {
+                            $env:SystemRoot
+                        }
+
+                        Write-PTILog -Message "Trying parsed uninstall command for [$($program.DisplayName)]." -LogPath $LogPath
+                        $exitCode = Invoke-PTIProcess -FilePath $command.FilePath -ArgumentList $command.ArgumentList -WorkingDirectory $workingDirectory -LogPath $LogPath
+                        if ($exitCode -in @(1641, 3010)) {
+                            Set-PTIRebootRequired -Reason "Application uninstall requested reboot: $($program.DisplayName)"
+                        }
+
+                        if (Wait-ForProgramUnregister -Program $program -TimeoutSeconds 45 -PollSeconds 5) {
+                            $attemptSucceeded = $true
+                        }
+                    }
+                    catch {
+                        Write-PTILog -Message "Parsed uninstall failed for [$($program.DisplayName)]: $($_.Exception.Message)" -Level 'WARN' -LogPath $LogPath
+                    }
+                }
+            }
+
+            if (-not $attemptSucceeded -and -not [string]::IsNullOrWhiteSpace($msiProductCode)) {
+                try {
+                    Write-PTILog -Message "Trying MSI fallback uninstall for [$($program.DisplayName)] using product code [$msiProductCode]." -Level 'WARN' -LogPath $LogPath
+                    $exitCode = Invoke-PTIProcess -FilePath 'msiexec.exe' -ArgumentList "/x $msiProductCode /qn /norestart REBOOT=ReallySuppress" -WorkingDirectory $env:SystemRoot -LogPath $LogPath
+                    if ($exitCode -in @(1641, 3010)) {
+                        Set-PTIRebootRequired -Reason "MSI fallback uninstall requested reboot: $($program.DisplayName)"
+                    }
+
+                    if (Wait-ForProgramUnregister -Program $program -TimeoutSeconds 45 -PollSeconds 5) {
+                        $attemptSucceeded = $true
+                    }
+                }
+                catch {
+                    Write-PTILog -Message "MSI fallback uninstall failed for [$($program.DisplayName)]: $($_.Exception.Message)" -Level 'WARN' -LogPath $LogPath
+                }
+            }
+
+            if (-not $attemptSucceeded -and (Test-ProgramStillInstalled -Program $program)) {
+                Write-PTILog -Message "Application still appears installed after all uninstall attempts: [$($program.DisplayName)]." -Level 'WARN' -LogPath $LogPath
             }
         }
     }
+}
+
+function Wait-PTIProgramRemoval {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string[]]$DisplayNamePatterns,
+
+        [int]$TimeoutSeconds = 90,
+
+        [int]$PollSeconds = 5
+    )
+
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    do {
+        $remaining = @(Get-InstalledProgramMatches -DisplayNamePatterns $DisplayNamePatterns | Select-Object -ExpandProperty DisplayName -Unique)
+        if ($remaining.Count -eq 0) {
+            return $true
+        }
+
+        Start-Sleep -Seconds $PollSeconds
+    } while ((Get-Date) -lt $deadline)
+
+    return $false
 }
 
 function Remove-AppxFamilies {
@@ -183,6 +442,140 @@ function Remove-AppxFamilies {
             }
         }
     }
+}
+
+function Remove-PTIDellBloatware {
+    $dellPatterns = @(
+        '(?i)^Dell Optimizer(?: Service)?\b',
+        '(?i)^Dell SupportAssist\b',
+        '(?i)^Dell SupportAssist OS Recovery\b',
+        '(?i)^Dell SupportAssist OS Recovery Plugin\b',
+        '(?i)^Dell SupportAssist Remediation\b',
+        '(?i)^Dell Digital Delivery\b',
+        '(?i)^Dell Customer Connect\b',
+        '(?i)^Dell Update(?: for Windows)?\b',
+        '(?i)^My Dell\b',
+        '(?i)^Dell TechHub\b',
+        '(?i)^Dell Power Manager\b'
+    )
+
+    $serviceNamePatterns = @(
+        '(?i)^DellClientManagementService$',
+        '(?i)^SupportAssistAgent$',
+        '(?i)^Dell\.?TechHub',
+        '(?i)^DellDataVault',
+        '(?i)^Dell SupportAssist(?: Remediation)?$'
+    )
+
+    $serviceDisplayNamePatterns = @(
+        '(?i)^Dell Client Management Service$',
+        '(?i)^Dell Data Vault Collector$',
+        '(?i)^Dell Data Vault Processor$',
+        '(?i)^Dell Data Vault Service API$',
+        '(?i)^Dell SupportAssist$',
+        '(?i)^Dell SupportAssist Remediation$',
+        '(?i)^Dell TechHub$'
+    )
+
+    foreach ($service in @(Get-CimInstance -ClassName Win32_Service -ErrorAction SilentlyContinue | Where-Object {
+        foreach ($pattern in $serviceNamePatterns) {
+            if ($_.Name -match $pattern) {
+                return $true
+            }
+        }
+
+        foreach ($pattern in $serviceDisplayNamePatterns) {
+            if ($_.DisplayName -match $pattern) {
+                return $true
+            }
+        }
+
+        return $false
+    })) {
+        try {
+            if ($service.State -eq 'Running') {
+                Write-PTILog -Message "Stopping Dell service [$($service.Name)] prior to uninstall." -LogPath $LogPath
+                Stop-Service -Name $service.Name -Force -ErrorAction Stop
+            }
+        }
+        catch {
+            Write-PTILog -Message "Failed to stop Dell service [$($service.Name)]: $($_.Exception.Message)" -Level 'WARN' -LogPath $LogPath
+        }
+
+        try {
+            Set-Service -Name $service.Name -StartupType Disabled -ErrorAction SilentlyContinue
+        }
+        catch {
+        }
+    }
+
+    foreach ($processName in @(
+        'SupportAssist',
+        'SupportAssistAgent',
+        'SupportAssistRemediationService',
+        'DellSupportAssistRemediationService',
+        'DellSupportAssistRemediation',
+        'DellTechHub',
+        'ServiceShell',
+        'DellDataVault',
+        'DellDataVaultWiz',
+        'DellDataVaultSvcApi'
+    )) {
+        Get-Process -Name $processName -ErrorAction SilentlyContinue | ForEach-Object {
+            try {
+                Write-PTILog -Message "Stopping Dell process [$($_.ProcessName)] (PID $($_.Id)) prior to uninstall." -LogPath $LogPath
+                Stop-Process -Id $_.Id -Force -ErrorAction Stop
+            }
+            catch {
+                Write-PTILog -Message "Failed to stop Dell process [$($_.ProcessName)] (PID $($_.Id)): $($_.Exception.Message)" -Level 'WARN' -LogPath $LogPath
+            }
+        }
+    }
+
+    Write-PTILog -Message 'Running PTI Dell application removal pass.' -LogPath $LogPath
+    Invoke-UninstallByDisplayName -DisplayNamePatterns $dellPatterns
+
+    if (-not (Wait-PTIProgramRemoval -DisplayNamePatterns $dellPatterns -TimeoutSeconds 60 -PollSeconds 5)) {
+        $remainingDellApps = @(Get-InstalledProgramMatches -DisplayNamePatterns $dellPatterns | Select-Object -ExpandProperty DisplayName -Unique)
+        if ($remainingDellApps.Count -gt 0) {
+            Write-PTILog -Message ("Dell applications still detected after first pass: {0}" -f ($remainingDellApps -join '; ')) -Level 'WARN' -LogPath $LogPath
+            Write-PTILog -Message 'Retrying PTI Dell application removal pass.' -Level 'WARN' -LogPath $LogPath
+            Invoke-UninstallByDisplayName -DisplayNamePatterns $dellPatterns
+            $null = Wait-PTIProgramRemoval -DisplayNamePatterns $dellPatterns -TimeoutSeconds 60 -PollSeconds 5
+        }
+    }
+
+    $finalRemainingDellApps = @(Get-InstalledProgramMatches -DisplayNamePatterns $dellPatterns | Select-Object -ExpandProperty DisplayName -Unique)
+    if ($finalRemainingDellApps.Count -gt 0) {
+        Set-PTIRebootRequired -Reason ("Dell applications still registered after cleanup and may clear after reboot: {0}" -f ($finalRemainingDellApps -join '; '))
+        Write-PTILog -Message ("Dell applications remain registered after cleanup: {0}" -f ($finalRemainingDellApps -join '; ')) -Level 'WARN' -LogPath $LogPath
+    }
+    else {
+        Write-PTILog -Message 'No Dell applications remain after PTI cleanup.' -LogPath $LogPath
+    }
+}
+
+function Update-PTIRebootState {
+    if ($script:PTIRebootRequired) {
+        Set-PTIRebootMarker
+    }
+    else {
+        Clear-PTIRebootMarker
+        Write-PTILog -Message 'No reboot required marker remains for PTI baseline.' -LogPath $LogPath
+    }
+}
+
+function Invoke-PTIOneDriveUninstall {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$InstallerPath
+    )
+
+    $exitCode = Invoke-PTIProcess -FilePath $InstallerPath -ArgumentList '/uninstall' -WorkingDirectory (Split-Path -Path $InstallerPath -Parent) -LogPath $LogPath
+    if ($exitCode -in @(1641, 3010)) {
+        Set-PTIRebootRequired -Reason "OneDrive uninstall requested reboot: $InstallerPath"
+    }
+}
 }
 
 function Install-PTIPerUserOneDriveCleanup {
@@ -239,7 +632,7 @@ function Disable-PTIOneDrive {
     )) {
         if ((Test-Path -LiteralPath $oneDriveSetup) -and $PSCmdlet.ShouldProcess($oneDriveSetup, 'Uninstall OneDrive')) {
             try {
-                Invoke-PTIProcess -FilePath $oneDriveSetup -ArgumentList '/uninstall' -WorkingDirectory (Split-Path -Path $oneDriveSetup -Parent) -LogPath $LogPath | Out-Null
+                Invoke-PTIOneDriveUninstall -InstallerPath $oneDriveSetup
             }
             catch {
                 Write-PTILog -Message "OneDrive uninstall attempt failed from [$oneDriveSetup]: $($_.Exception.Message)" -Level 'WARN' -LogPath $LogPath
@@ -308,6 +701,8 @@ if (-not $SkipDellCleanup) {
     else {
         Write-PTILog -Message "Dell cleanup helper not found: $dellCleanupScript" -Level 'WARN' -LogPath $LogPath
     }
+
+    Remove-PTIDellBloatware
 }
 
 if (-not $SkipUnauthorizedSecurityRemoval) {
@@ -329,6 +724,7 @@ if (-not $SkipRemoteAssistance) {
     Enable-PTIRemoteAssistance
 }
 
+Update-PTIRebootState
 Write-PTILog -Message 'PTI workstation baseline completed.' -LogPath $LogPath
 
 [pscustomobject]@{
@@ -338,5 +734,7 @@ Write-PTILog -Message 'PTI workstation baseline completed.' -LogPath $LogPath
     DellCleanupAttempted     = (-not $SkipDellCleanup)
     RemoteAssistanceEnabled  = (-not $SkipRemoteAssistance)
     SecurityRemovalEnabled   = ($EnableUnauthorizedSecurityRemoval -and $ApprovedSecurityProducts.Count -gt 0 -and -not $SkipUnauthorizedSecurityRemoval)
+    RebootRequired           = $script:PTIRebootRequired
+    RebootMarkerPath         = $script:PTIRebootMarkerPath
     LogPath                  = $LogPath
 }

@@ -3,6 +3,30 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$PTIPayloadZip,
 
+    [Parameter(DontShow = $true)]
+    [string]$TenantName,
+
+    [Parameter(DontShow = $true)]
+    [string]$TenantSlug,
+
+    [Parameter(DontShow = $true)]
+    [string]$ComputerName,
+
+    [Parameter(DontShow = $true)]
+    [string]$ComputerSlug,
+
+    [Parameter(DontShow = $true)]
+    [string]$AzureTenantId,
+
+    [Parameter(DontShow = $true)]
+    [Guid]$PrimaryPersonAzurePrincipalId,
+
+    [Parameter(DontShow = $true)]
+    [string]$PrimaryPersonEmail,
+
+    [Parameter(DontShow = $true)]
+    [bool]$IsPortable,
+
     [string]$ApprovedSecurityProducts = '',
 
     [switch]$EnableUnauthorizedSecurityRemoval,
@@ -19,7 +43,10 @@ param(
 
     [switch]$SkipRemoteAssistance,
 
-    [string]$LogPath = 'C:\ProgramData\PTI\Logs\pti-workstation-baseline.log'
+    [string]$LogPath = 'C:\ProgramData\PTI\Logs\pti-workstation-baseline.log',
+
+    [Parameter(DontShow = $true, ValueFromRemainingArguments = $true)]
+    [object[]]$ImmyRuntimeArguments
 )
 
 Set-StrictMode -Version Latest
@@ -148,6 +175,76 @@ function Test-RemoteAssistanceFirewallEnabled {
     return (@($rules | Where-Object { $_.Enabled -eq 'True' }).Count -gt 0)
 }
 
+function Get-PTILastBootTimeUtc {
+    try {
+        $os = Get-CimInstance -ClassName Win32_OperatingSystem -ErrorAction Stop
+        return ([datetime]$os.LastBootUpTime).ToUniversalTime()
+    }
+    catch {
+        return (Get-Date).ToUniversalTime()
+    }
+}
+
+function Get-PTIPendingRebootState {
+    $sources = [System.Collections.Generic.List[string]]::new()
+    $markerPath = 'C:\ProgramData\PTI\State\pti-workstation-baseline.reboot.json'
+
+    if (Test-Path -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending') {
+        $sources.Add('Component Based Servicing') | Out-Null
+    }
+
+    if (Test-Path -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired') {
+        $sources.Add('Windows Update') | Out-Null
+    }
+
+    foreach ($propertyName in @('PendingFileRenameOperations', 'PendingFileRenameOperations2')) {
+        try {
+            $sessionManager = Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager' -Name $propertyName -ErrorAction Stop
+            if ($null -ne $sessionManager.$propertyName -and @($sessionManager.$propertyName).Count -gt 0) {
+                $sources.Add("Session Manager:$propertyName") | Out-Null
+            }
+        }
+        catch {
+        }
+    }
+
+    if (Test-Path -LiteralPath $markerPath) {
+        try {
+            $marker = Get-Content -Path $markerPath -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+            $currentBootTime = Get-PTILastBootTimeUtc
+            $bootTimeAtRequest = if ($marker.BootTimeAtRequestUtc) {
+                ([datetime]$marker.BootTimeAtRequestUtc).ToUniversalTime()
+            }
+            else {
+                $null
+            }
+
+            if ($bootTimeAtRequest -and $currentBootTime -gt $bootTimeAtRequest.AddSeconds(5)) {
+                Remove-Item -LiteralPath $markerPath -Force -ErrorAction SilentlyContinue
+            }
+            else {
+                $sources.Add('PTI baseline reboot marker') | Out-Null
+            }
+        }
+        catch {
+            $sources.Add('PTI baseline reboot marker') | Out-Null
+        }
+    }
+
+    return [pscustomobject]@{
+        IsPending = ($sources.Count -gt 0)
+        Sources   = @($sources | Sort-Object -Unique)
+        MarkerPath = $markerPath
+    }
+}
+
+function Test-PTIRemoteAssistanceEnabled {
+    $controlEnabled = Test-RegistryDwordValue -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Remote Assistance' -Name 'fAllowToGetHelp' -ExpectedValue 1
+    $policyEnabled = Test-RegistryDwordValue -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services' -Name 'fAllowToGetHelp' -ExpectedValue 1
+
+    return ($controlEnabled -or $policyEnabled)
+}
+
 function Get-SecurityInventory {
     param(
         [Parameter(Mandatory = $true)]
@@ -203,7 +300,7 @@ function Test-PTIBaselineCompliance {
     )
 
     $issues = [System.Collections.Generic.List[string]]::new()
-    $installedPrograms = @(Get-InstalledPrograms)
+    $installedPrograms = @(Get-InstalledPrograms | Sort-Object DisplayName -Unique)
 
     if (-not $SkipConsumerBloatwareRemoval) {
         $programPatterns = @(
@@ -233,8 +330,7 @@ function Test-PTIBaselineCompliance {
             'Microsoft.XboxGameOverlay',
             'Microsoft.XboxGamingOverlay',
             'Microsoft.XboxIdentityProvider',
-            'Microsoft.XboxSpeechToTextOverlay',
-            'Microsoft.MicrosoftOfficeHub'
+            'Microsoft.XboxSpeechToTextOverlay'
         )) {
             if (-not (Test-AppxAbsent -Pattern $pattern)) {
                 $issues.Add("Consumer AppX package still present: $pattern") | Out-Null
@@ -331,12 +427,8 @@ function Test-PTIBaselineCompliance {
     }
 
     if (-not $SkipRemoteAssistance) {
-        if (-not (Test-RegistryDwordValue -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Remote Assistance' -Name 'fAllowToGetHelp' -ExpectedValue 1)) {
-            $issues.Add('Remote Assistance control setting is not enabled.') | Out-Null
-        }
-
-        if (-not (Test-RegistryDwordValue -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services' -Name 'fAllowToGetHelp' -ExpectedValue 1)) {
-            $issues.Add('Remote Assistance policy setting is not enabled.') | Out-Null
+        if (-not (Test-PTIRemoteAssistanceEnabled)) {
+            $issues.Add('Remote Assistance is not enabled.') | Out-Null
         }
 
         if (-not (Test-RemoteAssistanceFirewallEnabled)) {
@@ -344,8 +436,19 @@ function Test-PTIBaselineCompliance {
         }
     }
 
-    if ($issues.Count -gt 0) {
-        Write-Warning ('PTI baseline is not compliant: ' + ($issues -join ' | '))
+    $rebootState = Get-PTIPendingRebootState
+    $uniqueIssues = @($issues | Sort-Object -Unique)
+    $onlyDellResidualIssuesRemain = $uniqueIssues.Count -gt 0 -and @(
+        $uniqueIssues | Where-Object { $_ -notmatch '^Dell bloatware still present:' }
+    ).Count -eq 0
+
+    if ($onlyDellResidualIssuesRemain -and $rebootState.IsPending) {
+        Write-Warning ("PTI baseline is awaiting reboot before final Dell verification. Pending reboot sources: {0}. Remaining entries: {1}" -f ($rebootState.Sources -join '; '), ($uniqueIssues -join ' | '))
+        return $true
+    }
+
+    if ($uniqueIssues.Count -gt 0) {
+        Write-Warning ('PTI baseline is not compliant: ' + ($uniqueIssues -join ' | '))
         return $false
     }
 
@@ -359,6 +462,7 @@ function Get-PTIBaselineState {
     )
 
     $isCompliant = Test-PTIBaselineCompliance -ApprovedProducts $ApprovedProducts
+    $rebootState = Get-PTIPendingRebootState
     return [pscustomobject]@{
         Compliant                      = $isCompliant
         ApprovedSecurityProductCount   = @($ApprovedProducts).Count
@@ -368,6 +472,12 @@ function Get-PTIBaselineState {
         SkipCortanaDisable             = $SkipCortanaDisable.IsPresent
         SkipRemoteAssistance           = $SkipRemoteAssistance.IsPresent
         EnableUnauthorizedSecurityRemoval = $EnableUnauthorizedSecurityRemoval.IsPresent
+        TenantName                     = $TenantName
+        TenantSlug                     = $TenantSlug
+        ComputerName                   = $ComputerName
+        ComputerSlug                   = $ComputerSlug
+        PendingReboot                  = $rebootState.IsPending
+        PendingRebootSources           = $rebootState.Sources
         LogPath                        = $LogPath
     }
 }

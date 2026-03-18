@@ -3,6 +3,30 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$PTIPayloadZip,
 
+    [Parameter(DontShow = $true)]
+    [string]$TenantName,
+
+    [Parameter(DontShow = $true)]
+    [string]$TenantSlug,
+
+    [Parameter(DontShow = $true)]
+    [string]$ComputerName,
+
+    [Parameter(DontShow = $true)]
+    [string]$ComputerSlug,
+
+    [Parameter(DontShow = $true)]
+    [string]$AzureTenantId,
+
+    [Parameter(DontShow = $true)]
+    [Guid]$PrimaryPersonAzurePrincipalId,
+
+    [Parameter(DontShow = $true)]
+    [string]$PrimaryPersonEmail,
+
+    [Parameter(DontShow = $true)]
+    [bool]$IsPortable,
+
     [ValidateSet('DriverStage', 'SharedCopiers', 'Scheduling', 'Sales', 'Accounting', 'Hp5000', 'DepartmentBundle')]
     [string[]]$InstallSet = @('DepartmentBundle'),
 
@@ -31,7 +55,10 @@ param(
 
     [string]$StageRoot = 'C:\ProgramData\PTI\PrinterDrivers',
 
-    [string]$LogPath = 'C:\ProgramData\PTI\Logs\pti-printers.log'
+    [string]$LogPath = 'C:\ProgramData\PTI\Logs\pti-printers.log',
+
+    [Parameter(DontShow = $true, ValueFromRemainingArguments = $true)]
+    [object[]]$ImmyRuntimeArguments
 )
 
 Set-StrictMode -Version Latest
@@ -278,6 +305,10 @@ function Get-PTIPrinterState {
         PrimaryDepartment = $PrimaryDepartment
         QueueKeys         = $queueKeys
         DriverFamilies    = $requiredFamilies
+        TenantName        = $TenantName
+        TenantSlug        = $TenantSlug
+        ComputerName      = $ComputerName
+        ComputerSlug      = $ComputerSlug
         LogPath           = $LogPath
     }
 }
