@@ -76,6 +76,8 @@ Recommended pattern:
   Combined `Test`/`Set` task script for debloat, OneDrive, Cortana, Dell cleanup, guarded AV cleanup, and Remote Assistance.
 - `immy-wrappers\pti-install-printers-wrapper.ps1`
   Combined `Test`/`Set` task script for driver staging and queue creation.
+- `immy-wrappers\pti-collect-dell-diagnostics-wrapper.ps1`
+  Thin task wrapper for collecting uninstall metadata and runtime state when Dell cleanup does not converge.
 - `immy-wrappers\pti-install-office2007-standard-wrapper.ps1`
   Uses the payload Office 2007 Standard installer wrapper.
 - `immy-wrappers\pti-install-office2007-professional-wrapper.ps1`

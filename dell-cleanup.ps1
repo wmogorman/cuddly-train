@@ -91,7 +91,10 @@ $regPaths = @(
 )
 
 $installed = Get-ItemProperty $regPaths -ErrorAction SilentlyContinue |
-    Where-Object { $_.DisplayName } |
+    Where-Object {
+        $displayNameProperty = $_.PSObject.Properties['DisplayName']
+        $null -ne $displayNameProperty -and -not [string]::IsNullOrWhiteSpace([string]$displayNameProperty.Value)
+    } |
     Select-Object PSChildName, DisplayName, Publisher, UninstallString
 
 $dellApps = $installed | Where-Object {

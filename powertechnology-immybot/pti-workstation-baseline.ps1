@@ -384,6 +384,60 @@ function Invoke-UninstallByDisplayName {
     }
 }
 
+function Invoke-PTIDirectMsiUninstall {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$DisplayName,
+
+        [Parameter(Mandatory = $true)]
+        [string]$ProductCode
+    )
+
+    Write-PTILog -Message "Trying direct MSI uninstall for [$DisplayName] using [$ProductCode]." -LogPath $LogPath
+    $exitCode = Invoke-PTIProcess -FilePath 'msiexec.exe' -ArgumentList "/x $ProductCode /qn /norestart REBOOT=ReallySuppress" -WorkingDirectory $env:SystemRoot -LogPath $LogPath
+    if ($exitCode -in @(1641, 3010)) {
+        Set-PTIRebootRequired -Reason "Direct MSI uninstall requested reboot: $DisplayName"
+    }
+
+    return $exitCode
+}
+
+function Remove-PTIDellPackageTargets {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string[]]$DisplayNamePatterns,
+
+        [string[]]$AppxPatterns = @()
+    )
+
+    $matches = @(Get-InstalledProgramMatches -DisplayNamePatterns $DisplayNamePatterns)
+    foreach ($program in $matches) {
+        $displayName = Get-ProgramPropertyValue -InputObject $program -Name 'DisplayName'
+        $msiProductCode = Get-MsiProductCodeFromProgram -Program $program
+
+        $removed = $false
+        if (-not [string]::IsNullOrWhiteSpace($msiProductCode)) {
+            try {
+                Invoke-PTIDirectMsiUninstall -DisplayName $displayName -ProductCode $msiProductCode | Out-Null
+                if (Wait-ForProgramUnregister -Program $program -TimeoutSeconds 90 -PollSeconds 5) {
+                    $removed = $true
+                }
+            }
+            catch {
+                Write-PTILog -Message "Direct MSI uninstall failed for [$displayName]: $($_.Exception.Message)" -Level 'WARN' -LogPath $LogPath
+            }
+        }
+
+        if (-not $removed -and (Test-ProgramStillInstalled -Program $program)) {
+            Invoke-UninstallByDisplayName -DisplayNamePatterns @('(?i)^' + [regex]::Escape($displayName) + '$')
+        }
+    }
+
+    if ($AppxPatterns.Count -gt 0) {
+        Remove-AppxFamilies -PackagePatterns $AppxPatterns
+    }
+}
+
 function Wait-PTIProgramRemoval {
     param(
         [Parameter(Mandatory = $true)]
@@ -454,6 +508,8 @@ function Remove-PTIDellBloatware {
         '(?i)^Dell Digital Delivery\b',
         '(?i)^Dell Customer Connect\b',
         '(?i)^Dell Update(?: for Windows)?\b',
+        '(?i)^Dell Command \| Update\b',
+        '(?i)^Dell Core Services\b',
         '(?i)^My Dell\b',
         '(?i)^Dell TechHub\b',
         '(?i)^Dell Power Manager\b'
@@ -461,6 +517,7 @@ function Remove-PTIDellBloatware {
 
     $serviceNamePatterns = @(
         '(?i)^DellClientManagementService$',
+        '(?i)^DellDigitalDelivery$',
         '(?i)^SupportAssistAgent$',
         '(?i)^Dell\.?TechHub',
         '(?i)^DellDataVault',
@@ -472,6 +529,7 @@ function Remove-PTIDellBloatware {
         '(?i)^Dell Data Vault Collector$',
         '(?i)^Dell Data Vault Processor$',
         '(?i)^Dell Data Vault Service API$',
+        '(?i)^Dell Digital Delivery Service$',
         '(?i)^Dell SupportAssist$',
         '(?i)^Dell SupportAssist Remediation$',
         '(?i)^Dell TechHub$'
@@ -515,6 +573,7 @@ function Remove-PTIDellBloatware {
         'SupportAssistRemediationService',
         'DellSupportAssistRemediationService',
         'DellSupportAssistRemediation',
+        'DeliveryService',
         'DellTechHub',
         'ServiceShell',
         'DellDataVault',
@@ -532,8 +591,52 @@ function Remove-PTIDellBloatware {
         }
     }
 
+    $dellRemovalPlan = @(
+        @{
+            Name = 'Dell SupportAssist'
+            DisplayNamePatterns = @('(?i)^Dell SupportAssist$')
+            AppxPatterns = @('Dell.SupportAssistforPCs')
+        },
+        @{
+            Name = 'Dell SupportAssist Remediation'
+            DisplayNamePatterns = @('(?i)^Dell SupportAssist Remediation$')
+        },
+        @{
+            Name = 'Dell SupportAssist OS Recovery Plugin for Dell Update'
+            DisplayNamePatterns = @('(?i)^Dell SupportAssist OS Recovery Plugin for Dell Update$')
+        },
+        @{
+            Name = 'Dell Digital Delivery'
+            DisplayNamePatterns = @('(?i)^Dell Digital Delivery$')
+        },
+        @{
+            Name = 'Dell Core Services'
+            DisplayNamePatterns = @('(?i)^Dell Core Services$')
+        },
+        @{
+            Name = 'Dell Command | Update'
+            DisplayNamePatterns = @('(?i)^Dell Command \| Update$')
+            AppxPatterns = @('DellInc.DellCommandUpdate')
+        },
+        @{
+            Name = 'Other Dell bloatware'
+            DisplayNamePatterns = @(
+                '(?i)^Dell Optimizer(?: Service)?\b',
+                '(?i)^Dell SupportAssist OS Recovery\b',
+                '(?i)^Dell Customer Connect\b',
+                '(?i)^Dell Update(?: for Windows)?\b',
+                '(?i)^My Dell\b',
+                '(?i)^Dell TechHub\b',
+                '(?i)^Dell Power Manager\b'
+            )
+        }
+    )
+
     Write-PTILog -Message 'Running PTI Dell application removal pass.' -LogPath $LogPath
-    Invoke-UninstallByDisplayName -DisplayNamePatterns $dellPatterns
+    foreach ($packageGroup in $dellRemovalPlan) {
+        Write-PTILog -Message "Processing Dell removal group [$($packageGroup.Name)]." -LogPath $LogPath
+        Remove-PTIDellPackageTargets -DisplayNamePatterns $packageGroup.DisplayNamePatterns -AppxPatterns $packageGroup.AppxPatterns
+    }
 
     if (-not (Wait-PTIProgramRemoval -DisplayNamePatterns $dellPatterns -TimeoutSeconds 60 -PollSeconds 5)) {
         $remainingDellApps = @(Get-InstalledProgramMatches -DisplayNamePatterns $dellPatterns | Select-Object -ExpandProperty DisplayName -Unique)
@@ -575,7 +678,6 @@ function Invoke-PTIOneDriveUninstall {
     if ($exitCode -in @(1641, 3010)) {
         Set-PTIRebootRequired -Reason "OneDrive uninstall requested reboot: $InstallerPath"
     }
-}
 }
 
 function Install-PTIPerUserOneDriveCleanup {
@@ -695,7 +797,12 @@ if (-not $SkipDellCleanup) {
     $dellCleanupScript = Join-Path -Path $PSScriptRoot -ChildPath '..\dell-cleanup.ps1'
     if (Test-Path -LiteralPath $dellCleanupScript) {
         if ($PSCmdlet.ShouldProcess('Dell applications', 'Run Dell cleanup helper')) {
-            & $dellCleanupScript
+            try {
+                & $dellCleanupScript
+            }
+            catch {
+                Write-PTILog -Message "Dell cleanup helper failed but PTI targeted cleanup will continue: $($_.Exception.Message)" -Level 'WARN' -LogPath $LogPath
+            }
         }
     }
     else {
