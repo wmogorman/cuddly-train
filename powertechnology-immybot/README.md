@@ -1,15 +1,86 @@
 # Power Technology ImmyBot Assets
 
-This folder contains the customer-specific PowerShell assets for the Power Technology onboarding plan. It is structured around one workstation baseline, one shared printer script, one generic staged-installer wrapper, and explicit placeholders for blocked legacy packages.
+This folder is now organized for an Immy-friendly `single zip payload + thin wrapper` workflow.
 
-## Files
+The real PTI runtime scripts stay here in source control. You build one zip payload from them, upload that zip to an Immy `File` parameter, and paste only the small wrapper scripts into Immy.
 
-- `pti-workstation-baseline.ps1`: debloat, OneDrive removal, Cortana disablement, Dell cleanup hook, optional security cleanup hook, and Remote Assistance enablement.
-- `pti-install-printers.ps1`: stages printer drivers from UNC, imports them, and creates the required TCP/IP queues.
-- `pti-stage-and-install-package.ps1`: copies a package from UNC to local cache and runs a validated installer command.
-- `pti-remove-unapproved-security.ps1`: wraps `..\Remove-LegacyAV.ps1` and only removes products that do not match the approved allowlist.
-- `pti-install-office2007-standard.ps1`, `pti-install-office2007-professional.ps1`, `pti-install-sonicwall-vpn.ps1`: thin wrappers over the staged-installer helper.
-- `pti-install-goldmine92.ps1`, `pti-install-misys64.ps1`, `pti-install-accpac61a.ps1`, `pti-install-crystal.ps1`, `pti-install-sql-odbc.ps1`: blocked placeholders that should fail fast until William's missing notes arrive.
+## Layout
+
+- `pti-*.ps1`
+  Runtime scripts that execute on the endpoint after the payload zip is extracted.
+- `build-pti-immy-payload.ps1`
+  Creates the uploadable payload zip with the expected structure for Immy.
+- `immy-wrappers\*.ps1`
+  Thin scripts intended for the Immy script editor.
+- `immy-wrappers\README.md`
+  Quick wrapper usage notes.
+
+## Payload Structure
+
+`build-pti-immy-payload.ps1` produces a zip with this shape:
+
+```text
+PTI-Immy-Payload.zip
+|- payload\
+|  |- pti-common.ps1
+|  |- pti-workstation-baseline.ps1
+|  |- pti-install-printers.ps1
+|  |- pti-stage-and-install-package.ps1
+|  |- pti-install-office2007-standard.ps1
+|  |- pti-install-office2007-professional.ps1
+|  |- pti-install-sonicwall-vpn.ps1
+|  |- pti-remove-unapproved-security.ps1
+|  |- pti-install-goldmine92.ps1
+|  |- pti-install-misys64.ps1
+|  |- pti-install-accpac61a.ps1
+|  |- pti-install-crystal.ps1
+|  |- pti-install-sql-odbc.ps1
+|  |- pti-blocked-package.ps1
+|- dell-cleanup.ps1
+|- Remove-LegacyAV.ps1
+```
+
+That top-level helper placement is intentional. The PTI runtime scripts already resolve `..\dell-cleanup.ps1` and `..\Remove-LegacyAV.ps1` from inside `payload`.
+
+## Build The Payload
+
+Run:
+
+```powershell
+.\build-pti-immy-payload.ps1 -Force
+```
+
+Default output:
+
+- `powertechnology-immybot\dist\PTI-Immy-Payload.zip`
+
+## How To Use In Immy
+
+Use `System` execution context for these wrappers. Do not use `Metascript` for the endpoint-local PTI tasks.
+
+Per the Immy scripting guide, if a `File` parameter is named `PTIPayloadZip`, Immy also exposes the extracted folder path as `PTIPayloadZipFolder`. The wrapper scripts assume that exact parameter name.
+
+Recommended pattern:
+
+1. Build the zip with `build-pti-immy-payload.ps1`.
+2. In Immy, create or edit the task/software configuration task.
+3. Add a `File` parameter named `PTIPayloadZip`.
+4. Upload the built zip.
+5. Paste the matching script from `immy-wrappers`.
+6. Add the business parameters needed by that wrapper.
+
+## Wrapper Map
+
+- `immy-wrappers\pti-workstation-baseline-wrapper.ps1`
+  Uses the payload baseline script for debloat, OneDrive, Cortana, Dell cleanup, guarded AV cleanup, and Remote Assistance.
+- `immy-wrappers\pti-install-printers-wrapper.ps1`
+  Uses the payload printer script for driver staging and queue creation.
+- `immy-wrappers\pti-install-office2007-standard-wrapper.ps1`
+  Uses the payload Office 2007 Standard installer wrapper.
+- `immy-wrappers\pti-install-office2007-professional-wrapper.ps1`
+  Uses the payload Office 2007 Professional installer wrapper.
+- `immy-wrappers\pti-install-sonicwall-vpn-wrapper.ps1`
+  Uses the payload SonicWall VPN installer wrapper.
 
 ## Immy Fields And Variables
 
@@ -50,151 +121,32 @@ Recommended secure Immy variables:
 - `PTI_SonicWallVpnInstallerRelativePath`
 - `PTI_SonicWallVpnInstallArguments`
 
-## Package Map
+## Recommended Immy Shape
 
-Sequence the built-in Immy packages for domain join to `ad.powertechnology.com`, Adobe Reader, Chrome, and any reboot handling before the custom PTI scripts below.
+Sequence Immy built-ins for domain join to `ad.powertechnology.com`, Adobe Reader, Chrome, and any reboot handling before the PTI baseline wrapper.
 
-`PTI Workstation Baseline`
+Suggested usage:
 
-```powershell
-.\pti-workstation-baseline.ps1 `
-  -ApprovedSecurityProducts $env:PTI_ApprovedSecurityProducts.Split(';') `
-  -EnableUnauthorizedSecurityRemoval
-```
-
-Upload `..\dell-cleanup.ps1` and `..\Remove-LegacyAV.ps1` with this package, or keep the package contents arranged so those relative paths still exist.
-
-`PTI Printer Driver Stage`
-
-```powershell
-.\pti-install-printers.ps1 `
-  -InstallSet DriverStage `
-  -LexmarkDriverSourcePath $env:PTI_LexmarkDriverSourcePath `
-  -LexmarkInfRelativePath $env:PTI_LexmarkInfRelativePath `
-  -LexmarkDriverName $env:PTI_LexmarkDriverName `
-  -HpDriverSourcePath $env:PTI_HpDriverSourcePath `
-  -HpInfRelativePath $env:PTI_HpInfRelativePath `
-  -HpDriverName $env:PTI_HpDriverName `
-  -ShareUserName $env:PTI_ShareUserName `
-  -SharePassword $env:PTI_SharePassword
-```
-
-`PTI Printer - Shared Copiers`
-
-```powershell
-.\pti-install-printers.ps1 `
-  -InstallSet SharedCopiers `
-  -LexmarkDriverSourcePath $env:PTI_LexmarkDriverSourcePath `
-  -LexmarkInfRelativePath $env:PTI_LexmarkInfRelativePath `
-  -LexmarkDriverName $env:PTI_LexmarkDriverName `
-  -ShareUserName $env:PTI_ShareUserName `
-  -SharePassword $env:PTI_SharePassword
-```
-
-`PTI Printer - Scheduling`
-
-```powershell
-.\pti-install-printers.ps1 `
-  -InstallSet Scheduling `
-  -LexmarkDriverSourcePath $env:PTI_LexmarkDriverSourcePath `
-  -LexmarkInfRelativePath $env:PTI_LexmarkInfRelativePath `
-  -LexmarkDriverName $env:PTI_LexmarkDriverName `
-  -ShareUserName $env:PTI_ShareUserName `
-  -SharePassword $env:PTI_SharePassword
-```
-
-`PTI Printer - Sales`
-
-```powershell
-.\pti-install-printers.ps1 `
-  -InstallSet Sales `
-  -LexmarkDriverSourcePath $env:PTI_LexmarkDriverSourcePath `
-  -LexmarkInfRelativePath $env:PTI_LexmarkInfRelativePath `
-  -LexmarkDriverName $env:PTI_LexmarkDriverName `
-  -ShareUserName $env:PTI_ShareUserName `
-  -SharePassword $env:PTI_SharePassword
-```
-
-`PTI Printer - Accounting`
-
-```powershell
-.\pti-install-printers.ps1 `
-  -InstallSet Accounting `
-  -LexmarkDriverSourcePath $env:PTI_LexmarkDriverSourcePath `
-  -LexmarkInfRelativePath $env:PTI_LexmarkInfRelativePath `
-  -LexmarkDriverName $env:PTI_LexmarkDriverName `
-  -ShareUserName $env:PTI_ShareUserName `
-  -SharePassword $env:PTI_SharePassword
-```
-
-`PTI Printer - HP5000`
-
-```powershell
-.\pti-install-printers.ps1 `
-  -InstallSet Hp5000 `
-  -HpDriverSourcePath $env:PTI_HpDriverSourcePath `
-  -HpInfRelativePath $env:PTI_HpInfRelativePath `
-  -HpDriverName $env:PTI_HpDriverName `
-  -ShareUserName $env:PTI_ShareUserName `
-  -SharePassword $env:PTI_SharePassword
-```
-
-`PTI Department Printer Bundle`
-
-```powershell
-.\pti-install-printers.ps1 `
-  -InstallSet DepartmentBundle `
-  -PrimaryDepartment $env:PTI_PrimaryDepartment `
-  -NeedsAccountingPrinter:$([System.Convert]::ToBoolean($env:PTI_NeedsAccountingPrinter)) `
-  -NeedsHp5000:$([System.Convert]::ToBoolean($env:PTI_NeedsHp5000)) `
-  -LexmarkDriverSourcePath $env:PTI_LexmarkDriverSourcePath `
-  -LexmarkInfRelativePath $env:PTI_LexmarkInfRelativePath `
-  -LexmarkDriverName $env:PTI_LexmarkDriverName `
-  -HpDriverSourcePath $env:PTI_HpDriverSourcePath `
-  -HpInfRelativePath $env:PTI_HpInfRelativePath `
-  -HpDriverName $env:PTI_HpDriverName `
-  -ShareUserName $env:PTI_ShareUserName `
-  -SharePassword $env:PTI_SharePassword
-```
-
-`PTI Office 2007 Standard`
-
-Target this where Office 2007 Standard is still required and no Access exception is needed.
-
-```powershell
-.\pti-install-office2007-standard.ps1 `
-  -SourcePath $env:PTI_Office2007StandardSourcePath `
-  -InstallerRelativePath $env:PTI_Office2007StandardInstallerRelativePath `
-  -InstallArguments $env:PTI_Office2007StandardInstallArguments `
-  -ShareUserName $env:PTI_ShareUserName `
-  -SharePassword $env:PTI_SharePassword
-```
-
-`PTI Office 2007 Professional`
-
-Target this for `Production` or any device with `PTI_NeedsAccess`.
-
-```powershell
-.\pti-install-office2007-professional.ps1 `
-  -SourcePath $env:PTI_Office2007ProfessionalSourcePath `
-  -InstallerRelativePath $env:PTI_Office2007ProfessionalInstallerRelativePath `
-  -InstallArguments $env:PTI_Office2007ProfessionalInstallArguments `
-  -ShareUserName $env:PTI_ShareUserName `
-  -SharePassword $env:PTI_SharePassword
-```
-
-`PTI SonicWall VPN`
-
-Target this for `Sales`, `Management`, or any device with `PTI_NeedsSonicWallVpn`.
-
-```powershell
-.\pti-install-sonicwall-vpn.ps1 `
-  -SourcePath $env:PTI_SonicWallVpnSourcePath `
-  -InstallerRelativePath $env:PTI_SonicWallVpnInstallerRelativePath `
-  -InstallArguments $env:PTI_SonicWallVpnInstallArguments `
-  -ShareUserName $env:PTI_ShareUserName `
-  -SharePassword $env:PTI_SharePassword
-```
+- `PTI Workstation Baseline`
+  Task script: `immy-wrappers\pti-workstation-baseline-wrapper.ps1`
+- `PTI Printer Driver Stage`
+  Task script: `immy-wrappers\pti-install-printers-wrapper.ps1`
+- `PTI Printer - Shared Copiers`
+  Task script: `immy-wrappers\pti-install-printers-wrapper.ps1`
+- `PTI Printer - Scheduling`
+  Task script: `immy-wrappers\pti-install-printers-wrapper.ps1`
+- `PTI Printer - Sales`
+  Task script: `immy-wrappers\pti-install-printers-wrapper.ps1`
+- `PTI Printer - Accounting`
+  Task script: `immy-wrappers\pti-install-printers-wrapper.ps1`
+- `PTI Printer - HP5000`
+  Task script: `immy-wrappers\pti-install-printers-wrapper.ps1`
+- `PTI Office 2007 Standard`
+  Software action or configuration task script: `immy-wrappers\pti-install-office2007-standard-wrapper.ps1`
+- `PTI Office 2007 Professional`
+  Software action or configuration task script: `immy-wrappers\pti-install-office2007-professional-wrapper.ps1`
+- `PTI SonicWall VPN`
+  Software action or configuration task script: `immy-wrappers\pti-install-sonicwall-vpn-wrapper.ps1`
 
 ## Blocked Packages
 
@@ -206,4 +158,4 @@ Do not deploy these until William's notes and validated install commands are ava
 - Crystal Runtime or Editor
 - SQL ODBC drivers and DSN configuration
 
-The placeholder scripts are intentional guard rails. If one of those packages runs now, it should fail with a clear message instead of making unsupported assumptions about silent install switches or post-install configuration.
+The placeholder payload scripts are intentional guard rails. If one of those packages runs now, it should fail with a clear message instead of making unsupported assumptions about silent install switches or post-install configuration.
