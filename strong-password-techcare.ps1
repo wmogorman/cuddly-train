@@ -15,7 +15,7 @@ to prevent `ShouldProcess` confirmation prompts from hanging execution.
 [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'High')]
 param(
     [ValidateRange(1, 3650)]
-    [int]$MaxPasswordAgeDays = 90,
+    [int]$MaxPasswordAgeDays = 365,
 
     [ValidateRange(0, 3650)]
     [int]$MinPasswordAgeDays = 1,
