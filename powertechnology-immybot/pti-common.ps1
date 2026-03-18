@@ -196,6 +196,9 @@ function Get-PTIInstalledPrograms {
     )
 
     return Get-ItemProperty -Path $registryPaths -ErrorAction SilentlyContinue |
-        Where-Object { -not [string]::IsNullOrWhiteSpace($_.DisplayName) } |
+        Where-Object {
+            $displayNameProperty = $_.PSObject.Properties['DisplayName']
+            $null -ne $displayNameProperty -and -not [string]::IsNullOrWhiteSpace([string]$displayNameProperty.Value)
+        } |
         Select-Object DisplayName, Publisher, DisplayVersion, UninstallString, QuietUninstallString, PSChildName, WindowsInstaller
 }

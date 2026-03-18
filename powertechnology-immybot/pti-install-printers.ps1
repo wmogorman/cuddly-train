@@ -91,7 +91,7 @@ function Resolve-PrinterQueueKeys {
         }
     }
 
-    return @($keys.ToArray() | Sort-Object)
+    return @($keys | Sort-Object)
 }
 
 function Get-DriverFamiliesForQueueKeys {
@@ -111,7 +111,7 @@ function Get-DriverFamiliesForQueueKeys {
         }
     }
 
-    return @($families.ToArray() | Sort-Object)
+    return @($families | Sort-Object)
 }
 
 function Install-PTIPrinterDriverFamily {
@@ -218,8 +218,8 @@ $queueDefinitions = @{
     }
 }
 
-$requestedQueueKeys = Resolve-PrinterQueueKeys -RequestedSets $InstallSet -Department $PrimaryDepartment -InstallAccounting $NeedsAccountingPrinter.IsPresent -InstallHp5000 $NeedsHp5000.IsPresent
-$requiredFamilies = Get-DriverFamiliesForQueueKeys -QueueKeys $requestedQueueKeys
+$requestedQueueKeys = @(Resolve-PrinterQueueKeys -RequestedSets $InstallSet -Department $PrimaryDepartment -InstallAccounting $NeedsAccountingPrinter.IsPresent -InstallHp5000 $NeedsHp5000.IsPresent)
+$requiredFamilies = @(Get-DriverFamiliesForQueueKeys -QueueKeys $requestedQueueKeys)
 
 if ($InstallSet -contains 'DriverStage' -and $requiredFamilies.Count -eq 0) {
     if (-not [string]::IsNullOrWhiteSpace($LexmarkDriverSourcePath)) {

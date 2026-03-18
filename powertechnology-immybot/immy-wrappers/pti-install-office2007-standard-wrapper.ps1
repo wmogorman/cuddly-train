@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
-    [string]$PTIPayloadZipFolder,
+    [string]$PTIPayloadZip,
 
     [Parameter(Mandatory = $true)]
     [string]$SourcePath,
@@ -26,6 +26,34 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+function Resolve-PTIPayloadFolder {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ZipPath
+    )
+
+    $folderVariable = Get-Variable -Name 'PTIPayloadZipFolder' -ValueOnly -ErrorAction SilentlyContinue
+    if (-not [string]::IsNullOrWhiteSpace($folderVariable)) {
+        return $folderVariable
+    }
+
+    if (Test-Path -LiteralPath $ZipPath -PathType Container) {
+        return $ZipPath
+    }
+
+    if (Test-Path -LiteralPath $ZipPath -PathType Leaf) {
+        $zipItem = Get-Item -LiteralPath $ZipPath -ErrorAction Stop
+        $extractRoot = Join-Path -Path $env:TEMP -ChildPath ('pti-immy-payload-' + $zipItem.BaseName + '-' + $zipItem.LastWriteTimeUtc.Ticks)
+        if (-not (Test-Path -LiteralPath $extractRoot)) {
+            Expand-Archive -LiteralPath $ZipPath -DestinationPath $extractRoot -Force
+        }
+
+        return $extractRoot
+    }
+
+    throw 'PTIPayloadZipFolder was not available at runtime. Ensure PTIPayloadZip is a File parameter that points to the PTI payload zip.'
+}
+
 function Get-PTIPayloadEntrypoint {
     param(
         [Parameter(Mandatory = $true)]
@@ -44,7 +72,8 @@ function Get-PTIPayloadEntrypoint {
     return $scriptPath
 }
 
-$entrypoint = Get-PTIPayloadEntrypoint -PayloadFolder $PTIPayloadZipFolder -ScriptName 'pti-install-office2007-standard.ps1'
+$payloadFolder = Resolve-PTIPayloadFolder -ZipPath $PTIPayloadZip
+$entrypoint = Get-PTIPayloadEntrypoint -PayloadFolder $payloadFolder -ScriptName 'pti-install-office2007-standard.ps1'
 
 & $entrypoint `
     -SourcePath $SourcePath `

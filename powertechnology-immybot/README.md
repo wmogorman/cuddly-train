@@ -58,7 +58,7 @@ Default output:
 
 Use `System` execution context for these wrappers. Do not use `Metascript` for the endpoint-local PTI tasks.
 
-Per the Immy scripting guide, if a `File` parameter is named `PTIPayloadZip`, Immy also exposes the extracted folder path as `PTIPayloadZipFolder`. The wrapper scripts assume that exact parameter name.
+Per the Immy scripting guide, if a `File` parameter is named `PTIPayloadZip`, Immy also exposes the extracted folder path as `PTIPayloadZipFolder`. The wrapper scripts are now written so the task parameter only needs to be named `PTIPayloadZip`.
 
 Recommended pattern:
 
@@ -66,15 +66,16 @@ Recommended pattern:
 2. In Immy, create or edit the task/software configuration task.
 3. Add a `File` parameter named `PTIPayloadZip`.
 4. Upload the built zip.
-5. Paste the matching script from `immy-wrappers`.
-6. Add the business parameters needed by that wrapper.
+5. For baseline and printers, choose `Use combined script` and paste the matching script from `immy-wrappers`.
+6. For software wrappers, paste the wrapper into the software action or configuration task script.
+7. Add the business parameters needed by that wrapper.
 
 ## Wrapper Map
 
 - `immy-wrappers\pti-workstation-baseline-wrapper.ps1`
-  Uses the payload baseline script for debloat, OneDrive, Cortana, Dell cleanup, guarded AV cleanup, and Remote Assistance.
+  Combined `Test`/`Set` task script for debloat, OneDrive, Cortana, Dell cleanup, guarded AV cleanup, and Remote Assistance.
 - `immy-wrappers\pti-install-printers-wrapper.ps1`
-  Uses the payload printer script for driver staging and queue creation.
+  Combined `Test`/`Set` task script for driver staging and queue creation.
 - `immy-wrappers\pti-install-office2007-standard-wrapper.ps1`
   Uses the payload Office 2007 Standard installer wrapper.
 - `immy-wrappers\pti-install-office2007-professional-wrapper.ps1`

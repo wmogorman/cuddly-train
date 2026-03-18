@@ -1,6 +1,6 @@
 # PTI Immy Wrappers
 
-These are the thin scripts intended to be pasted into Immy tasks or software action scripts. They assume you created a `File` parameter named `PTIPayloadZip`. Per Immy's scripting guide, uploading a zip file also creates the extracted folder variable `PTIPayloadZipFolder`.
+These are the scripts intended to be pasted into Immy tasks or software action scripts. They assume you created a `File` parameter named `PTIPayloadZip`. At runtime the wrappers look for Immy's extracted-folder companion variable `PTIPayloadZipFolder` and, during local testing, can also accept either an extracted folder path or the zip file path itself.
 
 All wrappers should run in the `System` execution context because they target the endpoint directly.
 
@@ -17,5 +17,6 @@ All wrappers should run in the `System` execution context because they target th
 1. Build the payload zip with `..\build-pti-immy-payload.ps1`.
 2. Add a `File` parameter named `PTIPayloadZip` to the Immy task or configuration task.
 3. Upload the generated zip to that file parameter.
-4. Paste the relevant wrapper script into the Immy script editor.
-5. Add the remaining business parameters to the task and map them to customer variables as needed.
+4. For baseline and printers, select `Use combined script` and paste the relevant wrapper script into the combined editor.
+5. For software wrappers, paste the wrapper into the appropriate software action script.
+6. Add the remaining business parameters to the task and map them to customer variables as needed.
