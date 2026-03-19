@@ -37,6 +37,18 @@ param(
 
     [switch]$NeedsHp5000,
 
+    [string]$LexmarkCopierDriverSourcePath,
+
+    [string]$LexmarkCopierInfRelativePath,
+
+    [string]$LexmarkCopierDriverName,
+
+    [string]$LexmarkMonoDriverSourcePath,
+
+    [string]$LexmarkMonoInfRelativePath,
+
+    [string]$LexmarkMonoDriverName,
+
     [string]$LexmarkDriverSourcePath,
 
     [string]$LexmarkInfRelativePath,
@@ -171,6 +183,41 @@ function Resolve-PrinterQueueKeys {
     return @($keys | Sort-Object)
 }
 
+function Get-PTIPrinterDriverConfiguration {
+    param(
+        [Parameter(Mandatory = $true)]
+        [ValidateSet('LexmarkCopier', 'LexmarkMono', 'HP')]
+        [string]$Family
+    )
+
+    switch ($Family) {
+        'LexmarkCopier' {
+            return [pscustomobject]@{
+                Family          = $Family
+                SourcePath      = if (-not [string]::IsNullOrWhiteSpace($LexmarkCopierDriverSourcePath)) { $LexmarkCopierDriverSourcePath } else { $LexmarkDriverSourcePath }
+                InfRelativePath = if (-not [string]::IsNullOrWhiteSpace($LexmarkCopierInfRelativePath)) { $LexmarkCopierInfRelativePath } else { $LexmarkInfRelativePath }
+                DriverName      = if (-not [string]::IsNullOrWhiteSpace($LexmarkCopierDriverName)) { $LexmarkCopierDriverName } else { $LexmarkDriverName }
+            }
+        }
+        'LexmarkMono' {
+            return [pscustomobject]@{
+                Family          = $Family
+                SourcePath      = if (-not [string]::IsNullOrWhiteSpace($LexmarkMonoDriverSourcePath)) { $LexmarkMonoDriverSourcePath } else { $LexmarkDriverSourcePath }
+                InfRelativePath = if (-not [string]::IsNullOrWhiteSpace($LexmarkMonoInfRelativePath)) { $LexmarkMonoInfRelativePath } else { $LexmarkInfRelativePath }
+                DriverName      = if (-not [string]::IsNullOrWhiteSpace($LexmarkMonoDriverName)) { $LexmarkMonoDriverName } else { $LexmarkDriverName }
+            }
+        }
+        'HP' {
+            return [pscustomobject]@{
+                Family          = $Family
+                SourcePath      = $HpDriverSourcePath
+                InfRelativePath = $HpInfRelativePath
+                DriverName      = $HpDriverName
+            }
+        }
+    }
+}
+
 function Get-DriverFamiliesForQueueKeys {
     param(
         [string[]]$QueueKeys
@@ -179,11 +226,11 @@ function Get-DriverFamiliesForQueueKeys {
     $families = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
     foreach ($queueKey in $QueueKeys) {
         switch ($queueKey) {
-            'FrontCopier' { [void]$families.Add('Lexmark') }
-            'Copier2' { [void]$families.Add('Lexmark') }
-            'Scheduling' { [void]$families.Add('Lexmark') }
-            'Sales' { [void]$families.Add('Lexmark') }
-            'Accounting' { [void]$families.Add('Lexmark') }
+            'FrontCopier' { [void]$families.Add('LexmarkCopier') }
+            'Copier2' { [void]$families.Add('LexmarkCopier') }
+            'Scheduling' { [void]$families.Add('LexmarkMono') }
+            'Sales' { [void]$families.Add('LexmarkMono') }
+            'Accounting' { [void]$families.Add('LexmarkMono') }
             'Hp5000' { [void]$families.Add('HP') }
         }
     }
@@ -197,27 +244,27 @@ function Test-PTIPrinterCompliance {
         FrontCopier = @{
             Name        = 'Lexmark XS658de Front Copier'
             IpAddress   = '192.168.1.64'
-            DriverGroup = 'Lexmark'
+            DriverGroup = 'LexmarkCopier'
         }
         Copier2 = @{
             Name        = 'Lexmark XS658de Copier #2'
             IpAddress   = '192.168.1.65'
-            DriverGroup = 'Lexmark'
+            DriverGroup = 'LexmarkCopier'
         }
         Scheduling = @{
             Name        = 'Scheduling MS810dn'
             IpAddress   = '192.168.1.13'
-            DriverGroup = 'Lexmark'
+            DriverGroup = 'LexmarkMono'
         }
         Sales = @{
             Name        = 'Sales MS810dn'
             IpAddress   = '192.168.1.55'
-            DriverGroup = 'Lexmark'
+            DriverGroup = 'LexmarkMono'
         }
         Accounting = @{
             Name        = 'Accounting MS810dn'
             IpAddress   = '192.168.1.66'
-            DriverGroup = 'Lexmark'
+            DriverGroup = 'LexmarkMono'
         }
         Hp5000 = @{
             Name        = 'HP LaserJet 5000DN'
@@ -230,8 +277,12 @@ function Test-PTIPrinterCompliance {
     $requiredFamilies = @(Get-DriverFamiliesForQueueKeys -QueueKeys $queueKeys)
 
     if ($InstallSet -contains 'DriverStage' -and $requiredFamilies.Count -eq 0) {
-        if (-not [string]::IsNullOrWhiteSpace($LexmarkDriverName)) {
-            $requiredFamilies += 'Lexmark'
+        if (-not [string]::IsNullOrWhiteSpace((Get-PTIPrinterDriverConfiguration -Family 'LexmarkCopier').DriverName)) {
+            $requiredFamilies += 'LexmarkCopier'
+        }
+
+        if (-not [string]::IsNullOrWhiteSpace((Get-PTIPrinterDriverConfiguration -Family 'LexmarkMono').DriverName)) {
+            $requiredFamilies += 'LexmarkMono'
         }
 
         if (-not [string]::IsNullOrWhiteSpace($HpDriverName)) {
@@ -240,11 +291,7 @@ function Test-PTIPrinterCompliance {
     }
 
     foreach ($family in ($requiredFamilies | Sort-Object -Unique)) {
-        $driverName = switch ($family) {
-            'Lexmark' { $LexmarkDriverName }
-            'HP' { $HpDriverName }
-            default { $null }
-        }
+        $driverName = (Get-PTIPrinterDriverConfiguration -Family $family).DriverName
 
         if ([string]::IsNullOrWhiteSpace($driverName)) {
             $issues.Add("Driver name is missing for family [$family].") | Out-Null
@@ -263,11 +310,7 @@ function Test-PTIPrinterCompliance {
             continue
         }
 
-        $expectedDriver = switch ($queue.DriverGroup) {
-            'Lexmark' { $LexmarkDriverName }
-            'HP' { $HpDriverName }
-            default { $null }
-        }
+        $expectedDriver = (Get-PTIPrinterDriverConfiguration -Family $queue.DriverGroup).DriverName
 
         $printer = Get-Printer -Name $queue.Name -ErrorAction SilentlyContinue
         if (-not $printer) {
@@ -329,6 +372,12 @@ switch -Regex ($Method) {
             -PrimaryDepartment $PrimaryDepartment `
             -NeedsAccountingPrinter:$NeedsAccountingPrinter.IsPresent `
             -NeedsHp5000:$NeedsHp5000.IsPresent `
+            -LexmarkCopierDriverSourcePath $LexmarkCopierDriverSourcePath `
+            -LexmarkCopierInfRelativePath $LexmarkCopierInfRelativePath `
+            -LexmarkCopierDriverName $LexmarkCopierDriverName `
+            -LexmarkMonoDriverSourcePath $LexmarkMonoDriverSourcePath `
+            -LexmarkMonoInfRelativePath $LexmarkMonoInfRelativePath `
+            -LexmarkMonoDriverName $LexmarkMonoDriverName `
             -LexmarkDriverSourcePath $LexmarkDriverSourcePath `
             -LexmarkInfRelativePath $LexmarkInfRelativePath `
             -LexmarkDriverName $LexmarkDriverName `

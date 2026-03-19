@@ -11,6 +11,18 @@ param(
 
     [switch]$NeedsHp5000,
 
+    [string]$LexmarkCopierDriverSourcePath,
+
+    [string]$LexmarkCopierInfRelativePath,
+
+    [string]$LexmarkCopierDriverName,
+
+    [string]$LexmarkMonoDriverSourcePath,
+
+    [string]$LexmarkMonoInfRelativePath,
+
+    [string]$LexmarkMonoDriverName,
+
     [string]$LexmarkDriverSourcePath,
 
     [string]$LexmarkInfRelativePath,
@@ -36,6 +48,41 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 . (Join-Path -Path $PSScriptRoot -ChildPath 'pti-common.ps1')
+
+function Get-PTIPrinterDriverConfiguration {
+    param(
+        [Parameter(Mandatory = $true)]
+        [ValidateSet('LexmarkCopier', 'LexmarkMono', 'HP')]
+        [string]$Family
+    )
+
+    switch ($Family) {
+        'LexmarkCopier' {
+            return [pscustomobject]@{
+                Family          = $Family
+                SourcePath      = if (-not [string]::IsNullOrWhiteSpace($LexmarkCopierDriverSourcePath)) { $LexmarkCopierDriverSourcePath } else { $LexmarkDriverSourcePath }
+                InfRelativePath = if (-not [string]::IsNullOrWhiteSpace($LexmarkCopierInfRelativePath)) { $LexmarkCopierInfRelativePath } else { $LexmarkInfRelativePath }
+                DriverName      = if (-not [string]::IsNullOrWhiteSpace($LexmarkCopierDriverName)) { $LexmarkCopierDriverName } else { $LexmarkDriverName }
+            }
+        }
+        'LexmarkMono' {
+            return [pscustomobject]@{
+                Family          = $Family
+                SourcePath      = if (-not [string]::IsNullOrWhiteSpace($LexmarkMonoDriverSourcePath)) { $LexmarkMonoDriverSourcePath } else { $LexmarkDriverSourcePath }
+                InfRelativePath = if (-not [string]::IsNullOrWhiteSpace($LexmarkMonoInfRelativePath)) { $LexmarkMonoInfRelativePath } else { $LexmarkInfRelativePath }
+                DriverName      = if (-not [string]::IsNullOrWhiteSpace($LexmarkMonoDriverName)) { $LexmarkMonoDriverName } else { $LexmarkDriverName }
+            }
+        }
+        'HP' {
+            return [pscustomobject]@{
+                Family          = $Family
+                SourcePath      = $HpDriverSourcePath
+                InfRelativePath = $HpInfRelativePath
+                DriverName      = $HpDriverName
+            }
+        }
+    }
+}
 
 function Resolve-PrinterQueueKeys {
     param(
@@ -102,11 +149,11 @@ function Get-DriverFamiliesForQueueKeys {
     $families = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
     foreach ($queueKey in $QueueKeys) {
         switch ($queueKey) {
-            'FrontCopier' { [void]$families.Add('Lexmark') }
-            'Copier2' { [void]$families.Add('Lexmark') }
-            'Scheduling' { [void]$families.Add('Lexmark') }
-            'Sales' { [void]$families.Add('Lexmark') }
-            'Accounting' { [void]$families.Add('Lexmark') }
+            'FrontCopier' { [void]$families.Add('LexmarkCopier') }
+            'Copier2' { [void]$families.Add('LexmarkCopier') }
+            'Scheduling' { [void]$families.Add('LexmarkMono') }
+            'Sales' { [void]$families.Add('LexmarkMono') }
+            'Accounting' { [void]$families.Add('LexmarkMono') }
             'Hp5000' { [void]$families.Add('HP') }
         }
     }
@@ -117,7 +164,7 @@ function Get-DriverFamiliesForQueueKeys {
 function Install-PTIPrinterDriverFamily {
     param(
         [Parameter(Mandatory = $true)]
-        [ValidateSet('Lexmark', 'HP')]
+        [ValidateSet('LexmarkCopier', 'LexmarkMono', 'HP')]
         [string]$Family,
 
         [string]$SourcePath,
@@ -136,7 +183,20 @@ function Install-PTIPrinterDriverFamily {
     if ($PSCmdlet.ShouldProcess($DriverName, "Stage and import $Family printer driver from [$SourcePath]")) {
         $familyStageRoot = Join-Path -Path $StageRoot -ChildPath $Family
         $stagedSource = Copy-PTISourceToCache -SourcePath $SourcePath -DestinationRoot $familyStageRoot -Credential $Credential -LogPath $LogPath
-        $infPath = Resolve-PTIRelativePath -BasePath $stagedSource -RelativePath $InfRelativePath
+        $resolvedSourceRoot = $stagedSource
+
+        if ((Test-Path -LiteralPath $stagedSource -PathType Leaf) -and ([System.IO.Path]::GetExtension($stagedSource) -ieq '.zip')) {
+            $expandedRoot = Join-Path -Path $familyStageRoot -ChildPath ([System.IO.Path]::GetFileNameWithoutExtension($stagedSource))
+            if (Test-Path -LiteralPath $expandedRoot) {
+                Remove-Item -LiteralPath $expandedRoot -Recurse -Force
+            }
+
+            Write-PTILog -Message "Expanding ZIP printer package [$stagedSource] to [$expandedRoot]." -LogPath $LogPath
+            Expand-Archive -LiteralPath $stagedSource -DestinationPath $expandedRoot -Force
+            $resolvedSourceRoot = $expandedRoot
+        }
+
+        $infPath = Resolve-PTIRelativePath -BasePath $resolvedSourceRoot -RelativePath $InfRelativePath
 
         if (-not (Test-Path -LiteralPath $infPath)) {
             throw "INF path not found for [$Family]: $infPath"
@@ -186,33 +246,33 @@ function Ensure-PTIPrinterQueue {
 }
 
 $queueDefinitions = @{
-    FrontCopier = @{
-        Name        = 'Lexmark XS658de Front Copier'
-        IpAddress   = '192.168.1.64'
-        DriverGroup = 'Lexmark'
-    }
-    Copier2 = @{
-        Name        = 'Lexmark XS658de Copier #2'
-        IpAddress   = '192.168.1.65'
-        DriverGroup = 'Lexmark'
-    }
-    Scheduling = @{
-        Name        = 'Scheduling MS810dn'
-        IpAddress   = '192.168.1.13'
-        DriverGroup = 'Lexmark'
-    }
-    Sales = @{
-        Name        = 'Sales MS810dn'
-        IpAddress   = '192.168.1.55'
-        DriverGroup = 'Lexmark'
-    }
-    Accounting = @{
-        Name        = 'Accounting MS810dn'
-        IpAddress   = '192.168.1.66'
-        DriverGroup = 'Lexmark'
-    }
-    Hp5000 = @{
-        Name        = 'HP LaserJet 5000DN'
+        FrontCopier = @{
+            Name        = 'Lexmark XS658de Front Copier'
+            IpAddress   = '192.168.1.64'
+            DriverGroup = 'LexmarkCopier'
+        }
+        Copier2 = @{
+            Name        = 'Lexmark XS658de Copier #2'
+            IpAddress   = '192.168.1.65'
+            DriverGroup = 'LexmarkCopier'
+        }
+        Scheduling = @{
+            Name        = 'Scheduling MS810dn'
+            IpAddress   = '192.168.1.13'
+            DriverGroup = 'LexmarkMono'
+        }
+        Sales = @{
+            Name        = 'Sales MS810dn'
+            IpAddress   = '192.168.1.55'
+            DriverGroup = 'LexmarkMono'
+        }
+        Accounting = @{
+            Name        = 'Accounting MS810dn'
+            IpAddress   = '192.168.1.66'
+            DriverGroup = 'LexmarkMono'
+        }
+        Hp5000 = @{
+            Name        = 'HP LaserJet 5000DN'
         IpAddress   = '192.168.1.128'
         DriverGroup = 'HP'
     }
@@ -222,8 +282,12 @@ $requestedQueueKeys = @(Resolve-PrinterQueueKeys -RequestedSets $InstallSet -Dep
 $requiredFamilies = @(Get-DriverFamiliesForQueueKeys -QueueKeys $requestedQueueKeys)
 
 if ($InstallSet -contains 'DriverStage' -and $requiredFamilies.Count -eq 0) {
-    if (-not [string]::IsNullOrWhiteSpace($LexmarkDriverSourcePath)) {
-        $requiredFamilies += 'Lexmark'
+    if (-not [string]::IsNullOrWhiteSpace((Get-PTIPrinterDriverConfiguration -Family 'LexmarkCopier').SourcePath)) {
+        $requiredFamilies += 'LexmarkCopier'
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace((Get-PTIPrinterDriverConfiguration -Family 'LexmarkMono').SourcePath)) {
+        $requiredFamilies += 'LexmarkMono'
     }
 
     if (-not [string]::IsNullOrWhiteSpace($HpDriverSourcePath)) {
@@ -234,14 +298,8 @@ if ($InstallSet -contains 'DriverStage' -and $requiredFamilies.Count -eq 0) {
 $credential = New-PTICredential -UserName $ShareUserName -Password $SharePassword
 
 foreach ($family in ($requiredFamilies | Sort-Object -Unique)) {
-    switch ($family) {
-        'Lexmark' {
-            Install-PTIPrinterDriverFamily -Family 'Lexmark' -SourcePath $LexmarkDriverSourcePath -InfRelativePath $LexmarkInfRelativePath -DriverName $LexmarkDriverName -Credential $credential
-        }
-        'HP' {
-            Install-PTIPrinterDriverFamily -Family 'HP' -SourcePath $HpDriverSourcePath -InfRelativePath $HpInfRelativePath -DriverName $HpDriverName -Credential $credential
-        }
-    }
+    $driverConfiguration = Get-PTIPrinterDriverConfiguration -Family $family
+    Install-PTIPrinterDriverFamily -Family $family -SourcePath $driverConfiguration.SourcePath -InfRelativePath $driverConfiguration.InfRelativePath -DriverName $driverConfiguration.DriverName -Credential $credential
 }
 
 foreach ($queueKey in $requestedQueueKeys) {
@@ -250,10 +308,10 @@ foreach ($queueKey in $requestedQueueKeys) {
         throw "Unknown queue key: $queueKey"
     }
 
-    $driverName = switch ($queue.DriverGroup) {
-        'Lexmark' { $LexmarkDriverName }
-        'HP' { $HpDriverName }
-        default { throw "Unknown driver group [$($queue.DriverGroup)] for queue [$queueKey]." }
+    $driverConfiguration = Get-PTIPrinterDriverConfiguration -Family $queue.DriverGroup
+    $driverName = $driverConfiguration.DriverName
+    if ([string]::IsNullOrWhiteSpace($driverName)) {
+        throw "Driver name is missing for queue [$queueKey] and family [$($queue.DriverGroup)]."
     }
 
     Ensure-PTIPrinterQueue -Name $queue.Name -IpAddress $queue.IpAddress -DriverName $driverName

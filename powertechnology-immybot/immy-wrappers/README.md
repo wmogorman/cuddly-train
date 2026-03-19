@@ -11,8 +11,10 @@ All wrappers should run in the `System` execution context because they target th
 - `pti-workstation-baseline-wrapper.ps1`
 - `pti-install-printers-wrapper.ps1`
 - `pti-collect-dell-diagnostics-wrapper.ps1`
+- `pti-collect-printer-driver-diagnostics-wrapper.ps1`
 
 `pti-collect-dell-diagnostics-wrapper.ps1` is a thin task wrapper you can run on a problem endpoint to export Dell uninstall metadata, services, processes, AppX packages, and relevant baseline log lines to `C:\ProgramData\PTI\Diagnostics\Dell`.
+- `pti-collect-printer-driver-diagnostics-wrapper.ps1` is a thin task wrapper you can run on a test endpoint to inventory the PTI printer-driver share, local printer queues, local printer drivers, and likely INF candidates to `C:\ProgramData\PTI\Diagnostics\Printers`.
 - `pti-install-office2007-standard-wrapper.ps1`
 - `pti-install-office2007-professional-wrapper.ps1`
 - `pti-install-sonicwall-vpn-wrapper.ps1`

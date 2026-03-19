@@ -78,6 +78,8 @@ Recommended pattern:
   Combined `Test`/`Set` task script for driver staging and queue creation.
 - `immy-wrappers\pti-collect-dell-diagnostics-wrapper.ps1`
   Thin task wrapper for collecting uninstall metadata and runtime state when Dell cleanup does not converge.
+- `immy-wrappers\pti-collect-printer-driver-diagnostics-wrapper.ps1`
+  Thin task wrapper for inventorying the printer-driver share and local driver state when you need exact INF and driver-name values.
 - `immy-wrappers\pti-install-office2007-standard-wrapper.ps1`
   Uses the payload Office 2007 Standard installer wrapper.
 - `immy-wrappers\pti-install-office2007-professional-wrapper.ps1`
@@ -108,9 +110,12 @@ Recommended secure Immy variables:
 - `PTI_ShareUserName`
 - `PTI_SharePassword`
 - `PTI_ApprovedSecurityProducts`
-- `PTI_LexmarkDriverSourcePath`
-- `PTI_LexmarkInfRelativePath`
-- `PTI_LexmarkDriverName`
+- `PTI_LexmarkCopierDriverSourcePath`
+- `PTI_LexmarkCopierInfRelativePath`
+- `PTI_LexmarkCopierDriverName`
+- `PTI_LexmarkMonoDriverSourcePath`
+- `PTI_LexmarkMonoInfRelativePath`
+- `PTI_LexmarkMonoDriverName`
 - `PTI_HpDriverSourcePath`
 - `PTI_HpInfRelativePath`
 - `PTI_HpDriverName`
@@ -118,6 +123,8 @@ Recommended secure Immy variables:
 `PTI_ApprovedSecurityProducts` is evaluated as a semicolon-delimited regex list. If a tenant uses multiple Datto products, use a broader value such as `Datto` or list each product explicitly, for example `Datto EDR;Datto AV`.
 
 The PTI baseline is reboot-aware for Dell cleanup. If the only remaining verify findings are Dell products that commonly unregister after restart, the baseline writes a reboot marker during `Set`, and the combined wrapper treats that state as a reboot checkpoint instead of a hard verify failure until the next boot clears the marker.
+- The printer task now supports separate Lexmark driver families for the `XS658de` copiers and the `MS810dn` printers. The older `PTI_LexmarkDriver*` variables are still accepted as a fallback but should be treated as legacy compatibility settings.
+- Printer driver source paths may point to either an extracted driver folder or a `.zip` package. If a `.zip` is supplied, the payload expands it into the PTI staging cache automatically before importing the INF.
 - `PTI_Office2007StandardSourcePath`
 - `PTI_Office2007StandardInstallerRelativePath`
 - `PTI_Office2007StandardInstallArguments`
@@ -148,6 +155,8 @@ Suggested usage:
   Task script: `immy-wrappers\pti-install-printers-wrapper.ps1`
 - `PTI Printer - HP5000`
   Task script: `immy-wrappers\pti-install-printers-wrapper.ps1`
+- `PTI Collect Printer Driver Diagnostics`
+  Task script: `immy-wrappers\pti-collect-printer-driver-diagnostics-wrapper.ps1`
 - `PTI Office 2007 Standard`
   Software action or configuration task script: `immy-wrappers\pti-install-office2007-standard-wrapper.ps1`
 - `PTI Office 2007 Professional`
