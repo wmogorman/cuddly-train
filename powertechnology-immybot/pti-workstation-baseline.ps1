@@ -410,6 +410,12 @@ function Remove-PTIDellPackageTargets {
         [string[]]$AppxPatterns = @()
     )
 
+    $normalizedAppxPatterns = @(
+        $AppxPatterns |
+        ForEach-Object { [string]$_ } |
+        Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+    )
+
     $matches = @(Get-InstalledProgramMatches -DisplayNamePatterns $DisplayNamePatterns)
     foreach ($program in $matches) {
         $displayName = Get-ProgramPropertyValue -InputObject $program -Name 'DisplayName'
@@ -433,9 +439,26 @@ function Remove-PTIDellPackageTargets {
         }
     }
 
-    if ($AppxPatterns.Count -gt 0) {
-        Remove-AppxFamilies -PackagePatterns $AppxPatterns
+    if ($normalizedAppxPatterns.Count -gt 0) {
+        Remove-AppxFamilies -PackagePatterns $normalizedAppxPatterns
     }
+}
+
+function Get-OptionalObjectPropertyValue {
+    param(
+        [Parameter(Mandatory = $true)]
+        [psobject]$InputObject,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Name
+    )
+
+    $property = $InputObject.PSObject.Properties[$Name]
+    if ($null -ne $property) {
+        return $property.Value
+    }
+
+    return $null
 }
 
 function Wait-PTIProgramRemoval {
@@ -467,7 +490,13 @@ function Remove-AppxFamilies {
         [string[]]$PackagePatterns
     )
 
-    foreach ($pattern in $PackagePatterns) {
+    $normalizedPackagePatterns = @(
+        $PackagePatterns |
+        ForEach-Object { [string]$_ } |
+        Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+    )
+
+    foreach ($pattern in $normalizedPackagePatterns) {
         $installedPackages = @(Get-AppxPackage -AllUsers -Name $pattern -ErrorAction SilentlyContinue)
         foreach ($package in $installedPackages) {
             if ($PSCmdlet.ShouldProcess($package.Name, 'Remove AppX package for all users')) {
@@ -592,33 +621,33 @@ function Remove-PTIDellBloatware {
     }
 
     $dellRemovalPlan = @(
-        @{
+        [pscustomobject]@{
             Name = 'Dell SupportAssist'
             DisplayNamePatterns = @('(?i)^Dell SupportAssist$')
             AppxPatterns = @('Dell.SupportAssistforPCs')
         },
-        @{
+        [pscustomobject]@{
             Name = 'Dell SupportAssist Remediation'
             DisplayNamePatterns = @('(?i)^Dell SupportAssist Remediation$')
         },
-        @{
+        [pscustomobject]@{
             Name = 'Dell SupportAssist OS Recovery Plugin for Dell Update'
             DisplayNamePatterns = @('(?i)^Dell SupportAssist OS Recovery Plugin for Dell Update$')
         },
-        @{
+        [pscustomobject]@{
             Name = 'Dell Digital Delivery'
             DisplayNamePatterns = @('(?i)^Dell Digital Delivery$')
         },
-        @{
+        [pscustomobject]@{
             Name = 'Dell Core Services'
             DisplayNamePatterns = @('(?i)^Dell Core Services$')
         },
-        @{
+        [pscustomobject]@{
             Name = 'Dell Command | Update'
             DisplayNamePatterns = @('(?i)^Dell Command \| Update$')
             AppxPatterns = @('DellInc.DellCommandUpdate')
         },
-        @{
+        [pscustomobject]@{
             Name = 'Other Dell bloatware'
             DisplayNamePatterns = @(
                 '(?i)^Dell Optimizer(?: Service)?\b',
@@ -635,7 +664,12 @@ function Remove-PTIDellBloatware {
     Write-PTILog -Message 'Running PTI Dell application removal pass.' -LogPath $LogPath
     foreach ($packageGroup in $dellRemovalPlan) {
         Write-PTILog -Message "Processing Dell removal group [$($packageGroup.Name)]." -LogPath $LogPath
-        Remove-PTIDellPackageTargets -DisplayNamePatterns $packageGroup.DisplayNamePatterns -AppxPatterns $packageGroup.AppxPatterns
+        $appxPatterns = @(
+            Get-OptionalObjectPropertyValue -InputObject $packageGroup -Name 'AppxPatterns' |
+            ForEach-Object { [string]$_ } |
+            Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+        )
+        Remove-PTIDellPackageTargets -DisplayNamePatterns $packageGroup.DisplayNamePatterns -AppxPatterns $appxPatterns
     }
 
     if (-not (Wait-PTIProgramRemoval -DisplayNamePatterns $dellPatterns -TimeoutSeconds 60 -PollSeconds 5)) {
@@ -794,21 +828,7 @@ if (-not $SkipOneDriveRemoval) {
 }
 
 if (-not $SkipDellCleanup) {
-    $dellCleanupScript = Join-Path -Path $PSScriptRoot -ChildPath '..\dell-cleanup.ps1'
-    if (Test-Path -LiteralPath $dellCleanupScript) {
-        if ($PSCmdlet.ShouldProcess('Dell applications', 'Run Dell cleanup helper')) {
-            try {
-                & $dellCleanupScript
-            }
-            catch {
-                Write-PTILog -Message "Dell cleanup helper failed but PTI targeted cleanup will continue: $($_.Exception.Message)" -Level 'WARN' -LogPath $LogPath
-            }
-        }
-    }
-    else {
-        Write-PTILog -Message "Dell cleanup helper not found: $dellCleanupScript" -Level 'WARN' -LogPath $LogPath
-    }
-
+    Write-PTILog -Message 'Skipping legacy Dell cleanup helper and using PTI targeted Dell removal only.' -LogPath $LogPath
     Remove-PTIDellBloatware
 }
 
