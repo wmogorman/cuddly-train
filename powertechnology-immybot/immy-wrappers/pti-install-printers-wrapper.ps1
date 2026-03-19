@@ -41,11 +41,15 @@ param(
 
     [string]$LexmarkCopierInfRelativePath,
 
+    [string]$LexmarkCopierInstallArguments,
+
     [string]$LexmarkCopierDriverName,
 
     [string]$LexmarkMonoDriverSourcePath,
 
     [string]$LexmarkMonoInfRelativePath,
+
+    [string]$LexmarkMonoInstallArguments,
 
     [string]$LexmarkMonoDriverName,
 
@@ -58,6 +62,8 @@ param(
     [string]$HpDriverSourcePath,
 
     [string]$HpInfRelativePath,
+
+    [string]$HpInstallArguments,
 
     [string]$HpDriverName,
 
@@ -196,6 +202,7 @@ function Get-PTIPrinterDriverConfiguration {
                 Family          = $Family
                 SourcePath      = if (-not [string]::IsNullOrWhiteSpace($LexmarkCopierDriverSourcePath)) { $LexmarkCopierDriverSourcePath } else { $LexmarkDriverSourcePath }
                 InfRelativePath = if (-not [string]::IsNullOrWhiteSpace($LexmarkCopierInfRelativePath)) { $LexmarkCopierInfRelativePath } else { $LexmarkInfRelativePath }
+                InstallArguments = $LexmarkCopierInstallArguments
                 DriverName      = if (-not [string]::IsNullOrWhiteSpace($LexmarkCopierDriverName)) { $LexmarkCopierDriverName } else { $LexmarkDriverName }
             }
         }
@@ -204,6 +211,7 @@ function Get-PTIPrinterDriverConfiguration {
                 Family          = $Family
                 SourcePath      = if (-not [string]::IsNullOrWhiteSpace($LexmarkMonoDriverSourcePath)) { $LexmarkMonoDriverSourcePath } else { $LexmarkDriverSourcePath }
                 InfRelativePath = if (-not [string]::IsNullOrWhiteSpace($LexmarkMonoInfRelativePath)) { $LexmarkMonoInfRelativePath } else { $LexmarkInfRelativePath }
+                InstallArguments = $LexmarkMonoInstallArguments
                 DriverName      = if (-not [string]::IsNullOrWhiteSpace($LexmarkMonoDriverName)) { $LexmarkMonoDriverName } else { $LexmarkDriverName }
             }
         }
@@ -212,6 +220,7 @@ function Get-PTIPrinterDriverConfiguration {
                 Family          = $Family
                 SourcePath      = $HpDriverSourcePath
                 InfRelativePath = $HpInfRelativePath
+                InstallArguments = $HpInstallArguments
                 DriverName      = $HpDriverName
             }
         }
@@ -374,15 +383,18 @@ switch -Regex ($Method) {
             -NeedsHp5000:$NeedsHp5000.IsPresent `
             -LexmarkCopierDriverSourcePath $LexmarkCopierDriverSourcePath `
             -LexmarkCopierInfRelativePath $LexmarkCopierInfRelativePath `
+            -LexmarkCopierInstallArguments $LexmarkCopierInstallArguments `
             -LexmarkCopierDriverName $LexmarkCopierDriverName `
             -LexmarkMonoDriverSourcePath $LexmarkMonoDriverSourcePath `
             -LexmarkMonoInfRelativePath $LexmarkMonoInfRelativePath `
+            -LexmarkMonoInstallArguments $LexmarkMonoInstallArguments `
             -LexmarkMonoDriverName $LexmarkMonoDriverName `
             -LexmarkDriverSourcePath $LexmarkDriverSourcePath `
             -LexmarkInfRelativePath $LexmarkInfRelativePath `
             -LexmarkDriverName $LexmarkDriverName `
             -HpDriverSourcePath $HpDriverSourcePath `
             -HpInfRelativePath $HpInfRelativePath `
+            -HpInstallArguments $HpInstallArguments `
             -HpDriverName $HpDriverName `
             -ShareUserName $ShareUserName `
             -SharePassword $SharePassword `

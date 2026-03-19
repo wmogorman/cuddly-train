@@ -15,11 +15,15 @@ param(
 
     [string]$LexmarkCopierInfRelativePath,
 
+    [string]$LexmarkCopierInstallArguments,
+
     [string]$LexmarkCopierDriverName,
 
     [string]$LexmarkMonoDriverSourcePath,
 
     [string]$LexmarkMonoInfRelativePath,
+
+    [string]$LexmarkMonoInstallArguments,
 
     [string]$LexmarkMonoDriverName,
 
@@ -32,6 +36,8 @@ param(
     [string]$HpDriverSourcePath,
 
     [string]$HpInfRelativePath,
+
+    [string]$HpInstallArguments,
 
     [string]$HpDriverName,
 
@@ -62,6 +68,7 @@ function Get-PTIPrinterDriverConfiguration {
                 Family          = $Family
                 SourcePath      = if (-not [string]::IsNullOrWhiteSpace($LexmarkCopierDriverSourcePath)) { $LexmarkCopierDriverSourcePath } else { $LexmarkDriverSourcePath }
                 InfRelativePath = if (-not [string]::IsNullOrWhiteSpace($LexmarkCopierInfRelativePath)) { $LexmarkCopierInfRelativePath } else { $LexmarkInfRelativePath }
+                InstallArguments = $LexmarkCopierInstallArguments
                 DriverName      = if (-not [string]::IsNullOrWhiteSpace($LexmarkCopierDriverName)) { $LexmarkCopierDriverName } else { $LexmarkDriverName }
             }
         }
@@ -70,6 +77,7 @@ function Get-PTIPrinterDriverConfiguration {
                 Family          = $Family
                 SourcePath      = if (-not [string]::IsNullOrWhiteSpace($LexmarkMonoDriverSourcePath)) { $LexmarkMonoDriverSourcePath } else { $LexmarkDriverSourcePath }
                 InfRelativePath = if (-not [string]::IsNullOrWhiteSpace($LexmarkMonoInfRelativePath)) { $LexmarkMonoInfRelativePath } else { $LexmarkInfRelativePath }
+                InstallArguments = $LexmarkMonoInstallArguments
                 DriverName      = if (-not [string]::IsNullOrWhiteSpace($LexmarkMonoDriverName)) { $LexmarkMonoDriverName } else { $LexmarkDriverName }
             }
         }
@@ -78,6 +86,7 @@ function Get-PTIPrinterDriverConfiguration {
                 Family          = $Family
                 SourcePath      = $HpDriverSourcePath
                 InfRelativePath = $HpInfRelativePath
+                InstallArguments = $HpInstallArguments
                 DriverName      = $HpDriverName
             }
         }
@@ -171,13 +180,15 @@ function Install-PTIPrinterDriverFamily {
 
         [string]$InfRelativePath,
 
+        [string]$InstallArguments,
+
         [string]$DriverName,
 
         [pscredential]$Credential
     )
 
-    if ([string]::IsNullOrWhiteSpace($SourcePath) -or [string]::IsNullOrWhiteSpace($InfRelativePath) -or [string]::IsNullOrWhiteSpace($DriverName)) {
-        throw "Driver family [$Family] requires SourcePath, InfRelativePath, and DriverName."
+    if ([string]::IsNullOrWhiteSpace($SourcePath) -or [string]::IsNullOrWhiteSpace($DriverName)) {
+        throw "Driver family [$Family] requires SourcePath and DriverName."
     }
 
     if ($PSCmdlet.ShouldProcess($DriverName, "Stage and import $Family printer driver from [$SourcePath]")) {
@@ -196,16 +207,39 @@ function Install-PTIPrinterDriverFamily {
             $resolvedSourceRoot = $expandedRoot
         }
 
-        $infPath = Resolve-PTIRelativePath -BasePath $resolvedSourceRoot -RelativePath $InfRelativePath
-
-        if (-not (Test-Path -LiteralPath $infPath)) {
-            throw "INF path not found for [$Family]: $infPath"
+        $packagePath = if ([string]::IsNullOrWhiteSpace($InfRelativePath)) {
+            $resolvedSourceRoot
+        }
+        else {
+            Resolve-PTIRelativePath -BasePath $resolvedSourceRoot -RelativePath $InfRelativePath
         }
 
-        $infDirectory = Split-Path -Path $infPath -Parent
-        $pnputilPath = Join-Path -Path $env:SystemRoot -ChildPath 'System32\pnputil.exe'
-        $pnputilArguments = '/add-driver "{0}\*.inf" /subdirs /install' -f $infDirectory
-        Invoke-PTIProcess -FilePath $pnputilPath -ArgumentList $pnputilArguments -WorkingDirectory $infDirectory -LogPath $LogPath | Out-Null
+        if (-not (Test-Path -LiteralPath $packagePath)) {
+            throw "Driver package path not found for [$Family]: $packagePath"
+        }
+
+        $packageExtension = [System.IO.Path]::GetExtension($packagePath)
+        if ($packageExtension -ieq '.msi') {
+            $msiexecPath = Join-Path -Path $env:SystemRoot -ChildPath 'System32\msiexec.exe'
+            $msiArguments = '/i "{0}" /qn /norestart' -f $packagePath
+            Invoke-PTIProcess -FilePath $msiexecPath -ArgumentList $msiArguments -WorkingDirectory (Split-Path -Path $packagePath -Parent) -LogPath $LogPath | Out-Null
+        }
+        elseif ($packageExtension -ieq '.inf') {
+            $infDirectory = Split-Path -Path $packagePath -Parent
+            $pnputilPath = Join-Path -Path $env:SystemRoot -ChildPath 'System32\pnputil.exe'
+            $pnputilArguments = '/add-driver "{0}\*.inf" /subdirs /install' -f $infDirectory
+            Invoke-PTIProcess -FilePath $pnputilPath -ArgumentList $pnputilArguments -WorkingDirectory $infDirectory -LogPath $LogPath | Out-Null
+        }
+        elseif ($packageExtension -ieq '.exe') {
+            if ([string]::IsNullOrWhiteSpace($InstallArguments)) {
+                throw "Driver family [$Family] requires InstallArguments when SourcePath or package path points to an .exe installer."
+            }
+
+            Invoke-PTIProcess -FilePath $packagePath -ArgumentList $InstallArguments -WorkingDirectory (Split-Path -Path $packagePath -Parent) -LogPath $LogPath | Out-Null
+        }
+        else {
+            throw "Unsupported driver package type for [$Family]: $packagePath"
+        }
 
         $existingDriver = Get-PrinterDriver -Name $DriverName -ErrorAction SilentlyContinue
         if (-not $existingDriver -and $PSCmdlet.ShouldProcess($DriverName, 'Register printer driver')) {
@@ -299,7 +333,7 @@ $credential = New-PTICredential -UserName $ShareUserName -Password $SharePasswor
 
 foreach ($family in ($requiredFamilies | Sort-Object -Unique)) {
     $driverConfiguration = Get-PTIPrinterDriverConfiguration -Family $family
-    Install-PTIPrinterDriverFamily -Family $family -SourcePath $driverConfiguration.SourcePath -InfRelativePath $driverConfiguration.InfRelativePath -DriverName $driverConfiguration.DriverName -Credential $credential
+    Install-PTIPrinterDriverFamily -Family $family -SourcePath $driverConfiguration.SourcePath -InfRelativePath $driverConfiguration.InfRelativePath -InstallArguments $driverConfiguration.InstallArguments -DriverName $driverConfiguration.DriverName -Credential $credential
 }
 
 foreach ($queueKey in $requestedQueueKeys) {

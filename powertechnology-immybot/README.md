@@ -112,19 +112,23 @@ Recommended secure Immy variables:
 - `PTI_ApprovedSecurityProducts`
 - `PTI_LexmarkCopierDriverSourcePath`
 - `PTI_LexmarkCopierInfRelativePath`
+- `PTI_LexmarkCopierInstallArguments`
 - `PTI_LexmarkCopierDriverName`
 - `PTI_LexmarkMonoDriverSourcePath`
 - `PTI_LexmarkMonoInfRelativePath`
+- `PTI_LexmarkMonoInstallArguments`
 - `PTI_LexmarkMonoDriverName`
 - `PTI_HpDriverSourcePath`
 - `PTI_HpInfRelativePath`
+- `PTI_HpInstallArguments`
 - `PTI_HpDriverName`
 
 `PTI_ApprovedSecurityProducts` is evaluated as a semicolon-delimited regex list. If a tenant uses multiple Datto products, use a broader value such as `Datto` or list each product explicitly, for example `Datto EDR;Datto AV`.
 
 The PTI baseline is reboot-aware for Dell cleanup. If the only remaining verify findings are Dell products that commonly unregister after restart, the baseline writes a reboot marker during `Set`, and the combined wrapper treats that state as a reboot checkpoint instead of a hard verify failure until the next boot clears the marker.
 - The printer task now supports separate Lexmark driver families for the `XS658de` copiers and the `MS810dn` printers. The older `PTI_LexmarkDriver*` variables are still accepted as a fallback but should be treated as legacy compatibility settings.
-- Printer driver source paths may point to either an extracted driver folder or a `.zip` package. If a `.zip` is supplied, the payload expands it into the PTI staging cache automatically before importing the INF.
+- Printer driver source paths may point to an extracted driver folder, a `.zip` package, a direct `.msi`, or a direct `.exe` installer package. If a `.zip` is supplied, the payload expands it into the PTI staging cache automatically. `*InfRelativePath` may point to an `.inf`, `.msi`, or `.exe` inside that folder/zip, and it may be left blank when the source path itself points directly to an `.msi` or `.exe`.
+- `*InstallArguments` is required when the selected driver package is an `.exe` installer.
 - `PTI_Office2007StandardSourcePath`
 - `PTI_Office2007StandardInstallerRelativePath`
 - `PTI_Office2007StandardInstallArguments`
