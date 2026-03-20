@@ -66,8 +66,8 @@ Recommended pattern:
 2. In Immy, create or edit the task/software configuration task.
 3. Add a `File` parameter named `PTIPayloadZip`.
 4. Upload the built zip.
-5. For baseline and printers, choose `Use combined script` and paste the matching script from `immy-wrappers`.
-6. For software wrappers, paste the wrapper into the software action or configuration task script.
+5. For baseline, printers, Office 2007, and the Lexmark package task, choose `Use combined script` and paste the matching script from `immy-wrappers`.
+6. For the remaining software wrappers, paste the wrapper into the software action or configuration task script.
 7. Add the business parameters needed by that wrapper.
 
 ## Wrapper Map
@@ -81,9 +81,9 @@ Recommended pattern:
 - `immy-wrappers\pti-collect-printer-driver-diagnostics-wrapper.ps1`
   Thin task wrapper for inventorying the printer-driver share and local driver state when you need exact INF and driver-name values.
 - `immy-wrappers\pti-install-office2007-standard-wrapper.ps1`
-  Uses the payload Office 2007 Standard installer wrapper.
+  Combined `Test`/`Set` task script for the Office 2007 Standard-like profile.
 - `immy-wrappers\pti-install-office2007-professional-wrapper.ps1`
-  Uses the payload Office 2007 Professional installer wrapper.
+  Combined `Test`/`Set` task script for the Office 2007 Professional profile.
 - `immy-wrappers\pti-install-sonicwall-vpn-wrapper.ps1`
   Uses the payload SonicWall VPN installer wrapper.
 
@@ -162,9 +162,9 @@ Suggested usage:
 - `PTI Collect Printer Driver Diagnostics`
   Task script: `immy-wrappers\pti-collect-printer-driver-diagnostics-wrapper.ps1`
 - `PTI Office 2007 Standard`
-  Software action or configuration task script: `immy-wrappers\pti-install-office2007-standard-wrapper.ps1`
+  Task script: `immy-wrappers\pti-install-office2007-standard-wrapper.ps1`
 - `PTI Office 2007 Professional`
-  Software action or configuration task script: `immy-wrappers\pti-install-office2007-professional-wrapper.ps1`
+  Task script: `immy-wrappers\pti-install-office2007-professional-wrapper.ps1`
 - `PTI SonicWall VPN`
   Software action or configuration task script: `immy-wrappers\pti-install-sonicwall-vpn-wrapper.ps1`
 

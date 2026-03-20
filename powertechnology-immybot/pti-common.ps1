@@ -119,7 +119,14 @@ function Copy-PTISourceToCache {
         $destinationPath = Join-Path -Path $DestinationRoot -ChildPath $leafName
 
         if (Test-Path -LiteralPath $destinationPath) {
-            Remove-Item -LiteralPath $destinationPath -Recurse -Force
+            try {
+                Remove-Item -LiteralPath $destinationPath -Recurse -Force -ErrorAction Stop
+            }
+            catch {
+                $alternateDestinationPath = Join-Path -Path $DestinationRoot -ChildPath ('{0}_{1}' -f $leafName, [guid]::NewGuid().ToString('N'))
+                Write-PTILog -Message ("Unable to clear existing staged source [{0}]. Using alternate cache path [{1}]. Error: {2}" -f $destinationPath, $alternateDestinationPath, $_.Exception.Message) -Level 'WARN' -LogPath $LogPath
+                $destinationPath = $alternateDestinationPath
+            }
         }
 
         Write-PTILog -Message "Copying source [$SourcePath] to [$destinationPath]." -LogPath $LogPath
