@@ -46,6 +46,10 @@ param(
 
     [string]$LogPath = 'C:\ProgramData\PTI\Logs\pti-office2007-standard.log',
 
+    [Parameter(DontShow = $true)]
+    [ValidateRange(60, 7200)]
+    [int]$InstallerWaitSeconds = 1800,
+
     [Parameter(DontShow = $true, ValueFromRemainingArguments = $true)]
     [object[]]$ImmyRuntimeArguments
 )
@@ -153,6 +157,10 @@ function Get-OfficeStandardState {
 }
 
 function Test-OfficeStandardInstalled {
+    param(
+        [switch]$Quiet
+    )
+
     $state = Get-OfficeStandardState
     if (-not $state.Compliant) {
         $issues = [System.Collections.Generic.List[string]]::new()
@@ -161,12 +169,55 @@ function Test-OfficeStandardInstalled {
         if (-not $state.PowerPoint) { $issues.Add('POWERPNT.EXE missing') | Out-Null }
         if (-not $state.Outlook) { $issues.Add('OUTLOOK.EXE missing') | Out-Null }
         if ($state.Access) { $issues.Add('MSACCESS.EXE present') | Out-Null }
-        Write-Warning ('Office 2007 Standard is not compliant: ' + ($issues -join ' | '))
+        if (-not $Quiet) {
+            Write-Warning ('Office 2007 Standard is not compliant: ' + ($issues -join ' | '))
+        }
         return $false
     }
 
-    Write-Host 'Office 2007 Standard is compliant.'
+    if (-not $Quiet) {
+        Write-Host 'Office 2007 Standard is compliant.'
+    }
     return $true
+}
+
+function ConvertTo-PowerShellLiteral {
+    param(
+        [AllowEmptyString()]
+        [AllowNull()]
+        [string]$Value
+    )
+
+    if ($null -eq $Value) {
+        return '$null'
+    }
+
+    return "'" + $Value.Replace("'", "''") + "'"
+}
+
+function Start-OfficeStandardInstallProcess {
+    $runnerScript = @"
+`$ErrorActionPreference = 'Stop'
+try {
+    & $(ConvertTo-PowerShellLiteral -Value $entrypoint) `
+        -SourcePath $(ConvertTo-PowerShellLiteral -Value $SourcePath) `
+        -InstallerRelativePath $(ConvertTo-PowerShellLiteral -Value $InstallerRelativePath) `
+        -InstallArguments $(ConvertTo-PowerShellLiteral -Value $InstallArguments) `
+        -InstallerType $(ConvertTo-PowerShellLiteral -Value $InstallerType) `
+        -ShareUserName $(ConvertTo-PowerShellLiteral -Value $ShareUserName) `
+        -SharePassword $(ConvertTo-PowerShellLiteral -Value $SharePassword) `
+        -StageRoot $(ConvertTo-PowerShellLiteral -Value $StageRoot) `
+        -LogPath $(ConvertTo-PowerShellLiteral -Value $LogPath)
+    exit 0
+}
+catch {
+    Write-Error (`$_.ToString())
+    exit 1
+}
+"@
+
+    $encodedCommand = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($runnerScript))
+    return Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', $encodedCommand) -PassThru -WindowStyle Hidden
 }
 
 $payloadFolder = Resolve-PTIPayloadFolder -ZipPath $PTIPayloadZip
@@ -180,16 +231,25 @@ switch -Regex ($Method) {
         Test-OfficeStandardInstalled
     }
     '^(?i)Set$' {
-        & $entrypoint `
-            -SourcePath $SourcePath `
-            -InstallerRelativePath $InstallerRelativePath `
-            -InstallArguments $InstallArguments `
-            -InstallerType $InstallerType `
-            -ShareUserName $ShareUserName `
-            -SharePassword $SharePassword `
-            -StageRoot $StageRoot `
-            -LogPath $LogPath
-        return $true
+        $process = Start-OfficeStandardInstallProcess
+        $attemptCount = [Math]::Max([int][Math]::Ceiling($InstallerWaitSeconds / 10), 1)
+
+        for ($attempt = 1; $attempt -le $attemptCount; $attempt++) {
+            if (Test-OfficeStandardInstalled -Quiet) {
+                Write-Host 'Office 2007 Standard is compliant.'
+                return $true
+            }
+
+            if ($process.HasExited -and $process.ExitCode -ne 0) {
+                throw "Office 2007 Standard installer exited with code $($process.ExitCode)."
+            }
+
+            if ($attempt -lt $attemptCount) {
+                Start-Sleep -Seconds 10
+            }
+        }
+
+        return (Test-OfficeStandardInstalled)
     }
     default {
         throw "Unsupported Immy combined-script method: $Method"
