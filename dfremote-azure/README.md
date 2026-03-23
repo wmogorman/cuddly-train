@@ -9,7 +9,7 @@ onto the DF Remote VM.
 | --- | --- |
 | `dfremote.ps1` | Provision the Azure VM and supporting resources. If the VM already exists, the script reuses it instead of failing. |
 | `write-dfremote-password.ps1` | Generates the DPAPI-protected `dfremote-password.txt` on a workstation (current user scope). |
-| `my-deploy-dfremote-vm.ps1` | Personal deployment shortcut that calls `dfremote.ps1` with local defaults. |
+| `my-deploy-dfremote-vm.ps1` | Personal deployment shortcut that calls `dfremote.ps1` with local defaults and can automate DF Remote installation over SSH. |
 | `dreamfort_stages.lua` | DFHack script that orchestrates staged Dreamfort quickfort runs. Copy to `/opt/dfremote/hack/scripts/dreamfort_stages.lua`. |
 | `tree.csv` | Optional quickfort helper blueprint for tree-clearing. Copy to `/opt/dfremote/hack/data/blueprints/tree.csv`. |
 | `dfhack_lib.lua`, `dfhack.lua.ref` | Snapshot of DFHack Lua helpers for offline reference. |
@@ -35,3 +35,20 @@ override that library copy on the VM.
 
 Restart DFHack (or run `script reload`) after uploading scripts so the new
 commands become available.
+
+## Automating The DF Remote Install
+
+If you already have the DF Remote zip on your workstation, `dfremote.ps1` can
+copy it to the VM over SSH, unzip it into `/opt/dfremote`, run the bundled
+library fixup, and optionally start the systemd service.
+
+```powershell
+.\dfremote-azure\my-deploy-dfremote-vm.ps1 `
+  -InstallDfRemote `
+  -DfRemoteZipPath 'C:\Installers\dfremote-complete-4705-Linux.zip' `
+  -SshPrivateKeyPath "$HOME\.ssh\id_rsa" `
+  -StartService
+```
+
+For remote downloads, prefer `-DfRemoteZipUri` with `-DfRemoteZipSha256`. The
+script rejects non-HTTPS URIs unless `-AllowInsecureDfRemoteDownload` is set.
