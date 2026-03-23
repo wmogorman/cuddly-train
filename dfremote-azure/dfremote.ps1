@@ -24,6 +24,9 @@ Usage notes:
     and run remote install commands over SSH.
   - `-StartService` can be used alongside `-InstallDfRemote`, or by itself to
     enable and start an already-installed `dfremote` service over SSH.
+  - If the VM already exists and you only want the SSH-based install/start
+    steps, use `-SkipAzureProvisioning -VmHost <ip-or-hostname>` to bypass the
+    Az PowerShell dependency entirely.
 
 .PARAMETER SubscriptionId
 Azure subscription ID that owns the DF Remote resources.
@@ -109,6 +112,14 @@ How long to wait for SSH to become reachable before install/start steps fail.
 .PARAMETER AllowInsecureDfRemoteDownload
 Allow a non-HTTPS `-DfRemoteZipUri`. Intended only for trusted internal mirrors.
 
+.PARAMETER SkipAzureProvisioning
+Skip all Azure resource discovery and provisioning steps. Use this for
+install/start-only runs against an already reachable VM.
+
+.PARAMETER VmHost
+SSH hostname or IP address to use for install/start-only runs when Azure
+resource lookup is skipped.
+
 .EXAMPLE
 PS> .\dfremote-azure\write-dfremote-password.ps1
 PS> .\dfremote-azure\dfremote.ps1 -SubscriptionId '<subscription-guid>' -ResourceGroupName 'dfremote-rg' -Location 'eastus' -VmName 'dfremote-vm' -AdminUsername 'william'
@@ -141,6 +152,12 @@ PS> .\dfremote-azure\dfremote.ps1 -SubscriptionId '<subscription-guid>' -Resourc
 
 Downloads a verified DF Remote zip directly on the VM and installs it without
 starting the service.
+
+.EXAMPLE
+PS> .\dfremote-azure\dfremote.ps1 -SubscriptionId '<subscription-guid>' -ResourceGroupName 'dfremote-rg' -Location 'eastus' -VmName 'dfremote-vm' -AdminUsername 'william' -SkipAzureProvisioning -VmHost '20.120.109.152' -InstallDfRemote -DfRemoteZipPath 'C:\Installers\dfremote-complete-4705-Linux.zip' -SshPrivateKeyPath "$HOME\.ssh\id_rsa" -StartService
+
+Skips all Azure cmdlets and performs only the SSH-based install/start work
+against the existing VM at the supplied host or IP.
 
 .NOTES
 Author: you + ChatGPT
@@ -175,7 +192,9 @@ param(
   [int] $SshPort = 22,
   [int] $SshReadyTimeoutSeconds = 180,
   [switch] $StartService,
-  [switch] $AllowInsecureDfRemoteDownload
+  [switch] $AllowInsecureDfRemoteDownload,
+  [switch] $SkipAzureProvisioning,
+  [string] $VmHost
 )
 
 function Resolve-ExistingPath {
@@ -409,6 +428,44 @@ sudo systemctl --no-pager --full status dfremote || true
   }
 }
 
+function Import-AzModulesIfAvailable {
+  $modules = @('Az.Accounts', 'Az.Resources', 'Az.Network', 'Az.Compute')
+  foreach ($moduleName in $modules) {
+    if (Get-Module -Name $moduleName) {
+      continue
+    }
+    if (Get-Module -ListAvailable -Name $moduleName) {
+      Import-Module $moduleName -ErrorAction SilentlyContinue | Out-Null
+    }
+  }
+}
+
+function Assert-AzCmdletsAvailable {
+  $requiredCommands = @(
+    'Select-AzSubscription',
+    'Get-AzResourceGroup',
+    'Get-AzVirtualNetwork',
+    'Get-AzPublicIpAddress',
+    'Get-AzNetworkInterface',
+    'Get-AzDisk',
+    'Get-AzVM'
+  )
+  $missingCommands = @($requiredCommands | Where-Object { -not (Get-Command $_ -ErrorAction SilentlyContinue) })
+  if ($missingCommands.Count -gt 0) {
+    throw @"
+Az PowerShell cmdlets are not available in this session.
+Missing commands: $($missingCommands -join ', ')
+
+Install or import the Az modules, then run:
+  Install-Module Az -Scope CurrentUser
+  Connect-AzAccount
+
+If you only want to install or start DF Remote on an existing VM, rerun with:
+  -SkipAzureProvisioning -VmHost <ip-or-hostname>
+"@
+  }
+}
+
 if ($InstallDfRemote -and [string]::IsNullOrWhiteSpace($DfRemoteZipPath) -and [string]::IsNullOrWhiteSpace($DfRemoteZipUri)) {
   throw "InstallDfRemote requires either -DfRemoteZipPath or -DfRemoteZipUri."
 }
@@ -419,6 +476,10 @@ if ($InstallDfRemote -and $DfRemoteZipPath -and $DfRemoteZipUri) {
 
 if (($InstallDfRemote -or $StartService) -and [string]::IsNullOrWhiteSpace($SshPrivateKeyPath)) {
   throw "-SshPrivateKeyPath is required when using -InstallDfRemote or -StartService."
+}
+
+if ($SkipAzureProvisioning -and [string]::IsNullOrWhiteSpace($VmHost)) {
+  throw "-VmHost is required when using -SkipAzureProvisioning."
 }
 
 if ($DfRemoteZipUri -and -not $InstallDfRemote) {
@@ -447,56 +508,6 @@ if ($DfRemoteZipPath) {
 
 if ($SshPrivateKeyPath) {
   $SshPrivateKeyPath = Resolve-ExistingPath -Path $SshPrivateKeyPath -ParameterName 'SshPrivateKeyPath'
-}
-
-# ---------- Login / Context ----------
-Select-AzSubscription -SubscriptionId $SubscriptionId | Out-Null
-
-# ---------- Resource Group ----------
-if (-not (Get-AzResourceGroup -Name $ResourceGroupName -ErrorAction SilentlyContinue)) {
-  New-AzResourceGroup -Name $ResourceGroupName -Location $Location | Out-Null
-}
-
-# ---------- Networking ----------
-$vnet = Get-AzVirtualNetwork -Name $VNetName -ResourceGroupName $ResourceGroupName -ErrorAction SilentlyContinue
-if (-not $vnet) {
-  $subnetCfg = New-AzVirtualNetworkSubnetConfig -Name $SubnetName -AddressPrefix $SubnetPrefix
-  $vnet = New-AzVirtualNetwork -Name $VNetName -ResourceGroupName $ResourceGroupName -Location $Location -AddressPrefix $AddressPrefix -Subnet $subnetCfg
-}
-$subnet = $vnet.Subnets | Where-Object { $_.Name -eq $SubnetName }
-
-# Public IP (Standard / static)
-$pip = Get-AzPublicIpAddress -Name $PublicIpName -ResourceGroupName $ResourceGroupName -ErrorAction SilentlyContinue
-if (-not $pip) {
-  $pip = New-AzPublicIpAddress -Name $PublicIpName -ResourceGroupName $ResourceGroupName -Location $Location -AllocationMethod Static -Sku Standard
-}
-
-# NSG with SSH (22) and DF Remote UDP (1235)
-$nsg = Get-AzNetworkSecurityGroup -Name $NsgName -ResourceGroupName $ResourceGroupName -ErrorAction SilentlyContinue
-if (-not $nsg) {
-  $nsg = New-AzNetworkSecurityGroup -Name $NsgName -ResourceGroupName $ResourceGroupName -Location $Location
-  # SSH
-  $nsg | Add-AzNetworkSecurityRuleConfig -Name "Allow-SSH" -Protocol Tcp -Direction Inbound -Priority 1000 -SourceAddressPrefix "*" -SourcePortRange "*" -DestinationAddressPrefix "*" -DestinationPortRange 22 -Access Allow | Out-Null
-  # DF Remote UDP 1235
-  $nsg | Add-AzNetworkSecurityRuleConfig -Name "Allow-DFRemote-UDP-1235" -Protocol Udp -Direction Inbound -Priority 1010 -SourceAddressPrefix "*" -SourcePortRange "*" -DestinationAddressPrefix "*" -DestinationPortRange 1235 -Access Allow | Out-Null
-  Set-AzNetworkSecurityGroup -NetworkSecurityGroup $nsg | Out-Null
-}
-
-# NIC
-$nic = Get-AzNetworkInterface -Name $NicName -ResourceGroupName $ResourceGroupName -ErrorAction SilentlyContinue
-if (-not $nic) {
-  $nic = New-AzNetworkInterface -Name $NicName -ResourceGroupName $ResourceGroupName -Location $Location `
-          -SubnetId $subnet.Id -PublicIpAddressId $pip.Id -NetworkSecurityGroupId $nsg.Id
-}
-
-# ---------- Data Disk (create first so cloud-init can see it on first boot) ----------
-$expectedVmId = "/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroupName/providers/Microsoft.Compute/virtualMachines/$VmName"
-$dataDisk = Get-AzDisk -Name $DataDiskName -ResourceGroupName $ResourceGroupName -ErrorAction SilentlyContinue
-if (-not $dataDisk) {
-  $diskConfig = New-AzDiskConfig -SkuName Premium_LRS -Location $Location -CreateOption Empty -DiskSizeGB $DataDiskSizeGB
-  $dataDisk = New-AzDisk -DiskName $DataDiskName -Disk $diskConfig -ResourceGroupName $ResourceGroupName
-} elseif ($dataDisk.ManagedBy -and ($dataDisk.ManagedBy -ne $expectedVmId)) {
-  throw "Data disk $DataDiskName is already attached to another VM ($($dataDisk.ManagedBy)). Choose a different -DataDiskName."
 }
 
 # ---------- Admin Password ----------
@@ -542,6 +553,67 @@ if ($GithubUserForSsh) {
 
 if ($SshPublicKeyData) {
   $sshPublicKeys += $SshPublicKeyData | ForEach-Object { $_.Trim() } | Where-Object { $_ }
+}
+
+$vmCreated = $false
+$pubIp = $null
+
+if ($SkipAzureProvisioning) {
+  $pubIp = $VmHost
+  Write-Host "Skipping Azure provisioning and resource lookup; using SSH target $pubIp." -ForegroundColor Yellow
+} else {
+  Import-AzModulesIfAvailable
+  Assert-AzCmdletsAvailable
+
+  # ---------- Login / Context ----------
+  Select-AzSubscription -SubscriptionId $SubscriptionId | Out-Null
+
+  # ---------- Resource Group ----------
+  if (-not (Get-AzResourceGroup -Name $ResourceGroupName -ErrorAction SilentlyContinue)) {
+    New-AzResourceGroup -Name $ResourceGroupName -Location $Location | Out-Null
+  }
+
+  # ---------- Networking ----------
+  $vnet = Get-AzVirtualNetwork -Name $VNetName -ResourceGroupName $ResourceGroupName -ErrorAction SilentlyContinue
+  if (-not $vnet) {
+    $subnetCfg = New-AzVirtualNetworkSubnetConfig -Name $SubnetName -AddressPrefix $SubnetPrefix
+    $vnet = New-AzVirtualNetwork -Name $VNetName -ResourceGroupName $ResourceGroupName -Location $Location -AddressPrefix $AddressPrefix -Subnet $subnetCfg
+  }
+  $subnet = $vnet.Subnets | Where-Object { $_.Name -eq $SubnetName }
+
+  # Public IP (Standard / static)
+  $pip = Get-AzPublicIpAddress -Name $PublicIpName -ResourceGroupName $ResourceGroupName -ErrorAction SilentlyContinue
+  if (-not $pip) {
+    $pip = New-AzPublicIpAddress -Name $PublicIpName -ResourceGroupName $ResourceGroupName -Location $Location -AllocationMethod Static -Sku Standard
+  }
+
+  # NSG with SSH (22) and DF Remote UDP (1235)
+  $nsg = Get-AzNetworkSecurityGroup -Name $NsgName -ResourceGroupName $ResourceGroupName -ErrorAction SilentlyContinue
+  if (-not $nsg) {
+    $nsg = New-AzNetworkSecurityGroup -Name $NsgName -ResourceGroupName $ResourceGroupName -Location $Location
+    # SSH
+    $nsg | Add-AzNetworkSecurityRuleConfig -Name "Allow-SSH" -Protocol Tcp -Direction Inbound -Priority 1000 -SourceAddressPrefix "*" -SourcePortRange "*" -DestinationAddressPrefix "*" -DestinationPortRange 22 -Access Allow | Out-Null
+    # DF Remote UDP 1235
+    $nsg | Add-AzNetworkSecurityRuleConfig -Name "Allow-DFRemote-UDP-1235" -Protocol Udp -Direction Inbound -Priority 1010 -SourceAddressPrefix "*" -SourcePortRange "*" -DestinationAddressPrefix "*" -DestinationPortRange 1235 -Access Allow | Out-Null
+    Set-AzNetworkSecurityGroup -NetworkSecurityGroup $nsg | Out-Null
+  }
+
+  # NIC
+  $nic = Get-AzNetworkInterface -Name $NicName -ResourceGroupName $ResourceGroupName -ErrorAction SilentlyContinue
+  if (-not $nic) {
+    $nic = New-AzNetworkInterface -Name $NicName -ResourceGroupName $ResourceGroupName -Location $Location `
+            -SubnetId $subnet.Id -PublicIpAddressId $pip.Id -NetworkSecurityGroupId $nsg.Id
+  }
+
+  # ---------- Data Disk (create first so cloud-init can see it on first boot) ----------
+  $expectedVmId = "/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroupName/providers/Microsoft.Compute/virtualMachines/$VmName"
+  $dataDisk = Get-AzDisk -Name $DataDiskName -ResourceGroupName $ResourceGroupName -ErrorAction SilentlyContinue
+  if (-not $dataDisk) {
+    $diskConfig = New-AzDiskConfig -SkuName Premium_LRS -Location $Location -CreateOption Empty -DiskSizeGB $DataDiskSizeGB
+    $dataDisk = New-AzDisk -DiskName $DataDiskName -Disk $diskConfig -ResourceGroupName $ResourceGroupName
+  } elseif ($dataDisk.ManagedBy -and ($dataDisk.ManagedBy -ne $expectedVmId)) {
+    throw "Data disk $DataDiskName is already attached to another VM ($($dataDisk.ManagedBy)). Choose a different -DataDiskName."
+  }
 }
 
 # ---------- Cloud-Init (user-data) ----------
@@ -721,63 +793,63 @@ $ubuntuImage = @{
   Version       = "latest"
 }
 
-# ---------- Existing VM Handling ----------
-$existingVm = Get-AzVM -Name $VmName -ResourceGroupName $ResourceGroupName -ErrorAction SilentlyContinue
-$vmCreated = $false
+if (-not $SkipAzureProvisioning) {
+  # ---------- Existing VM Handling ----------
+  $existingVm = Get-AzVM -Name $VmName -ResourceGroupName $ResourceGroupName -ErrorAction SilentlyContinue
 
-if ($existingVm) {
-  $attachedDataDisk = $existingVm.StorageProfile.DataDisks | Where-Object {
-    $_.Name -eq $DataDiskName -or ($_.ManagedDisk -and $_.ManagedDisk.Id -eq $dataDisk.Id)
-  }
-  if (-not $attachedDataDisk) {
-    throw "VM $VmName already exists, but data disk $DataDiskName is not attached. Attach and mount it manually or deploy a different VM name."
-  }
-  Write-Host "VM $VmName already exists in resource group $ResourceGroupName; skipping VM creation." -ForegroundColor Yellow
-  Write-Host "Cloud-init only runs on first boot, so existing VM configuration is left in place." -ForegroundColor Yellow
-} else {
-  # ---------- VM Config ----------
-  $vmConfig = New-AzVMConfig -VMName $VmName -VMSize $VmSize |
-    Set-AzVMOperatingSystem -Linux -ComputerName $VmName -Credential $adminCredential -DisablePasswordAuthentication:$false |
-    Set-AzVMSourceImage @ubuntuImage |
-    Add-AzVMNetworkInterface -Id $nic.Id
+  if ($existingVm) {
+    $attachedDataDisk = $existingVm.StorageProfile.DataDisks | Where-Object {
+      $_.Name -eq $DataDiskName -or ($_.ManagedDisk -and $_.ManagedDisk.Id -eq $dataDisk.Id)
+    }
+    if (-not $attachedDataDisk) {
+      throw "VM $VmName already exists, but data disk $DataDiskName is not attached. Attach and mount it manually or deploy a different VM name."
+    }
+    Write-Host "VM $VmName already exists in resource group $ResourceGroupName; skipping VM creation." -ForegroundColor Yellow
+    Write-Host "Cloud-init only runs on first boot, so existing VM configuration is left in place." -ForegroundColor Yellow
+  } else {
+    # ---------- VM Config ----------
+    $vmConfig = New-AzVMConfig -VMName $VmName -VMSize $VmSize |
+      Set-AzVMOperatingSystem -Linux -ComputerName $VmName -Credential $adminCredential -DisablePasswordAuthentication:$false |
+      Set-AzVMSourceImage @ubuntuImage |
+      Add-AzVMNetworkInterface -Id $nic.Id
 
-  if ($sshPublicKeys.Count -gt 0) {
-    foreach ($key in $sshPublicKeys) {
-      $vmConfig = Add-AzVMSshPublicKey -VM $vmConfig -KeyData $key -Path "/home/$AdminUsername/.ssh/authorized_keys"
+    if ($sshPublicKeys.Count -gt 0) {
+      foreach ($key in $sshPublicKeys) {
+        $vmConfig = Add-AzVMSshPublicKey -VM $vmConfig -KeyData $key -Path "/home/$AdminUsername/.ssh/authorized_keys"
+      }
+    }
+
+    # Attach data disk at creation (LUN0) so cloud-init can format/mount it on first boot
+    $vmConfig = Add-AzVMDataDisk -VM $vmConfig -Name $DataDiskName -Lun 0 -CreateOption Attach -ManagedDiskId $dataDisk.Id
+
+    # Add cloud-init (custom data)
+    $vmConfig.OSProfile.CustomData = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($cloudInit))
+
+    # OS Disk (managed)
+    $vmConfig = Set-AzVMOSDisk -VM $vmConfig -CreateOption FromImage -StorageAccountType "Premium_LRS"
+
+    # ---------- Create VM ----------
+    $null = New-AzVM -ResourceGroupName $ResourceGroupName -Location $Location -VM $vmConfig
+    $vmCreated = $true
+  }
+
+  # ---------- Output ----------
+  $vmForOutput = Get-AzVM -Name $VmName -ResourceGroupName $ResourceGroupName -ErrorAction Stop
+  $primaryNicId = $vmForOutput.NetworkProfile.NetworkInterfaces[0].Id
+  if ($primaryNicId) {
+    $primaryNicName = Split-Path -Path $primaryNicId -Leaf
+    $primaryNic = Get-AzNetworkInterface -Name $primaryNicName -ResourceGroupName $ResourceGroupName -ErrorAction SilentlyContinue
+    if ($primaryNic -and $primaryNic.IpConfigurations.Count -gt 0) {
+      $publicIpId = $primaryNic.IpConfigurations[0].PublicIpAddress.Id
+      if ($publicIpId) {
+        $resolvedPublicIpName = Split-Path -Path $publicIpId -Leaf
+        $pubIp = (Get-AzPublicIpAddress -Name $resolvedPublicIpName -ResourceGroupName $ResourceGroupName -ErrorAction SilentlyContinue).IpAddress
+      }
     }
   }
-
-  # Attach data disk at creation (LUN0) so cloud-init can format/mount it on first boot
-  $vmConfig = Add-AzVMDataDisk -VM $vmConfig -Name $DataDiskName -Lun 0 -CreateOption Attach -ManagedDiskId $dataDisk.Id
-
-  # Add cloud-init (custom data)
-  $vmConfig.OSProfile.CustomData = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($cloudInit))
-
-  # OS Disk (managed)
-  $vmConfig = Set-AzVMOSDisk -VM $vmConfig -CreateOption FromImage -StorageAccountType "Premium_LRS"
-
-  # ---------- Create VM ----------
-  $null = New-AzVM -ResourceGroupName $ResourceGroupName -Location $Location -VM $vmConfig
-  $vmCreated = $true
-}
-
-# ---------- Output ----------
-$vmForOutput = Get-AzVM -Name $VmName -ResourceGroupName $ResourceGroupName -ErrorAction Stop
-$pubIp = $null
-$primaryNicId = $vmForOutput.NetworkProfile.NetworkInterfaces[0].Id
-if ($primaryNicId) {
-  $primaryNicName = Split-Path -Path $primaryNicId -Leaf
-  $primaryNic = Get-AzNetworkInterface -Name $primaryNicName -ResourceGroupName $ResourceGroupName -ErrorAction SilentlyContinue
-  if ($primaryNic -and $primaryNic.IpConfigurations.Count -gt 0) {
-    $publicIpId = $primaryNic.IpConfigurations[0].PublicIpAddress.Id
-    if ($publicIpId) {
-      $resolvedPublicIpName = Split-Path -Path $publicIpId -Leaf
-      $pubIp = (Get-AzPublicIpAddress -Name $resolvedPublicIpName -ResourceGroupName $ResourceGroupName -ErrorAction SilentlyContinue).IpAddress
-    }
+  if (-not $pubIp) {
+    $pubIp = (Get-AzPublicIpAddress -Name $PublicIpName -ResourceGroupName $ResourceGroupName -ErrorAction SilentlyContinue).IpAddress
   }
-}
-if (-not $pubIp) {
-  $pubIp = (Get-AzPublicIpAddress -Name $PublicIpName -ResourceGroupName $ResourceGroupName -ErrorAction SilentlyContinue).IpAddress
 }
 
 if (($InstallDfRemote -or $StartService) -and -not $pubIp) {
@@ -801,7 +873,7 @@ if ($InstallDfRemote -or $StartService) {
 
 Write-Host ""
 Write-Host "==================== DEPLOYMENT COMPLETE ====================" -ForegroundColor Green
-Write-Host "VM Action:   $(if ($vmCreated) { 'Created' } else { 'Reused existing VM' })"
+Write-Host "VM Action:   $(if ($SkipAzureProvisioning) { 'Skipped Azure provisioning' } elseif ($vmCreated) { 'Created' } else { 'Reused existing VM' })"
 Write-Host "SSH:        ssh $AdminUsername@$pubIp"
 Write-Host "UDP Port:   1235 (opened in NSG + UFW)"
 Write-Host "Data dir:   /srv/dfremote (on attached disk, persistent)"

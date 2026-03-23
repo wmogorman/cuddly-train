@@ -52,3 +52,17 @@ library fixup, and optionally start the systemd service.
 
 For remote downloads, prefer `-DfRemoteZipUri` with `-DfRemoteZipSha256`. The
 script rejects non-HTTPS URIs unless `-AllowInsecureDfRemoteDownload` is set.
+
+If the VM already exists and you do not want to install the Az PowerShell
+modules, you can skip Azure resource lookup entirely and target the VM by IP or
+hostname:
+
+```powershell
+.\dfremote-azure\my-deploy-dfremote-vm.ps1 `
+  -SkipAzureProvisioning `
+  -VmHost '20.120.109.152' `
+  -InstallDfRemote `
+  -DfRemoteZipPath 'C:\Installers\dfremote-complete-4705-Linux.zip' `
+  -SshPrivateKeyPath "$HOME\.ssh\id_rsa" `
+  -StartService
+```
