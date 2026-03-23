@@ -1,0 +1,2 @@
+-- Shared in-memory state backing grazer_autopen.lua.
+-- Intentionally empty: dfhack.script_environment() returns this script's env table.

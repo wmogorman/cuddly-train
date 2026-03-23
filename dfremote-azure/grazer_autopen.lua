@@ -1,6 +1,7 @@
 -- grazer_autopen.lua
 -- Auto-assign newly spawned/arrived grazing animals to a named pasture.
--- Requires: a pre-made zone named PASTURE_NAME with type Pen/Pasture.
+-- Requires: this file plus grazer_autopen_state.lua in the DFHack scripts dir,
+-- and a pre-made zone named PASTURE_NAME with type Pen/Pasture.
 --
 -- Commands:
 --   grazer_autopen start    -> begin listening for new units (births/migrants)
@@ -71,23 +72,34 @@ end
 local function zone_assign_unit(zone_name, unit_id)
   -- Use DFHack's 'zone' command to assign to a named Pen/Pasture zone.
   -- This relies on the zone tool supporting named assignment.
-  local ok, err = dfhack.run_command_silent(
+  local output, status = dfhack.run_command_silent(
     'zone', 'assign', '--name', zone_name, '--pen', '--unit', tostring(unit_id)
   )
-  if not ok then
+  if status ~= 0 then
+    local detail = ''
+    if type(output) == 'string' then
+      detail = output:gsub('%s+$', '')
+    elseif output ~= nil then
+      detail = tostring(output)
+    end
+    if #detail > 0 then
+      detail = ('exit status %s: %s'):format(status, detail)
+    else
+      detail = 'exit status ' .. tostring(status)
+    end
     dfhack.printerr(('%sFailed to assign unit %d to pasture %q: %s')
-      :format(LOG_PREFIX, unit_id, zone_name, tostring(err)))
-  else
-    dfhack.println(('%sAssigned unit %d to pasture %q')
-      :format(LOG_PREFIX, unit_id, zone_name))
+      :format(LOG_PREFIX, unit_id, zone_name, detail))
+    return false
   end
+  dfhack.println(('%sAssigned unit %d to pasture %q')
+    :format(LOG_PREFIX, unit_id, zone_name))
+  return true
 end
 
 local function assign_if_grazer(unit)
   if not unit then return false end
   if is_grazer(unit) then
-    zone_assign_unit(PASTURE_NAME, unit.id)
-    return true
+    return zone_assign_unit(PASTURE_NAME, unit.id)
   end
   return false
 end

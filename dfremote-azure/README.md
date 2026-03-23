@@ -1,33 +1,37 @@
 # DF Remote Helper Assets
 
-This directory holds all of the tooling and reference material we stage before
-copying to the DF Remote VM. The files were previously located in the repo root;
-moving them here keeps the main PowerShell automation clean while keeping the
-Dreamfort resources together.
+This directory holds the provisioning scripts and DFHack assets that get staged
+onto the DF Remote VM.
 
 ## Contents
 
 | File | Purpose |
 | --- | --- |
-| `dfremote.ps1` | Common PowerShell wrapper for provisioning the Azure VM. Run as `.\dfremote-azure\dfremote.ps1`. |
+| `dfremote.ps1` | Provision the Azure VM and supporting resources. If the VM already exists, the script reuses it instead of failing. |
 | `write-dfremote-password.ps1` | Generates the DPAPI-protected `dfremote-password.txt` on a workstation (current user scope). |
-| `my-deploy-dfremote-vm.ps1` | Personal deployment shortcut that imports `dfremote.ps1`. |
-| `dreamfort_stages.lua` | DFHack script that orchestrates Dreamfort quickfort blueprints. Copy to `/opt/dfremote/hack/scripts/dreamfort-stages.lua`. |
-| `dreamfort.csv` | Dreamfort blueprint workbook. Copy to `/opt/dfremote/hack/data/blueprints/dreamfort.csv`. |
-| `tree.csv` | Quickfort helper blueprint for tree-clearing (optional). Copy next to `dreamfort.csv` if needed. |
-| `dfhack_lib.lua` | Snapshot of DFHack Lua helpers for offline reference. |
-| `quickfort_doc.html` | Offline copy of the Quickfort documentation. |
+| `my-deploy-dfremote-vm.ps1` | Personal deployment shortcut that calls `dfremote.ps1` with local defaults. |
+| `dreamfort_stages.lua` | DFHack script that orchestrates staged Dreamfort quickfort runs. Copy to `/opt/dfremote/hack/scripts/dreamfort_stages.lua`. |
+| `tree.csv` | Optional quickfort helper blueprint for tree-clearing. Copy to `/opt/dfremote/hack/data/blueprints/tree.csv`. |
+| `dfhack_lib.lua`, `dfhack.lua.ref` | Snapshot of DFHack Lua helpers for offline reference. |
 | `fortress-workorders.json` | Saved work orders for DF Remote. |
-| `grazer_autopen.lua`, `list_blocked_practice.lua`, `rotate_training.lua` | DFHack automation scripts. Place in `/opt/dfremote/hack/scripts/`. |
+| `grazer_autopen.lua`, `grazer_autopen_state.lua`, `list_blocked_practice.lua`, `rotate_training.lua` | DFHack automation scripts. Place in `/opt/dfremote/hack/scripts/`. |
 
 ## Copying To The VM
 
 ```bash
 # Example commands from the repository root
-scp dfremote-azure/dreamfort_stages.lua william@dfremote-vm:/opt/dfremote/hack/scripts/dreamfort-stages.lua
-scp dfremote-azure/dreamfort.csv william@dfremote-vm:/opt/dfremote/hack/data/blueprints/dreamfort.csv
+scp dfremote-azure/dreamfort_stages.lua william@dfremote-vm:/opt/dfremote/hack/scripts/dreamfort_stages.lua
 scp dfremote-azure/tree.csv william@dfremote-vm:/opt/dfremote/hack/data/blueprints/tree.csv
+scp dfremote-azure/grazer_autopen.lua william@dfremote-vm:/opt/dfremote/hack/scripts/
+scp dfremote-azure/grazer_autopen_state.lua william@dfremote-vm:/opt/dfremote/hack/scripts/
+
+# Optional if you keep a local Dreamfort workbook outside this repo
+scp path/to/dreamfort.csv william@dfremote-vm:/opt/dfremote/hack/data/blueprints/dreamfort.csv
 ```
+
+`dreamfort_stages.lua` will use Quickfort's bundled `library/dreamfort.csv`
+when available. Upload a standalone `dreamfort.csv` only if you want to
+override that library copy on the VM.
 
 Restart DFHack (or run `script reload`) after uploading scripts so the new
 commands become available.

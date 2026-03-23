@@ -253,10 +253,26 @@ write_files:
       fi
 
       PART=${DISK_DEV}1
-      if ! lsblk -no FSTYPE "$DISK_DEV" | grep -q .; then
-        # Partition & format if blank
+      if [ ! -b "$PART" ]; then
+        # Partition blank disks and wait for the kernel to surface the new partition node.
         parted -s "$DISK_DEV" mklabel gpt
         parted -s "$DISK_DEV" mkpart primary ext4 0% 100%
+        partprobe "$DISK_DEV"
+        udevadm settle || true
+        for _ in $(seq 1 10); do
+          if [ -b "$PART" ]; then
+            break
+          fi
+          sleep 1
+        done
+      fi
+
+      if [ ! -b "$PART" ]; then
+        echo "Partition $PART did not appear after partitioning $DISK_DEV" >&2
+        exit 1
+      fi
+
+      if ! lsblk -no FSTYPE "$PART" | grep -q .; then
         mkfs.ext4 -F "$PART"
       fi
 
@@ -290,34 +306,67 @@ $ubuntuImage = @{
   Version       = "latest"
 }
 
-# ---------- VM Config ----------
-$vmConfig = New-AzVMConfig -VMName $VmName -VMSize $VmSize |
-  Set-AzVMOperatingSystem -Linux -ComputerName $VmName -Credential $adminCredential -DisablePasswordAuthentication:$false |
-  Set-AzVMSourceImage @ubuntuImage |
-  Add-AzVMNetworkInterface -Id $nic.Id
+# ---------- Existing VM Handling ----------
+$existingVm = Get-AzVM -Name $VmName -ResourceGroupName $ResourceGroupName -ErrorAction SilentlyContinue
+$vmCreated = $false
 
-if ($sshPublicKeys.Count -gt 0) {
-  foreach ($key in $sshPublicKeys) {
-    $vmConfig = Add-AzVMSshPublicKey -VM $vmConfig -KeyData $key -Path "/home/$AdminUsername/.ssh/authorized_keys"
+if ($existingVm) {
+  $attachedDataDisk = $existingVm.StorageProfile.DataDisks | Where-Object {
+    $_.Name -eq $DataDiskName -or ($_.ManagedDisk -and $_.ManagedDisk.Id -eq $dataDisk.Id)
   }
+  if (-not $attachedDataDisk) {
+    throw "VM $VmName already exists, but data disk $DataDiskName is not attached. Attach and mount it manually or deploy a different VM name."
+  }
+  Write-Host "VM $VmName already exists in resource group $ResourceGroupName; skipping VM creation." -ForegroundColor Yellow
+  Write-Host "Cloud-init only runs on first boot, so existing VM configuration is left in place." -ForegroundColor Yellow
+} else {
+  # ---------- VM Config ----------
+  $vmConfig = New-AzVMConfig -VMName $VmName -VMSize $VmSize |
+    Set-AzVMOperatingSystem -Linux -ComputerName $VmName -Credential $adminCredential -DisablePasswordAuthentication:$false |
+    Set-AzVMSourceImage @ubuntuImage |
+    Add-AzVMNetworkInterface -Id $nic.Id
+
+  if ($sshPublicKeys.Count -gt 0) {
+    foreach ($key in $sshPublicKeys) {
+      $vmConfig = Add-AzVMSshPublicKey -VM $vmConfig -KeyData $key -Path "/home/$AdminUsername/.ssh/authorized_keys"
+    }
+  }
+
+  # Attach data disk at creation (LUN0) so cloud-init can format/mount it on first boot
+  $vmConfig = Add-AzVMDataDisk -VM $vmConfig -Name $DataDiskName -Lun 0 -CreateOption Attach -ManagedDiskId $dataDisk.Id
+
+  # Add cloud-init (custom data)
+  $vmConfig.OSProfile.CustomData = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($cloudInit))
+
+  # OS Disk (managed)
+  $vmConfig = Set-AzVMOSDisk -VM $vmConfig -CreateOption FromImage -StorageAccountType "Premium_LRS"
+
+  # ---------- Create VM ----------
+  $null = New-AzVM -ResourceGroupName $ResourceGroupName -Location $Location -VM $vmConfig
+  $vmCreated = $true
 }
 
-# Attach data disk at creation (LUN0) so cloud-init can format/mount it on first boot
-$vmConfig = Add-AzVMDataDisk -VM $vmConfig -Name $DataDiskName -Lun 0 -CreateOption Attach -ManagedDiskId $dataDisk.Id
-
-# Add cloud-init (custom data)
-$vmConfig.OSProfile.CustomData = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($cloudInit))
-
-# OS Disk (managed)
-$vmConfig = Set-AzVMOSDisk -VM $vmConfig -CreateOption FromImage -StorageAccountType "Premium_LRS"
-
-# ---------- Create VM ----------
-$null = New-AzVM -ResourceGroupName $ResourceGroupName -Location $Location -VM $vmConfig
-
 # ---------- Output ----------
-$pubIp = (Get-AzPublicIpAddress -Name $PublicIpName -ResourceGroupName $ResourceGroupName).IpAddress
+$vmForOutput = Get-AzVM -Name $VmName -ResourceGroupName $ResourceGroupName -ErrorAction Stop
+$pubIp = $null
+$primaryNicId = $vmForOutput.NetworkProfile.NetworkInterfaces[0].Id
+if ($primaryNicId) {
+  $primaryNicName = Split-Path -Path $primaryNicId -Leaf
+  $primaryNic = Get-AzNetworkInterface -Name $primaryNicName -ResourceGroupName $ResourceGroupName -ErrorAction SilentlyContinue
+  if ($primaryNic -and $primaryNic.IpConfigurations.Count -gt 0) {
+    $publicIpId = $primaryNic.IpConfigurations[0].PublicIpAddress.Id
+    if ($publicIpId) {
+      $resolvedPublicIpName = Split-Path -Path $publicIpId -Leaf
+      $pubIp = (Get-AzPublicIpAddress -Name $resolvedPublicIpName -ResourceGroupName $ResourceGroupName -ErrorAction SilentlyContinue).IpAddress
+    }
+  }
+}
+if (-not $pubIp) {
+  $pubIp = (Get-AzPublicIpAddress -Name $PublicIpName -ResourceGroupName $ResourceGroupName -ErrorAction SilentlyContinue).IpAddress
+}
 Write-Host ""
 Write-Host "==================== DEPLOYMENT COMPLETE ====================" -ForegroundColor Green
+Write-Host "VM Action:   $(if ($vmCreated) { 'Created' } else { 'Reused existing VM' })"
 Write-Host "SSH:        ssh $AdminUsername@$pubIp"
 Write-Host "UDP Port:   1235 (opened in NSG + UFW)"
 Write-Host "Data dir:   /srv/dfremote (on attached disk, persistent)"

@@ -592,6 +592,35 @@ local function should_run_action(action, opts)
   return true
 end
 
+local function emit_command_output(out)
+  if type(out) == 'string' then
+    local trimmed = out:gsub('%s+$', '')
+    if #trimmed > 0 then
+      dfhack.println(trimmed)
+    end
+  elseif type(out) == 'table' then
+    for _, line in ipairs(out) do
+      dfhack.println(line)
+    end
+  elseif type(out) == 'number' then
+    if out ~= 0 then
+      dfhack.println(tostring(out))
+    end
+  elseif out ~= nil and out ~= '' then
+    dfhack.println(tostring(out))
+  end
+end
+
+local function run_logged_command(args)
+  dfhack.println(LOG_PREFIX .. table.concat(args, ' '))
+  local out, status = dfhack.run_command_silent(table.unpack(args))
+  emit_command_output(out)
+  if status ~= 0 then
+    dfhack.printerr(LOG_PREFIX .. 'Command failed with exit status ' .. tostring(status))
+  end
+  return status == 0
+end
+
 local function run_quickfort_action(action, opts)
   local args = {'quickfort', action.command or 'run', action.file or DREAMFORT_FILE}
   if action.labels and #action.labels > 0 then
@@ -606,42 +635,12 @@ local function run_quickfort_action(action, opts)
       table.insert(args, arg)
     end
   end
-  dfhack.println(LOG_PREFIX .. table.concat(args, ' '))
-  local ok, out = dfhack.run_command_silent(table.unpack(args))
-  if type(out) == 'string' and #out > 0 then
-    dfhack.println(out)
-  elseif type(out) == 'table' then
-    for _, line in ipairs(out) do
-      dfhack.println(line)
-    end
-  elseif type(out) == 'number' then
-    if out ~= 0 then
-      dfhack.println(tostring(out))
-    end
-  elseif out ~= nil and out ~= '' then
-    dfhack.println(tostring(out))
-  end
-  return ok
+  return run_logged_command(args)
 end
 
 local function run_command_action(action)
   local args = action.args or {}
-  dfhack.println(LOG_PREFIX .. table.concat(args, ' '))
-  local ok, out = dfhack.run_command_silent(table.unpack(args))
-  if type(out) == 'string' and #out > 0 then
-    dfhack.println(out)
-  elseif type(out) == 'table' then
-    for _, line in ipairs(out) do
-      dfhack.println(line)
-    end
-  elseif type(out) == 'number' then
-    if out ~= 0 then
-      dfhack.println(tostring(out))
-    end
-  elseif out ~= nil and out ~= '' then
-    dfhack.println(tostring(out))
-  end
-  return ok
+  return run_logged_command(args)
 end
 
 local function execute_action(action, opts)
