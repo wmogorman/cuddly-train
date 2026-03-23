@@ -1,0 +1,6 @@
+1. Store both files in a folder on Server or PC with RSAT tools. Make sure ADConnect is not running or not installed yet
+2. Open Windows From PowerShell (x64) or PowerShell 7 as Administrator and browse to folder where the files are stored
+3. Set-ExecutionPolicy Bypass -Scope Process -Force
+4. .\HardMatch-OptionC.ps1
+5. Sign in when prompted (Connect-MgGraph delegated auth) [learn.microsoft.com]
+6. Pick the AD user, then search or browse to pick the 365 user via GUI (or console fallback), and the script will hard-match by setting onPremisesImmutableId with Update-MgUser (requires User.ReadWrite.All)
