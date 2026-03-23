@@ -18,12 +18,21 @@ Usage notes:
     already exists, the script reuses it and skips VM creation.
   - Cloud-init only runs when the VM is first created. Rerunning the script does
     not replay package installs or recreate files inside an existing VM.
+  - `-AdminPassword` is only needed when the script might have to create a VM.
+    SSH-only reruns such as install, update, start, and QR operations do not
+    need the password file.
   - Optional install automation is available with `-InstallDfRemote`. Supply a
     workstation-local zip via `-DfRemoteZipPath` or a verified download URI via
     `-DfRemoteZipUri`, plus `-SshPrivateKeyPath` so the script can copy files
     and run remote install commands over SSH.
+  - `-UpdateDfRemoteServer` downloads the upstream server update delta over SSH,
+    backs up the current `remote.plug.so` and `hack/lua/remote`, installs the
+    new files, and restarts the service.
   - `-StartService` can be used alongside `-InstallDfRemote`, or by itself to
     enable and start an already-installed `dfremote` service over SSH.
+  - `-ShowRemoteQr` can be used after the service is running to execute
+    `./dfhack-run remote connect` over SSH and print the QR code in your local
+    terminal.
   - If the VM already exists and you only want the SSH-based install/start
     steps, use `-SkipAzureProvisioning -VmHost <ip-or-hostname>` to bypass the
     Az PowerShell dependency entirely.
@@ -99,9 +108,18 @@ HTTPS URI for the DF Remote zip file to download directly on the VM.
 Expected SHA-256 hash for the DF Remote zip. Required when `-DfRemoteZipUri` is
 used and optional when `-DfRemoteZipPath` is used.
 
+.PARAMETER UpdateDfRemoteServer
+Download and apply the upstream DF Remote server update over SSH by replacing
+`hack/plugins/remote.plug.so` and `hack/lua/remote`, then restarting the
+service.
+
+.PARAMETER DfRemoteUpdateUri
+URI for the DF Remote server update archive. Defaults to mifki's `latest`
+delta feed, which currently uses HTTP.
+
 .PARAMETER SshPrivateKeyPath
 Path to the SSH private key that matches a public key already authorized for the
-VM admin user. Required for `-InstallDfRemote` and `-StartService`.
+VM admin user. Required for SSH-based install, update, start, and QR actions.
 
 .PARAMETER SshPort
 SSH port used for post-provisioning install and service actions.
@@ -119,6 +137,10 @@ install/start-only runs against an already reachable VM.
 .PARAMETER VmHost
 SSH hostname or IP address to use for install/start-only runs when Azure
 resource lookup is skipped.
+
+.PARAMETER ShowRemoteQr
+After the SSH-based start/install flow completes, run `./dfhack-run remote
+connect` on the VM and display the resulting QR code in the local terminal.
 
 .EXAMPLE
 PS> .\dfremote-azure\write-dfremote-password.ps1
@@ -159,6 +181,32 @@ PS> .\dfremote-azure\dfremote.ps1 -SubscriptionId '<subscription-guid>' -Resourc
 Skips all Azure cmdlets and performs only the SSH-based install/start work
 against the existing VM at the supplied host or IP.
 
+.EXAMPLE
+PS> .\dfremote-azure\dfremote.ps1 -SubscriptionId '<subscription-guid>' -ResourceGroupName 'dfremote-rg' -Location 'eastus' -VmName 'dfremote-vm' -AdminUsername 'william' -SkipAzureProvisioning -VmHost '20.120.109.152' -SshPrivateKeyPath "$HOME\.ssh\id_rsa" -ShowRemoteQr
+
+Runs `./dfhack-run remote connect` over SSH and prints the QR code for the
+already-running DF Remote service.
+
+.EXAMPLE
+PS> .\dfremote-azure\dfremote.ps1 -SubscriptionId '<subscription-guid>' -ResourceGroupName 'dfremote-rg' -Location 'eastus' -VmName 'dfremote-vm' -AdminUsername 'william' -SkipAzureProvisioning -VmHost '20.120.109.152' -SshPrivateKeyPath "$HOME\.ssh\id_rsa" -UpdateDfRemoteServer
+
+Downloads the upstream DF Remote server update archive on the VM, backs up the
+current plugin and Lua files, installs the updated files, and restarts the
+service.
+
+.EXAMPLE
+PS> .\dfremote-azure\dfremote.ps1 -SubscriptionId '<subscription-guid>' -ResourceGroupName 'dfremote-rg' -Location 'eastus' -VmName 'dfremote-vm' -AdminUsername 'william' -SkipAzureProvisioning -VmHost '20.120.109.152' -InstallDfRemote -DfRemoteZipPath 'C:\Installers\dfremote-complete-4705-Linux.zip' -SshPrivateKeyPath "$HOME\.ssh\id_rsa" -StartService -ShowRemoteQr
+
+Installs the classic DF Remote bundle, starts the service, and then runs
+`./dfhack-run remote connect` so the QR code is printed as part of the same
+automation flow.
+
+.EXAMPLE
+PS> .\dfremote-azure\dfremote.ps1 -SubscriptionId '<subscription-guid>' -ResourceGroupName 'dfremote-rg' -Location 'eastus' -VmName 'dfremote-vm' -AdminUsername 'william' -SkipAzureProvisioning -VmHost '20.120.109.152' -SshPrivateKeyPath "$HOME\.ssh\id_rsa" -UpdateDfRemoteServer -ShowRemoteQr
+
+Updates the running DF Remote server over SSH and then prints a fresh QR code in
+the local terminal.
+
 .NOTES
 Author: you + ChatGPT
 Last updated: 2026-03-23
@@ -188,13 +236,16 @@ param(
   [string] $DfRemoteZipPath,
   [string] $DfRemoteZipUri,
   [string] $DfRemoteZipSha256,
+  [switch] $UpdateDfRemoteServer,
+  [string] $DfRemoteUpdateUri = 'http://mifki.com/df/update/dfremote-latest.zip',
   [string] $SshPrivateKeyPath,
   [int] $SshPort = 22,
   [int] $SshReadyTimeoutSeconds = 180,
   [switch] $StartService,
   [switch] $AllowInsecureDfRemoteDownload,
   [switch] $SkipAzureProvisioning,
-  [string] $VmHost
+  [string] $VmHost,
+  [switch] $ShowRemoteQr
 )
 
 function Resolve-ExistingPath {
@@ -305,7 +356,8 @@ function Invoke-SshCommandOnVm {
     [Parameter(Mandatory=$true)] [string] $HostName,
     [Parameter(Mandatory=$true)] [string] $UserName,
     [Parameter(Mandatory=$true)] [string] $PrivateKeyPath,
-    [int] $Port = 22
+    [int] $Port = 22,
+    [switch] $AllocateTty
   )
 
   $sshPath = Get-OpenSshCommandPath -CommandName 'ssh'
@@ -318,7 +370,46 @@ function Invoke-SshCommandOnVm {
     "${UserName}@${HostName}",
     $CommandText
   )
+  if ($AllocateTty) {
+    $arguments = @(
+      '-i', $PrivateKeyPath,
+      '-p', [string]$Port,
+      '-tt',
+      '-o', 'BatchMode=yes',
+      '-o', 'StrictHostKeyChecking=accept-new',
+      '-o', 'ConnectTimeout=15',
+      "${UserName}@${HostName}",
+      $CommandText
+    )
+  }
   Invoke-ExternalCommand -FilePath $sshPath -Arguments $arguments -FailureMessage "SSH command on $HostName failed"
+}
+
+function Invoke-RemoteScriptOnVm {
+  param(
+    [Parameter(Mandatory=$true)] [string] $ScriptText,
+    [Parameter(Mandatory=$true)] [string] $HostName,
+    [Parameter(Mandatory=$true)] [string] $UserName,
+    [Parameter(Mandatory=$true)] [string] $PrivateKeyPath,
+    [int] $Port = 22,
+    [switch] $AllocateTty,
+    [string] $RemoteScriptPrefix = 'dfremote-remote'
+  )
+
+  $runId = [Guid]::NewGuid().ToString('N')
+  $remoteScriptPath = "/tmp/$RemoteScriptPrefix-$runId.sh"
+  $localScriptPath = Join-Path -Path ([System.IO.Path]::GetTempPath()) -ChildPath "$RemoteScriptPrefix-$runId.sh"
+
+  try {
+    [System.IO.File]::WriteAllText($localScriptPath, ($ScriptText -replace "`r`n", "`n"), [System.Text.UTF8Encoding]::new($false))
+    Copy-FileToVmOverScp -LocalPath $localScriptPath -RemotePath $remoteScriptPath -HostName $HostName -UserName $UserName -PrivateKeyPath $PrivateKeyPath -Port $Port
+
+    $quotedRemoteScriptPath = ConvertTo-BashSingleQuotedString -Value $remoteScriptPath
+    $remoteCommand = "bash $quotedRemoteScriptPath; status=`$?; rm -f $quotedRemoteScriptPath; exit `$status"
+    Invoke-SshCommandOnVm -CommandText $remoteCommand -HostName $HostName -UserName $UserName -PrivateKeyPath $PrivateKeyPath -Port $Port -AllocateTty:$AllocateTty
+  } finally {
+    Remove-Item -Path $localScriptPath -Force -ErrorAction SilentlyContinue
+  }
 }
 
 function Invoke-DfRemotePostProvisioning {
@@ -341,8 +432,6 @@ function Invoke-DfRemotePostProvisioning {
 
   $runId = [Guid]::NewGuid().ToString('N')
   $remoteZipPath = if ($InstallPackage) { "/tmp/dfremote-package-$runId.zip" } else { '' }
-  $remoteScriptPath = "/tmp/dfremote-postprovision-$runId.sh"
-  $localScriptPath = Join-Path -Path ([System.IO.Path]::GetTempPath()) -ChildPath "dfremote-postprovision-$runId.sh"
 
   try {
     if ($InstallPackage -and $LocalZipPath) {
@@ -396,9 +485,81 @@ if [ "$INSTALL_PACKAGE" = 'true' ]; then
   if [ -x /usr/local/sbin/dfremote-fix-libs.sh ]; then
     sudo /usr/local/sbin/dfremote-fix-libs.sh
   fi
-  [ -f "$INSTALL_ROOT/bin/dfremote-server" ] || { echo "Expected $INSTALL_ROOT/bin/dfremote-server after unzip." >&2; exit 1; }
-  sudo chmod 0755 "$INSTALL_ROOT/bin/dfremote-server"
+  if [ -f "$INSTALL_ROOT/bin/dfremote-server" ]; then
+    sudo chmod 0755 "$INSTALL_ROOT/bin/dfremote-server"
+  elif [ -f "$INSTALL_ROOT/dfhack" ]; then
+    sudo chmod 0755 "$INSTALL_ROOT/dfhack"
+    [ ! -f "$INSTALL_ROOT/df" ] || sudo chmod 0755 "$INSTALL_ROOT/df"
+    [ ! -f "$INSTALL_ROOT/dfhack-run" ] || sudo chmod 0755 "$INSTALL_ROOT/dfhack-run"
+    if [ -f "$INSTALL_ROOT/dfhack-config/init/default.dfhack.init" ] && ! grep -qx 'remote connect' "$INSTALL_ROOT/dfhack-config/init/default.dfhack.init"; then
+      echo 'remote connect' | sudo tee -a "$INSTALL_ROOT/dfhack-config/init/default.dfhack.init" >/dev/null
+    fi
+  else
+    echo "No supported DF Remote entrypoint found after unzip. Expected $INSTALL_ROOT/bin/dfremote-server or $INSTALL_ROOT/dfhack." >&2
+    exit 1
+  fi
 fi
+
+sudo tee /usr/local/sbin/dfremote-launch.sh >/dev/null <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+INSTALL_ROOT='/opt/dfremote'
+DATA_DIR='/srv/dfremote'
+TERM="${TERM:-xterm}"
+export TERM
+
+mkdir -p "$DATA_DIR"
+
+if [ -x "$INSTALL_ROOT/bin/dfremote-server" ]; then
+  exec "$INSTALL_ROOT/bin/dfremote-server" --data-dir "$DATA_DIR" --port 1235 --host 0.0.0.0
+fi
+
+if [ -x "$INSTALL_ROOT/dfhack" ]; then
+  INIT_FILE="$INSTALL_ROOT/data/init/init.txt"
+  SAVE_ROOT="$DATA_DIR/save"
+  mkdir -p "$SAVE_ROOT"
+  if [ -f "$INIT_FILE" ]; then
+    sed -i 's/^\[PRINT_MODE:.*\]/[PRINT_MODE:TEXT]/' "$INIT_FILE"
+  fi
+  if [ -e "$INSTALL_ROOT/data/save" ] && [ ! -L "$INSTALL_ROOT/data/save" ]; then
+    if [ -d "$INSTALL_ROOT/data/save" ]; then
+      cp -a "$INSTALL_ROOT/data/save/." "$SAVE_ROOT/" 2>/dev/null || true
+      rm -rf "$INSTALL_ROOT/data/save"
+    else
+      rm -f "$INSTALL_ROOT/data/save"
+    fi
+  fi
+  ln -sfn "$SAVE_ROOT" "$INSTALL_ROOT/data/save"
+  exec "$INSTALL_ROOT/dfhack"
+fi
+
+echo "No supported DF Remote entrypoint found under $INSTALL_ROOT" >&2
+exit 1
+EOF
+sudo chmod 0755 /usr/local/sbin/dfremote-launch.sh
+
+sudo tee /etc/systemd/system/dfremote.service >/dev/null <<'EOF'
+[Unit]
+Description=DF Remote Server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Environment=DATA_DIR=/srv/dfremote
+Environment=TERM=xterm
+WorkingDirectory=/opt/dfremote
+ExecStart=/usr/local/sbin/dfremote-launch.sh
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+
+[Install]
+WantedBy=multi-user.target
+EOF
 
 sudo systemctl daemon-reload
 if [ "$START_SERVICE" = 'true' ]; then
@@ -416,16 +577,86 @@ sudo systemctl --no-pager --full status dfremote || true
     $remoteScript = $remoteScript.Replace('__ALLOW_INSECURE_DOWNLOAD__', (ConvertTo-BashSingleQuotedString -Value ([string]$AllowInsecureDownload.IsPresent).ToLowerInvariant()))
     $remoteScript = $remoteScript.Replace('__START_SERVICE__', (ConvertTo-BashSingleQuotedString -Value ([string]$StartDfRemoteService.IsPresent).ToLowerInvariant()))
     $remoteScript = $remoteScript.Replace('__REMOTE_ZIP_PATH__', (ConvertTo-BashSingleQuotedString -Value $remoteZipPath))
-
-    [System.IO.File]::WriteAllText($localScriptPath, ($remoteScript -replace "`r`n", "`n"), [System.Text.UTF8Encoding]::new($false))
-    Copy-FileToVmOverScp -LocalPath $localScriptPath -RemotePath $remoteScriptPath -HostName $HostName -UserName $UserName -PrivateKeyPath $PrivateKeyPath -Port $Port
-
-    $quotedRemoteScriptPath = ConvertTo-BashSingleQuotedString -Value $remoteScriptPath
-    $remoteCommand = "bash $quotedRemoteScriptPath; status=`$?; rm -f $quotedRemoteScriptPath; exit `$status"
-    Invoke-SshCommandOnVm -CommandText $remoteCommand -HostName $HostName -UserName $UserName -PrivateKeyPath $PrivateKeyPath -Port $Port
+    Invoke-RemoteScriptOnVm `
+      -ScriptText $remoteScript `
+      -HostName $HostName `
+      -UserName $UserName `
+      -PrivateKeyPath $PrivateKeyPath `
+      -Port $Port `
+      -RemoteScriptPrefix 'dfremote-postprovision'
   } finally {
-    Remove-Item -Path $localScriptPath -Force -ErrorAction SilentlyContinue
   }
+}
+
+function Invoke-DfRemoteServerUpdate {
+  param(
+    [Parameter(Mandatory=$true)] [string] $HostName,
+    [Parameter(Mandatory=$true)] [string] $UserName,
+    [Parameter(Mandatory=$true)] [string] $PrivateKeyPath,
+    [Parameter(Mandatory=$true)] [string] $UpdateUri,
+    [int] $Port = 22,
+    [int] $ReadyTimeoutSeconds = 180
+  )
+
+  Write-Host "Updating DF Remote server files on $HostName..." -ForegroundColor Cyan
+  Wait-ForTcpPort -HostName $HostName -Port $Port -TimeoutSeconds $ReadyTimeoutSeconds
+
+  $remoteScript = @'
+#!/usr/bin/env bash
+set -euo pipefail
+
+UPDATE_URI=__UPDATE_URI__
+INSTALL_ROOT='/opt/dfremote'
+TMP_ROOT=$(mktemp -d /tmp/dfremote-update.XXXXXX)
+ZIP_PATH="$TMP_ROOT/dfremote-latest.zip"
+EXTRACT_ROOT="$TMP_ROOT/extract"
+
+cleanup() {
+  rm -rf "$TMP_ROOT"
+}
+trap cleanup EXIT
+
+command -v curl >/dev/null 2>&1 || { echo 'curl is required but not installed.' >&2; exit 1; }
+command -v unzip >/dev/null 2>&1 || { echo 'unzip is required but not installed.' >&2; exit 1; }
+
+mkdir -p "$EXTRACT_ROOT"
+curl -fsSL "$UPDATE_URI" -o "$ZIP_PATH"
+unzip -o "$ZIP_PATH" -d "$EXTRACT_ROOT" >/dev/null
+
+PLUGIN_SRC=$(find "$EXTRACT_ROOT" -path '*/linux/remote.plug.so' -type f | head -n 1)
+LUA_SRC="$EXTRACT_ROOT/remote"
+PLUGIN_DST="$INSTALL_ROOT/hack/plugins/remote.plug.so"
+LUA_DST="$INSTALL_ROOT/hack/lua/remote"
+
+[ -n "$PLUGIN_SRC" ] || { echo "Could not locate linux/remote.plug.so in update archive." >&2; exit 1; }
+[ -d "$LUA_SRC" ] || { echo "Could not locate remote Lua directory in update archive." >&2; exit 1; }
+[ -f "$PLUGIN_DST" ] || { echo "Existing plugin not found at $PLUGIN_DST" >&2; exit 1; }
+[ -d "$LUA_DST" ] || { echo "Existing Lua directory not found at $LUA_DST" >&2; exit 1; }
+
+STAMP=$(date +%Y%m%d-%H%M%S)
+BACKUP_ROOT="$INSTALL_ROOT/update-backups/$STAMP"
+sudo mkdir -p "$BACKUP_ROOT"
+sudo cp "$PLUGIN_DST" "$BACKUP_ROOT/remote.plug.so"
+sudo cp -a "$LUA_DST" "$BACKUP_ROOT/remote"
+
+sudo systemctl stop dfremote || true
+sudo install -m 0755 "$PLUGIN_SRC" "$PLUGIN_DST"
+sudo rm -rf "$LUA_DST"
+sudo cp -a "$LUA_SRC" "$LUA_DST"
+sudo chown -R root:root "$LUA_DST"
+sudo systemctl start dfremote
+sudo systemctl --no-pager --full status dfremote
+echo "Backup saved to $BACKUP_ROOT"
+'@
+
+  $remoteScript = $remoteScript.Replace('__UPDATE_URI__', (ConvertTo-BashSingleQuotedString -Value $UpdateUri))
+  Invoke-RemoteScriptOnVm `
+    -ScriptText $remoteScript `
+    -HostName $HostName `
+    -UserName $UserName `
+    -PrivateKeyPath $PrivateKeyPath `
+    -Port $Port `
+    -RemoteScriptPrefix 'dfremote-update'
 }
 
 function Import-AzModulesIfAvailable {
@@ -460,10 +691,39 @@ Install or import the Az modules, then run:
   Install-Module Az -Scope CurrentUser
   Connect-AzAccount
 
-If you only want to install or start DF Remote on an existing VM, rerun with:
+If you only want to run SSH-based DF Remote actions on an existing VM, rerun with:
   -SkipAzureProvisioning -VmHost <ip-or-hostname>
 "@
   }
+}
+
+function New-AdminCredential {
+  param(
+    [Parameter(Mandatory=$true)] [string] $AdminUsername,
+    [SecureString] $AdminPassword,
+    [Parameter(Mandatory=$true)] [string] $AdminPasswordFile
+  )
+
+  if (-not $AdminPassword) {
+    if (-not (Test-Path -Path $AdminPasswordFile)) {
+      throw "Admin password file not found at $AdminPasswordFile. Create it with ConvertFrom-SecureString (DPAPI) on this machine."
+    }
+    $encryptedAdminPassword = (Get-Content -Path $AdminPasswordFile -Raw).Trim()
+    if (-not $encryptedAdminPassword) {
+      throw "Admin password file at $AdminPasswordFile is empty."
+    }
+    try {
+      $AdminPassword = ConvertTo-SecureString -String $encryptedAdminPassword
+    } catch {
+      throw "Failed to convert admin password from $AdminPasswordFile. Regenerate it on the same account that will run this script."
+    }
+  }
+
+  if (-not $AdminPassword) {
+    throw "Admin password not provided. Pass -AdminPassword or ensure dfremote-password.txt exists."
+  }
+
+  return New-Object -TypeName PSCredential -ArgumentList $AdminUsername, $AdminPassword
 }
 
 if ($InstallDfRemote -and [string]::IsNullOrWhiteSpace($DfRemoteZipPath) -and [string]::IsNullOrWhiteSpace($DfRemoteZipUri)) {
@@ -474,8 +734,8 @@ if ($InstallDfRemote -and $DfRemoteZipPath -and $DfRemoteZipUri) {
   throw "Specify only one of -DfRemoteZipPath or -DfRemoteZipUri."
 }
 
-if (($InstallDfRemote -or $StartService) -and [string]::IsNullOrWhiteSpace($SshPrivateKeyPath)) {
-  throw "-SshPrivateKeyPath is required when using -InstallDfRemote or -StartService."
+if (($InstallDfRemote -or $UpdateDfRemoteServer -or $StartService) -and [string]::IsNullOrWhiteSpace($SshPrivateKeyPath)) {
+  throw "-SshPrivateKeyPath is required when using -InstallDfRemote, -UpdateDfRemoteServer, or -StartService."
 }
 
 if ($SkipAzureProvisioning -and [string]::IsNullOrWhiteSpace($VmHost)) {
@@ -502,6 +762,13 @@ if ($DfRemoteZipUri -and -not $AllowInsecureDfRemoteDownload -and ($DfRemoteZipU
   throw "-DfRemoteZipUri must use HTTPS unless -AllowInsecureDfRemoteDownload is specified."
 }
 
+if ($DfRemoteUpdateUri -and -not $UpdateDfRemoteServer) {
+  # Allow the default value to exist without forcing update mode.
+  if ($DfRemoteUpdateUri -ne 'http://mifki.com/df/update/dfremote-latest.zip') {
+    throw "-DfRemoteUpdateUri is only valid with -UpdateDfRemoteServer."
+  }
+}
+
 if ($DfRemoteZipPath) {
   $DfRemoteZipPath = Resolve-ExistingPath -Path $DfRemoteZipPath -ParameterName 'DfRemoteZipPath'
 }
@@ -511,26 +778,7 @@ if ($SshPrivateKeyPath) {
 }
 
 # ---------- Admin Password ----------
-if (-not $AdminPassword) {
-  if (-not (Test-Path -Path $AdminPasswordFile)) {
-    throw "Admin password file not found at $AdminPasswordFile. Create it with ConvertFrom-SecureString (DPAPI) on this machine."
-  }
-  $encryptedAdminPassword = (Get-Content -Path $AdminPasswordFile -Raw).Trim()
-  if (-not $encryptedAdminPassword) {
-    throw "Admin password file at $AdminPasswordFile is empty."
-  }
-  try {
-    $AdminPassword = ConvertTo-SecureString -String $encryptedAdminPassword
-  } catch {
-    throw "Failed to convert admin password from $AdminPasswordFile. Regenerate it on the same account that will run this script."
-  }
-}
-
-if (-not $AdminPassword) {
-  throw "Admin password not provided. Pass -AdminPassword or ensure dfremote-password.txt exists."
-}
-
-$adminCredential = New-Object -TypeName PSCredential -ArgumentList $AdminUsername, $AdminPassword
+$adminCredential = $null
 
 # ---------- SSH Keys (optional) ----------
 $sshPublicKeys = @()
@@ -671,13 +919,54 @@ write_files:
       # Prefer system libstdc++ over bundled for DFHack/DF Remote
       export DFHACK_NO_RENAME_LIBSTDCXX=1
 
+  - path: /usr/local/sbin/dfremote-launch.sh
+    permissions: '0755'
+    content: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+      INSTALL_ROOT='/opt/dfremote'
+      DATA_DIR='/srv/dfremote'
+      TERM="${TERM:-xterm}"
+      export TERM
+
+      mkdir -p "$DATA_DIR"
+
+      if [ -x "$INSTALL_ROOT/bin/dfremote-server" ]; then
+        exec "$INSTALL_ROOT/bin/dfremote-server" --data-dir "$DATA_DIR" --port 1235 --host 0.0.0.0
+      fi
+
+      if [ -x "$INSTALL_ROOT/dfhack" ]; then
+        INIT_FILE="$INSTALL_ROOT/data/init/init.txt"
+        SAVE_ROOT="$DATA_DIR/save"
+        mkdir -p "$SAVE_ROOT"
+        if [ -f "$INIT_FILE" ]; then
+          sed -i 's/^\[PRINT_MODE:.*\]/[PRINT_MODE:TEXT]/' "$INIT_FILE"
+        fi
+        if [ -e "$INSTALL_ROOT/data/save" ] && [ ! -L "$INSTALL_ROOT/data/save" ]; then
+          if [ -d "$INSTALL_ROOT/data/save" ]; then
+            cp -a "$INSTALL_ROOT/data/save/." "$SAVE_ROOT/" 2>/dev/null || true
+            rm -rf "$INSTALL_ROOT/data/save"
+          else
+            rm -f "$INSTALL_ROOT/data/save"
+          fi
+        fi
+        ln -sfn "$SAVE_ROOT" "$INSTALL_ROOT/data/save"
+        exec "$INSTALL_ROOT/dfhack"
+      fi
+
+      echo "No supported DF Remote entrypoint found under $INSTALL_ROOT" >&2
+      exit 1
+
   - path: /opt/dfremote/README-FIRST.txt
     permissions: '0644'
     content: |
       Welcome to DF Remote VM (no containers).
       Persistent data lives in: /srv/dfremote
-      Place your server binary/scripts in: /opt/dfremote/bin
-      Systemd service expects: /opt/dfremote/bin/dfremote-server
+      Install root lives in: /opt/dfremote
+      Systemd launcher: /usr/local/sbin/dfremote-launch.sh
+      Supported entrypoints:
+        - /opt/dfremote/bin/dfremote-server
+        - /opt/dfremote/dfhack
 
       Quick start once binary is in place:
         sudo systemctl daemon-reload
@@ -689,10 +978,11 @@ write_files:
       NOTE (Dwarf Fortress Remote):
         Use the all-in-one package (DF 0.47.05 + DFHack + Remote Server):
           http://mifki.com/df/update/dfremote-complete-4705-Linux.zip
-        Download and extract to /opt/dfremote, ensure dfremote-server is executable.
+        Download and extract to /opt/dfremote.
         After extraction, run:
           sudo /usr/local/sbin/dfremote-fix-libs.sh
         This removes the bundled libstdc++.so.6 so the system lib is used.
+        The launcher will use /opt/dfremote/dfhack for the classic all-in-one package.
         You can automate the copy/install/start steps from dfremote.ps1 by using:
           -InstallDfRemote -DfRemoteZipPath <local zip> -SshPrivateKeyPath <key> [-StartService]
 
@@ -708,8 +998,9 @@ write_files:
       Type=simple
       User=root
       Environment=DATA_DIR=/srv/dfremote
+      Environment=TERM=xterm
       WorkingDirectory=/opt/dfremote
-      ExecStart=/opt/dfremote/bin/dfremote-server --data-dir ${DATA_DIR} --port 1235 --host 0.0.0.0
+      ExecStart=/usr/local/sbin/dfremote-launch.sh
       Restart=on-failure
       RestartSec=5s
       # Hardening (tune as needed)
@@ -780,7 +1071,7 @@ runcmd:
   - yes | ufw enable
   - bash /usr/local/sbin/azure-disk-mount.sh
   - systemctl daemon-reload
-  # service is disabled until you place a real binary at /opt/dfremote/bin/dfremote-server
+  # service is disabled until you place a supported DF Remote install under /opt/dfremote
   # enable it later with: systemctl enable --now dfremote
 '@
 $cloudInit = $cloudInit.Replace('__ADMIN_USERNAME__', $AdminUsername)
@@ -808,6 +1099,7 @@ if (-not $SkipAzureProvisioning) {
     Write-Host "Cloud-init only runs on first boot, so existing VM configuration is left in place." -ForegroundColor Yellow
   } else {
     # ---------- VM Config ----------
+    $adminCredential = New-AdminCredential -AdminUsername $AdminUsername -AdminPassword $AdminPassword -AdminPasswordFile $AdminPasswordFile
     $vmConfig = New-AzVMConfig -VMName $VmName -VMSize $VmSize |
       Set-AzVMOperatingSystem -Linux -ComputerName $VmName -Credential $adminCredential -DisablePasswordAuthentication:$false |
       Set-AzVMSourceImage @ubuntuImage |
@@ -852,8 +1144,16 @@ if (-not $SkipAzureProvisioning) {
   }
 }
 
-if (($InstallDfRemote -or $StartService) -and -not $pubIp) {
+if (($InstallDfRemote -or $UpdateDfRemoteServer -or $StartService) -and -not $pubIp) {
   throw "Could not determine the VM public IP address needed for SSH-based post-provisioning steps."
+}
+
+if ($ShowRemoteQr -and [string]::IsNullOrWhiteSpace($SshPrivateKeyPath)) {
+  throw "-SshPrivateKeyPath is required when using -ShowRemoteQr."
+}
+
+if ($ShowRemoteQr -and -not $pubIp) {
+  throw "Could not determine the VM public IP address needed for -ShowRemoteQr."
 }
 
 if ($InstallDfRemote -or $StartService) {
@@ -871,6 +1171,49 @@ if ($InstallDfRemote -or $StartService) {
     -StartDfRemoteService:$StartService
 }
 
+if ($UpdateDfRemoteServer) {
+  Invoke-DfRemoteServerUpdate `
+    -HostName $pubIp `
+    -UserName $AdminUsername `
+    -PrivateKeyPath $SshPrivateKeyPath `
+    -UpdateUri $DfRemoteUpdateUri `
+    -Port $SshPort `
+    -ReadyTimeoutSeconds $SshReadyTimeoutSeconds
+}
+
+if ($ShowRemoteQr) {
+  Write-Host "Requesting DF Remote QR code from $pubIp..." -ForegroundColor Cyan
+  $qrCommand = @'
+#!/usr/bin/env bash
+set -euo pipefail
+for _ in $(seq 1 15); do
+  if systemctl is-active --quiet dfremote; then
+    break
+  fi
+  sleep 1
+done
+if ! systemctl is-active --quiet dfremote; then
+  echo "dfremote service is not active; cannot run ./dfhack-run remote connect." >&2
+  exit 1
+fi
+cd /opt/dfremote
+if [ ! -x ./dfhack-run ]; then
+  echo "/opt/dfremote/dfhack-run was not found or is not executable." >&2
+  exit 1
+fi
+export TERM="${TERM:-xterm}"
+exec ./dfhack-run remote connect
+'@
+  Invoke-RemoteScriptOnVm `
+    -ScriptText $qrCommand `
+    -HostName $pubIp `
+    -UserName $AdminUsername `
+    -PrivateKeyPath $SshPrivateKeyPath `
+    -Port $SshPort `
+    -AllocateTty `
+    -RemoteScriptPrefix 'dfremote-show-qr'
+}
+
 Write-Host ""
 Write-Host "==================== DEPLOYMENT COMPLETE ====================" -ForegroundColor Green
 Write-Host "VM Action:   $(if ($SkipAzureProvisioning) { 'Skipped Azure provisioning' } elseif ($vmCreated) { 'Created' } else { 'Reused existing VM' })"
@@ -878,12 +1221,17 @@ Write-Host "SSH:        ssh $AdminUsername@$pubIp"
 Write-Host "UDP Port:   1235 (opened in NSG + UFW)"
 Write-Host "Data dir:   /srv/dfremote (on attached disk, persistent)"
 if ($InstallDfRemote) {
-  Write-Host "Binary dir: /opt/dfremote/bin (DF Remote package installed)"
+  Write-Host "Install dir: /opt/dfremote (DF Remote package installed)"
 } else {
-  Write-Host "Binary dir: /opt/dfremote/bin (put 'dfremote-server' here, chmod +x)"
+  Write-Host "Install dir: /opt/dfremote (launcher auto-detects dfremote-server or dfhack)"
+}
+if ($UpdateDfRemoteServer) {
+  Write-Host "Update:     Applied DF Remote server delta from $DfRemoteUpdateUri"
 }
 if ($StartService) {
   Write-Host "Service:    dfremote was enabled and started over SSH"
+} elseif ($UpdateDfRemoteServer) {
+  Write-Host "Service:    dfremote was restarted after updating server files"
 } else {
   Write-Host "Service:    sudo systemctl enable --now dfremote"
 }

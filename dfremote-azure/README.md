@@ -53,6 +53,57 @@ library fixup, and optionally start the systemd service.
 For remote downloads, prefer `-DfRemoteZipUri` with `-DfRemoteZipSha256`. The
 script rejects non-HTTPS URIs unless `-AllowInsecureDfRemoteDownload` is set.
 
+## Updating The Server Plugin
+
+The in-app server updater currently does not work on this Ubuntu 22.04 VM
+layout because `remote-updater.plug.so` expects OpenSSL 1.1. Use the scripted
+SSH update instead:
+
+```powershell
+.\dfremote-azure\my-deploy-dfremote-vm.ps1 `
+  -SkipAzureProvisioning `
+  -VmHost '20.120.109.152' `
+  -UpdateDfRemoteServer
+```
+
+That workflow downloads mifki's `dfremote-latest.zip` delta on the VM, backs up
+the current `remote.plug.so` and `hack/lua/remote`, installs the updated files,
+and restarts `dfremote`.
+
+Once the service is running, you can have the automation print the DF Remote QR
+code in your local terminal by adding `-ShowRemoteQr`:
+
+```powershell
+.\dfremote-azure\my-deploy-dfremote-vm.ps1 `
+  -SkipAzureProvisioning `
+  -VmHost '20.120.109.152' `
+  -SshPrivateKeyPath "$HOME\.ssh\id_rsa" `
+  -ShowRemoteQr
+```
+
+You can also fold the QR step into the same install/start run:
+
+```powershell
+.\dfremote-azure\my-deploy-dfremote-vm.ps1 `
+  -SkipAzureProvisioning `
+  -VmHost '20.120.109.152' `
+  -InstallDfRemote `
+  -DfRemoteZipPath 'C:\Installers\dfremote-complete-4705-Linux.zip' `
+  -SshPrivateKeyPath "$HOME\.ssh\id_rsa" `
+  -StartService `
+  -ShowRemoteQr
+```
+
+Or update the running server and then print a fresh QR code in one shot:
+
+```powershell
+.\dfremote-azure\my-deploy-dfremote-vm.ps1 `
+  -SkipAzureProvisioning `
+  -VmHost '20.120.109.152' `
+  -UpdateDfRemoteServer `
+  -ShowRemoteQr
+```
+
 If the VM already exists and you do not want to install the Az PowerShell
 modules, you can skip Azure resource lookup entirely and target the VM by IP or
 hostname:
