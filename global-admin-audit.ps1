@@ -77,7 +77,7 @@ param(
     [string]$TenantListPath,
 
     [Parameter(Mandatory = $false)]
-    [switch]$AutoDiscoverTenants = $true,
+    [switch]$AutoDiscoverTenants,
 
     [Parameter(Mandatory = $false)]
     [string]$DiscoveryTenantId,
@@ -108,7 +108,7 @@ param(
     [switch]$DryRun,
 
     [Parameter(Mandatory = $false)]
-    [switch]$RemoveStaleMembers = $true,
+    [switch]$RemoveStaleMembers,
 
     [Parameter(Mandatory = $false)]
     [switch]$StopOnError
@@ -117,6 +117,8 @@ param(
 $ErrorActionPreference = "Stop"
 $globalAdminTemplateId = "62e90394-69f5-4237-9190-012177145e10"
 $script:TenantDisplayNameById = @{}
+$autoDiscoverTenantsEnabled = if ($PSBoundParameters.ContainsKey('AutoDiscoverTenants')) { [bool]$AutoDiscoverTenants } else { $true }
+$removeStaleMembersEnabled = if ($PSBoundParameters.ContainsKey('RemoveStaleMembers')) { [bool]$RemoveStaleMembers } else { $true }
 
 function Write-Log {
     param(
@@ -675,7 +677,7 @@ function Invoke-WithRetry {
     }
 }
 
-function Discover-PartnerTenantTargets {
+function Get-PartnerTenantTargets {
     param(
         [string]$DiscoveryTenantId,
         [ValidateSet("GDAP", "GDAPAndContracts")]
@@ -970,7 +972,7 @@ function Sync-TenantAuditGroup {
             }
         }
 
-        if ($RemoveStaleMembers) {
+        if ($removeStaleMembersEnabled) {
             $idsToRemove = @($currentMemberIds.Keys | Where-Object { -not $globalAdminIds.ContainsKey($_) })
             foreach ($id in $idsToRemove) {
                 $display = Get-DirectoryObjectDisplay -Object $currentMemberIds[$id]
@@ -1020,7 +1022,7 @@ function Sync-TenantAuditGroup {
     return [pscustomobject]$summary
 }
 
-Assert-RequiredGraphCmdlets -RequireDiscoveryCmdlets:$AutoDiscoverTenants -DiscoveryMode $DiscoveryMode
+Assert-RequiredGraphCmdlets -RequireDiscoveryCmdlets:$autoDiscoverTenantsEnabled -DiscoveryMode $DiscoveryMode
 
 $manualTargets = Resolve-TenantTargets -TenantId $TenantId -TenantListPath $TenantListPath -AllowEmpty
 $extraIncludeTargets = Get-NormalizedTenantIdList -TenantIds $IncludeTenantId
@@ -1028,7 +1030,7 @@ $excludeTargets = Get-NormalizedTenantIdList -TenantIds $ExcludeTenantId
 
 $resolvedDiscoveryTenantId = $DiscoveryTenantId
 $discoveredTargets = @()
-if ($AutoDiscoverTenants) {
+if ($autoDiscoverTenantsEnabled) {
     if ([string]::IsNullOrWhiteSpace($resolvedDiscoveryTenantId)) {
         $resolvedDiscoveryTenantId = [string](Read-Host "Enter discovery tenant ID/domain for auto-discovery")
         if ([string]::IsNullOrWhiteSpace($resolvedDiscoveryTenantId)) {
@@ -1038,7 +1040,7 @@ if ($AutoDiscoverTenants) {
         Write-Log -Message "Using prompted discovery tenant '$resolvedDiscoveryTenantId'."
     }
 
-    $discoveredTargets = Discover-PartnerTenantTargets `
+    $discoveredTargets = Get-PartnerTenantTargets `
         -DiscoveryTenantId $resolvedDiscoveryTenantId `
         -DiscoveryMode $DiscoveryMode `
         -IncludeMspTenant:$IncludeMspTenant
