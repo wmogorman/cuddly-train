@@ -39,7 +39,7 @@ param(
     [int]$PasswordExpiryWarningDays = 14,
 
     [ValidateNotNullOrEmpty()]
-    [string]$StrongPasswordGpoName = 'TechCare Strong Password Policy',
+    [string]$StrongPolicyGpoName = 'TechCare Strong Password Policy',
 
     [switch]$NoVerify,
 
@@ -387,7 +387,7 @@ function Get-SecurityExtensionPair {
     return $null
 }
 
-function Ensure-GpoSecurityExtensionRegistration {
+function Set-GpoSecurityExtensionRegistration {
     param(
         [Parameter(Mandatory)]
         [guid]$TargetGpoId,
@@ -518,51 +518,51 @@ $systemAccessKeys = @($systemAccessValues.Keys)
 
 # --- Ensure GPOs exist and dedicated GPO is linked at highest precedence ---
 $defaultDomainPolicy = Get-GPO -Name $defaultDomainPolicyName -Domain $domain.DNSRoot -Server $policyServer -ErrorAction Stop
-$strongPasswordGpo = Get-GPO -Name $StrongPasswordGpoName -Domain $domain.DNSRoot -Server $policyServer -ErrorAction SilentlyContinue
+$strongPasswordGpo = Get-GPO -Name $StrongPolicyGpoName -Domain $domain.DNSRoot -Server $policyServer -ErrorAction SilentlyContinue
 
 if (-not $strongPasswordGpo) {
-    if ($PSCmdlet.ShouldProcess($StrongPasswordGpoName, 'Create dedicated strong-password GPO')) {
+    if ($PSCmdlet.ShouldProcess($StrongPolicyGpoName, 'Create dedicated strong-password GPO')) {
         $strongPasswordGpo = New-GPO `
-            -Name $StrongPasswordGpoName `
+            -Name $StrongPolicyGpoName `
             -Comment 'Dedicated domain-root password policy GPO managed by strong-password-techcare.ps1' `
             -Domain $domain.DNSRoot `
             -Server $policyServer
 
-        Write-Host "Created GPO '$StrongPasswordGpoName'." -ForegroundColor Green
+        Write-Host "Created GPO '$StrongPolicyGpoName'." -ForegroundColor Green
     }
     else {
-        throw "Dedicated GPO '$StrongPasswordGpoName' does not exist and creation was skipped."
+        throw "Dedicated GPO '$StrongPolicyGpoName' does not exist and creation was skipped."
     }
 }
 
 $domainTarget = $domain.DistinguishedName
 $inheritance = Get-GPInheritance -Target $domainTarget -Domain $domain.DNSRoot -Server $policyServer -ErrorAction Stop
-$existingStrongLink = $inheritance.GpoLinks | Where-Object { $_.DisplayName -eq $StrongPasswordGpoName } | Select-Object -First 1
+$existingStrongLink = $inheritance.GpoLinks | Where-Object { $_.DisplayName -eq $StrongPolicyGpoName } | Select-Object -First 1
 
 if ($existingStrongLink) {
-    if ($PSCmdlet.ShouldProcess($StrongPasswordGpoName, 'Recreate domain-root link at precedence order 1')) {
+    if ($PSCmdlet.ShouldProcess($StrongPolicyGpoName, 'Recreate domain-root link at precedence order 1')) {
         Remove-GPLink -Guid $strongPasswordGpo.Id -Target $domainTarget -Domain $domain.DNSRoot -Server $policyServer
         New-GPLink -Guid $strongPasswordGpo.Id -Target $domainTarget -Domain $domain.DNSRoot -Server $policyServer -LinkEnabled Yes -Order 1 | Out-Null
-        Write-Host "Moved '$StrongPasswordGpoName' to domain link order 1." -ForegroundColor Green
+        Write-Host "Moved '$StrongPolicyGpoName' to domain link order 1." -ForegroundColor Green
     }
 }
 else {
-    if ($PSCmdlet.ShouldProcess($StrongPasswordGpoName, 'Link dedicated GPO to the domain root at precedence order 1')) {
+    if ($PSCmdlet.ShouldProcess($StrongPolicyGpoName, 'Link dedicated GPO to the domain root at precedence order 1')) {
         New-GPLink -Guid $strongPasswordGpo.Id -Target $domainTarget -Domain $domain.DNSRoot -Server $policyServer -LinkEnabled Yes -Order 1 | Out-Null
-        Write-Host "Linked '$StrongPasswordGpoName' to the domain root at order 1." -ForegroundColor Green
+        Write-Host "Linked '$StrongPolicyGpoName' to the domain root at order 1." -ForegroundColor Green
     }
 }
 
 # --- Ensure the dedicated GPO is registered for security settings processing ---
-if ($PSCmdlet.ShouldProcess($StrongPasswordGpoName, 'Ensure security settings extension registration')) {
-    $extensionUpdated = Ensure-GpoSecurityExtensionRegistration `
+if ($PSCmdlet.ShouldProcess($StrongPolicyGpoName, 'Ensure security settings extension registration')) {
+    $extensionUpdated = Set-GpoSecurityExtensionRegistration `
         -TargetGpoId $strongPasswordGpo.Id `
         -SourceGpoId $defaultDomainPolicy.Id `
         -DomainDistinguishedName $domain.DistinguishedName `
         -Server $policyServer
 
     if ($extensionUpdated) {
-        Write-Host "Registered the security settings client-side extension on '$StrongPasswordGpoName'." -ForegroundColor Green
+        Write-Host "Registered the security settings client-side extension on '$StrongPolicyGpoName'." -ForegroundColor Green
     }
 }
 
@@ -570,21 +570,21 @@ if ($PSCmdlet.ShouldProcess($StrongPasswordGpoName, 'Ensure security settings ex
 $strongGpoAdObject = Get-GpoAdObject -GpoId $strongPasswordGpo.Id -DomainDistinguishedName $domain.DistinguishedName -Server $policyServer
 $strongGpoInfPath = Join-Path -Path $strongGpoAdObject.gPCFileSysPath -ChildPath 'MACHINE\Microsoft\Windows NT\SecEdit\GptTmpl.inf'
 
-if ($PSCmdlet.ShouldProcess($StrongPasswordGpoName, 'Write password policy settings to GptTmpl.inf')) {
+if ($PSCmdlet.ShouldProcess($StrongPolicyGpoName, 'Write password policy settings to GptTmpl.inf')) {
     $strongGpoChanged = Set-GpoSystemAccessValues -InfPath $strongGpoInfPath -KeyValueMap $systemAccessValues
     if ($strongGpoChanged) {
         Update-GpoMachineVersion -GpoId $strongPasswordGpo.Id -DomainDistinguishedName $domain.DistinguishedName -Server $policyServer
-        Write-Host ("Configured {0} password settings in '{1}'." -f $systemAccessKeys.Count, $StrongPasswordGpoName) -ForegroundColor Green
+        Write-Host ("Configured {0} password settings in '{1}'." -f $systemAccessKeys.Count, $StrongPolicyGpoName) -ForegroundColor Green
     }
     else {
-        Write-Host "Password settings in '$StrongPasswordGpoName' were already in the desired state." -ForegroundColor Yellow
+        Write-Host "Password settings in '$StrongPolicyGpoName' were already in the desired state." -ForegroundColor Yellow
     }
 }
 
 # --- Set password expiry warning in the dedicated GPO ---
-if ($PSCmdlet.ShouldProcess($StrongPasswordGpoName, "Set $winlogonKey\$winlogonValueName = $PasswordExpiryWarningDays")) {
+if ($PSCmdlet.ShouldProcess($StrongPolicyGpoName, "Set $winlogonKey\$winlogonValueName = $PasswordExpiryWarningDays")) {
     Set-GPRegistryValue `
-        -Name $StrongPasswordGpoName `
+        -Name $StrongPolicyGpoName `
         -Domain $domain.DNSRoot `
         -Server $policyServer `
         -Key $winlogonKey `
@@ -592,7 +592,7 @@ if ($PSCmdlet.ShouldProcess($StrongPasswordGpoName, "Set $winlogonKey\$winlogonV
         -Type DWord `
         -Value $PasswordExpiryWarningDays
 
-    Write-Host "Set $StrongPasswordGpoName -> $winlogonKey\$winlogonValueName = $PasswordExpiryWarningDays." -ForegroundColor Green
+    Write-Host "Set $StrongPolicyGpoName -> $winlogonKey\$winlogonValueName = $PasswordExpiryWarningDays." -ForegroundColor Green
 }
 
 # --- Clear competing settings from Default Domain Policy ---
@@ -650,7 +650,7 @@ if (-not $NoVerify) {
 
     Write-Host "Dedicated GPO registry setting:" -ForegroundColor Cyan
     Get-GPRegistryValue `
-        -Name $StrongPasswordGpoName `
+        -Name $StrongPolicyGpoName `
         -Domain $domain.DNSRoot `
         -Server $policyServer `
         -Key $winlogonKey `
