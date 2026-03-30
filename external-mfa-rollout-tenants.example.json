@@ -1,0 +1,42 @@
+{
+  "tenants": [
+    {
+      "tenantId": "11111111-1111-1111-1111-111111111111",
+      "name": "Cisco Duo",
+      "stage": "PilotGlobalAdmins",
+      "caScopeMode": "MirrorLegacy",
+      "guestSupport": false,
+      "breakGlassGroupId": "22222222-2222-2222-2222-222222222222",
+      "legacyPolicyNames": [
+        "Duo MFA - Legacy Custom Control"
+      ],
+      "duo": {
+        "clientId": "standard-duo-client-id",
+        "guestClientId": "guest-duo-client-id",
+        "discoveryEndpoint": "https://us.azureauth.duosecurity.com/.well-known/openid-configuration",
+        "appId": "duo-app-id"
+      }
+    },
+    {
+      "tenantId": "33333333-3333-3333-3333-333333333333",
+      "name": "Cisco Duo",
+      "stage": "FinalGroups",
+      "caScopeMode": "ExplicitApps",
+      "guestSupport": true,
+      "breakGlassGroupId": "44444444-4444-4444-4444-444444444444",
+      "explicitAppIds": [
+        "00000002-0000-0ff1-ce00-000000000000"
+      ],
+      "finalTargetGroupIds": [
+        "55555555-5555-5555-5555-555555555555"
+      ],
+      "duo": {
+        "clientId": "standard-duo-client-id",
+        "guestClientId": "guest-duo-client-id",
+        "discoveryEndpoint": "https://us.azureauth.duosecurity.com/.well-known/openid-configuration",
+        "appId": "duo-app-id",
+        "externalAuthConfigId": "66666666-6666-6666-6666-666666666666"
+      }
+    }
+  ]
+}

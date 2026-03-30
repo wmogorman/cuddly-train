@@ -137,7 +137,7 @@ $tabBasics.Controls.Add($txtExternalConfigId)
 $y += 34
 
 $tabBasics.Controls.Add((New-LabelControl -Text "PilotGroupName" -X 16 -Y $y))
-$txtPilotGroup = New-TextBoxControl -X 240 -Y ($y - 2) -Width 660 -Text "DMX Pilot Group"
+$txtPilotGroup = New-TextBoxControl -X 240 -Y ($y - 2) -Width 660 -Text "DMX-ExternalMFA-Pilot-GlobalAdmins"
 $tabBasics.Controls.Add($txtPilotGroup)
 $y += 34
 
@@ -149,6 +149,11 @@ $y += 34
 $tabBasics.Controls.Add((New-LabelControl -Text "Conditional Access policy name" -X 16 -Y $y))
 $txtCaPolicy = New-TextBoxControl -X 240 -Y ($y - 2) -Width 660 -Text "DMX - Require MFA (External MFA)"
 $tabBasics.Controls.Add($txtCaPolicy)
+$y += 34
+
+$tabBasics.Controls.Add((New-LabelControl -Text "BreakGlassGroupId (required for rollout)" -X 16 -Y $y))
+$txtBreakGlassGroupId = New-TextBoxControl -X 240 -Y ($y - 2) -Width 660
+$tabBasics.Controls.Add($txtBreakGlassGroupId)
 $y += 42
 
 $cbOffboard = New-CheckBoxControl -Text "Offboard to Microsoft-preferred MFA (reverse rollout)" -X 20 -Y $y -Checked $false -Width 880
@@ -169,7 +174,7 @@ $y2 = 20
 $tabOptions.Controls.Add((New-LabelControl -Text "Strict external-only options" -X 16 -Y $y2 -Width 300))
 $y2 += 30
 
-$cbDisableMsAuth = New-CheckBoxControl -Text "Disable Microsoft Authenticator method policy" -X 20 -Y $y2 -Checked $true -Width 420
+$cbDisableMsAuth = New-CheckBoxControl -Text "Disable Microsoft Authenticator method policy" -X 20 -Y $y2 -Checked $false -Width 420
 $tabOptions.Controls.Add($cbDisableMsAuth)
 $cbDisableRegCampaign = New-CheckBoxControl -Text "Disable Authenticator registration campaign" -X 460 -Y $y2 -Checked $true -Width 420
 $tabOptions.Controls.Add($cbDisableRegCampaign)
@@ -219,8 +224,9 @@ Recommended workflow:
 1. Fill required rollout value: Name.
 2. If creating a NEW EAM, also provide ClientId, DiscoveryEndpoint, and AppId.
 3. If the EAM already exists in Entra, paste ExternalAuthConfigId (recommended) and you can leave ClientId/DiscoveryEndpoint/AppId blank.
-4. Leave strict external-only defaults enabled unless you intentionally want Microsoft methods allowed.
-5. Use Run In Console so teammates can complete Microsoft Graph interactive sign-in.
+4. Provide BreakGlassGroupId for the emergency admin exclusion before running a rollout.
+5. Leave Microsoft Authenticator enabled unless you intentionally want the script to disable it.
+6. Use Run In Console so teammates can complete Microsoft Graph interactive sign-in.
 
 High-impact options:
 - Enforce strict external-only tenant prereqs:
@@ -290,6 +296,7 @@ function Get-UiState {
     PilotGroupName                 = $txtPilotGroup.Text.Trim()
     WrapperGroupName               = $txtWrapperGroup.Text.Trim()
     CaPolicyName                   = $txtCaPolicy.Text.Trim()
+    BreakGlassGroupId              = $txtBreakGlassGroupId.Text.Trim()
     Offboard                       = $cbOffboard.Checked
     WhatIf                         = $cbWhatIf.Checked
     ConfirmFalse                   = $cbConfirmFalse.Checked
@@ -323,6 +330,10 @@ function Test-UiState {
     $errors.Add("EAM Name is required.") | Out-Null
   }
 
+  if (-not $State.Offboard -and [string]::IsNullOrWhiteSpace($State.BreakGlassGroupId)) {
+    $errors.Add("BreakGlassGroupId is required for rollout mode.") | Out-Null
+  }
+
   if (-not $State.Offboard) {
     $providerFields = @(
       @{ Label = "ClientId"; Value = $State.ClientId },
@@ -341,6 +352,13 @@ function Test-UiState {
     [guid]$tmpGuid = [guid]::Empty
     if (-not [guid]::TryParse($State.ExternalAuthConfigId, [ref]$tmpGuid)) {
       $errors.Add("ExternalAuthConfigId must be a valid GUID if provided.") | Out-Null
+    }
+  }
+
+  if (-not [string]::IsNullOrWhiteSpace($State.BreakGlassGroupId)) {
+    [guid]$breakGlassGuid = [guid]::Empty
+    if (-not [guid]::TryParse($State.BreakGlassGroupId, [ref]$breakGlassGuid)) {
+      $errors.Add("BreakGlassGroupId must be a valid GUID if provided.") | Out-Null
     }
   }
 
@@ -380,7 +398,8 @@ function Build-RunCommand {
     @{ Name = "ExternalAuthConfigId"; Value = $State.ExternalAuthConfigId; Always = -not [string]::IsNullOrWhiteSpace($State.ExternalAuthConfigId) },
     @{ Name = "PilotGroupName"; Value = $State.PilotGroupName; Always = $true },
     @{ Name = "WrapperGroupName"; Value = $State.WrapperGroupName; Always = $true },
-    @{ Name = "CaPolicyName"; Value = $State.CaPolicyName; Always = $true }
+    @{ Name = "CaPolicyName"; Value = $State.CaPolicyName; Always = $true },
+    @{ Name = "BreakGlassGroupId"; Value = $State.BreakGlassGroupId; Always = -not $State.Offboard }
   )
 
   foreach ($p in $stringParams) {
@@ -498,7 +517,7 @@ $btnClose.Add_Click({ $form.Close() })
 
 $allRefreshControls = @(
   $txtScriptPath, $txtName, $txtClientId, $txtDiscovery, $txtAppId, $txtExternalConfigId,
-  $txtPilotGroup, $txtWrapperGroup, $txtCaPolicy, $txtExcludedMethods,
+  $txtPilotGroup, $txtWrapperGroup, $txtCaPolicy, $txtBreakGlassGroupId, $txtExcludedMethods,
   $cbOffboard, $cbWhatIf, $cbConfirmFalse, $cbNoExit, $cbDisableMsAuth, $cbDisableRegCampaign,
   $cbDisableSystemPreferred, $cbRestrictMethods, $cbBulkRegister, $cbBulkSkipDisabled,
   $cbBulkIncludeGuests, $cbAuditReadiness, $cbEnforcePrereqs
@@ -518,6 +537,7 @@ $cbOffboard.Add_CheckedChanged({
   $txtClientId.Enabled = -not $isOffboard
   $txtDiscovery.Enabled = -not $isOffboard
   $txtAppId.Enabled = -not $isOffboard
+  $txtBreakGlassGroupId.Enabled = -not $isOffboard
 })
 
 $cbRestrictMethods.Add_CheckedChanged({
