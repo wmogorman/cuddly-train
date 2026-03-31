@@ -491,6 +491,24 @@ function Test-ExternalAuthMethodConfigIncludesGroup {
   ).Count -gt 0
 }
 
+function Test-ExternalAuthMethodConfigIncludesAllUsers {
+  param([Parameter(Mandatory=$true)]$Configuration)
+
+  return @(
+    Get-ExternalAuthMethodIncludeTargets -Configuration $Configuration | Where-Object {
+      $targetType = [string](Get-GraphMemberValue -Object $_ -Name "targetType")
+      $idValue = [string](Get-GraphMemberValue -Object $_ -Name "id")
+      $displayNameValue = [string](Get-GraphMemberValue -Object $_ -Name "displayName")
+      $nameValue = [string](Get-GraphMemberValue -Object $_ -Name "name")
+
+      $isAllUsersId = $idValue -match '^(?i:all|all_users|allusers)$'
+      $isAllUsersLabel = ($displayNameValue -eq "All users") -or ($nameValue -eq "All users")
+
+      $isAllUsersId -or $isAllUsersLabel -or (($targetType -eq "group") -and $isAllUsersLabel)
+    }
+  ).Count -gt 0
+}
+
 function Invoke-GraphGetAllPages {
   param([Parameter(Mandatory=$true)][string]$InitialUri)
 
@@ -1986,6 +2004,8 @@ function Write-ExternalMfaPreflightSummary {
 
 function Invoke-ExternalMfaPreflight {
   param(
+    [Parameter(Mandatory=$false)][string]$Name,
+    [Parameter(Mandatory=$false)][string]$ExternalAuthConfigId,
     [Parameter(Mandatory=$true)][ValidateSet("PilotGlobalAdmins","FinalGroups")][string]$Stage,
     [Parameter(Mandatory=$true)][ValidateSet("MirrorLegacy","AllApps","ExplicitApps")][string]$CaScopeMode,
     [Parameter(Mandatory=$false)][string[]]$LegacyPolicyNames,
@@ -2060,6 +2080,36 @@ function Invoke-ExternalMfaPreflight {
     }
     catch {
       $manualBlockers.Add((New-ExternalMfaPreflightFinding -Category "ManualBlocker" -Code "ExistingPilotGroupResolutionFailed" -Message $_.Exception.Message)) | Out-Null
+    }
+  }
+
+  if ($Stage -eq "PilotGlobalAdmins") {
+    try {
+      $existingExternalAuthConfig = $null
+      if (-not [string]::IsNullOrWhiteSpace($ExternalAuthConfigId)) {
+        $existingExternalAuthConfig = (Get-ExternalAuthMethodConfigById -Id $ExternalAuthConfigId).Item
+      }
+      elseif (-not [string]::IsNullOrWhiteSpace($Name)) {
+        $existingExternalAuthConfig = (Get-ExternalAuthMethodConfigByName -DisplayName $Name).Item
+        if ($existingExternalAuthConfig) {
+          $resolvedExternalAuthConfigId = [string](Get-GraphMemberValue -Object $existingExternalAuthConfig -Name "id")
+          if (-not [string]::IsNullOrWhiteSpace($resolvedExternalAuthConfigId)) {
+            try {
+              $existingExternalAuthConfig = (Get-ExternalAuthMethodConfigById -Id $resolvedExternalAuthConfigId).Item
+            }
+            catch {
+              # Keep the list-response shape if the by-id refresh fails.
+            }
+          }
+        }
+      }
+
+      if ($existingExternalAuthConfig -and (Test-ExternalAuthMethodConfigIncludesAllUsers -Configuration $existingExternalAuthConfig)) {
+        $manualBlockers.Add((New-ExternalMfaPreflightFinding -Category "ManualBlocker" -Code "ExternalAuthConfigAllUsersTargeted" -Message "External Authentication Method configuration '$Name' currently includes 'All users'. For Stage PilotGlobalAdmins, retarget it to the wrapper group only before live rollout.")) | Out-Null
+      }
+    }
+    catch {
+      # Best-effort only. Some tenants expose sparse/preview-varying EAM responses.
     }
   }
 
@@ -2377,6 +2427,8 @@ if (-not $isOffboarding) {
   Write-Host "   Connected tenant: $tenantLabel" -ForegroundColor Green
 
   $preflightSummary = Invoke-ExternalMfaPreflight `
+    -Name $Name `
+    -ExternalAuthConfigId $ExternalAuthConfigId `
     -Stage $Stage `
     -CaScopeMode $CaScopeMode `
     -LegacyPolicyNames $LegacyPolicyNames `
@@ -2712,198 +2764,224 @@ elseif (-not $extConfig) {
   if (-not $hasAllProviderConfigInputs) {
     throw "Existing External Authentication Method configuration '$Name' was not found, and ClientId/DiscoveryEndpoint/AppId were not fully supplied. Provide all three values (or -ExternalAuthConfigId) to create a new EAM configuration."
   }
-  # Prefer current Graph schema; keep a legacy preview payload as a fallback for older tenants.
-  $body = @{
-    "@odata.type" = "#microsoft.graph.externalAuthenticationMethodConfiguration"
-    displayName   = $Name
-    state         = "enabled"
-    appId         = $AppId
-    openIdConnectSetting = @{
-      clientId     = $ClientId
-      discoveryUrl = $DiscoveryEndpoint
-    }
-    includeTargets = @(
-      (New-ExternalAuthMethodIncludeTarget -GroupId $wrapper.Id)
-    )
-  }
-
-  # Legacy preview payload shape used in some older tenants/rollouts.
-  $legacyBody = @{
-    "@odata.type"     = "#microsoft.graph.externalAuthenticationMethodConfiguration"
-    displayName       = $Name
-    state             = "enabled"
-    clientId          = $ClientId
-    discoveryEndpoint = $DiscoveryEndpoint
-    appId             = $AppId
-    # includeTarget is common for auth method configurations
-    includeTarget     = (New-ExternalAuthMethodIncludeTarget -GroupId $wrapper.Id)
-  }
-
-  try {
-    if ($PSCmdlet.ShouldProcess($Name, "Create External Authentication Method configuration")) {
-      $createUris = New-Object System.Collections.Generic.List[string]
-      $createUris.Add($extConfigCollectionUri) | Out-Null
-      $betaCreateUri = "/beta/policies/authenticationMethodsPolicy/authenticationMethodConfigurations"
-      if ($extConfigCollectionUri -ne $betaCreateUri) {
-        $createUris.Add($betaCreateUri) | Out-Null
-      }
-
-      $createPayloadAttempts = @(
-        [pscustomobject]@{ Label = "primary"; Body = $body },
-        [pscustomobject]@{ Label = "legacy";  Body = $legacyBody }
-      )
-
-      $createErrors = New-Object System.Collections.Generic.List[string]
-      $created = $null
-
-      foreach ($createUri in $createUris) {
-        foreach ($payloadAttempt in $createPayloadAttempts) {
-          try {
-            if ($payloadAttempt.Label -eq "primary" -and $createUri -eq $extConfigCollectionUri) {
-              Write-Host "   Creating via $createUri using primary payload..." -ForegroundColor DarkCyan
-            }
-            else {
-              Write-Host "   Retrying create via $createUri using $($payloadAttempt.Label) payload..." -ForegroundColor DarkCyan
-            }
-
-            $created = Invoke-Beta -Method POST -Uri $createUri -Body $payloadAttempt.Body
-            $extConfigCollectionUri = $createUri
-            break
-          }
-          catch {
-            $detail = Get-ExceptionMessageText -ErrorObject $_
-            $createErrors.Add(("{0} [{1}] => {2}" -f $createUri, $payloadAttempt.Label, $detail)) | Out-Null
-            Write-Warning "External auth config create attempt failed ($createUri / $($payloadAttempt.Label) payload). Details: $detail"
-          }
-        }
-
-        if ($null -ne $created) {
-          break
-        }
-      }
-
-      if ($null -eq $created) {
-        throw ("All create attempts failed. Attempts: {0}" -f ($createErrors -join " || "))
-      }
-
-      $extConfig = $created
-      Write-Host "   Created external auth method config id: $($extConfig.id)" -ForegroundColor Green
+  $wrapperGroupIdForExternalAuth = if ($wrapper -and $wrapper.Id) { [string]$wrapper.Id } else { $null }
+  if ([string]::IsNullOrWhiteSpace($wrapperGroupIdForExternalAuth)) {
+    if ($WhatIfPreference) {
+      $extConfig = [pscustomobject]@{ id = $null; displayName = $Name; IsPlanned = $true }
+      Write-Host "   Wrapper group target is planned only (-WhatIf); skipping concrete EAM create payload construction." -ForegroundColor Yellow
+      Write-Host "   Planned external auth method config creation after wrapper group creation." -ForegroundColor Yellow
     }
     else {
-      $extConfig = [pscustomobject]@{ id = $null; displayName = $Name; IsPlanned = $true }
-      Write-Host "   Planned external auth method config creation." -ForegroundColor Yellow
+      throw "Wrapper group '$WrapperGroupName' is unavailable; cannot create External Authentication Method configuration without a target group id."
     }
   }
-  catch {
-    throw @"
+  else {
+    # Prefer current Graph schema; keep a legacy preview payload as a fallback for older tenants.
+    $body = @{
+      "@odata.type" = "#microsoft.graph.externalAuthenticationMethodConfiguration"
+      displayName   = $Name
+      state         = "enabled"
+      appId         = $AppId
+      openIdConnectSetting = @{
+        clientId     = $ClientId
+        discoveryUrl = $DiscoveryEndpoint
+      }
+      includeTargets = @(
+        (New-ExternalAuthMethodIncludeTarget -GroupId $wrapperGroupIdForExternalAuth)
+      )
+    }
+
+    # Legacy preview payload shape used in some older tenants/rollouts.
+    $legacyBody = @{
+      "@odata.type"     = "#microsoft.graph.externalAuthenticationMethodConfiguration"
+      displayName       = $Name
+      state             = "enabled"
+      clientId          = $ClientId
+      discoveryEndpoint = $DiscoveryEndpoint
+      appId             = $AppId
+      # includeTarget is common for auth method configurations
+      includeTarget     = (New-ExternalAuthMethodIncludeTarget -GroupId $wrapperGroupIdForExternalAuth)
+    }
+
+    try {
+      if ($PSCmdlet.ShouldProcess($Name, "Create External Authentication Method configuration")) {
+        $createUris = New-Object System.Collections.Generic.List[string]
+        $createUris.Add($extConfigCollectionUri) | Out-Null
+        $betaCreateUri = "/beta/policies/authenticationMethodsPolicy/authenticationMethodConfigurations"
+        if ($extConfigCollectionUri -ne $betaCreateUri) {
+          $createUris.Add($betaCreateUri) | Out-Null
+        }
+
+        $createPayloadAttempts = @(
+          [pscustomobject]@{ Label = "primary"; Body = $body },
+          [pscustomobject]@{ Label = "legacy";  Body = $legacyBody }
+        )
+
+        $createErrors = New-Object System.Collections.Generic.List[string]
+        $created = $null
+
+        foreach ($createUri in $createUris) {
+          foreach ($payloadAttempt in $createPayloadAttempts) {
+            try {
+              if ($payloadAttempt.Label -eq "primary" -and $createUri -eq $extConfigCollectionUri) {
+                Write-Host "   Creating via $createUri using primary payload..." -ForegroundColor DarkCyan
+              }
+              else {
+                Write-Host "   Retrying create via $createUri using $($payloadAttempt.Label) payload..." -ForegroundColor DarkCyan
+              }
+
+              $created = Invoke-Beta -Method POST -Uri $createUri -Body $payloadAttempt.Body
+              $extConfigCollectionUri = $createUri
+              break
+            }
+            catch {
+              $detail = Get-ExceptionMessageText -ErrorObject $_
+              $createErrors.Add(("{0} [{1}] => {2}" -f $createUri, $payloadAttempt.Label, $detail)) | Out-Null
+              Write-Warning "External auth config create attempt failed ($createUri / $($payloadAttempt.Label) payload). Details: $detail"
+            }
+          }
+
+          if ($null -ne $created) {
+            break
+          }
+        }
+
+        if ($null -eq $created) {
+          throw ("All create attempts failed. Attempts: {0}" -f ($createErrors -join " || "))
+        }
+
+        $extConfig = $created
+        Write-Host "   Created external auth method config id: $($extConfig.id)" -ForegroundColor Green
+      }
+      else {
+        $extConfig = [pscustomobject]@{ id = $null; displayName = $Name; IsPlanned = $true }
+        Write-Host "   Planned external auth method config creation." -ForegroundColor Yellow
+      }
+    }
+    catch {
+      throw @"
 Failed to create external auth method configuration.
 This endpoint/shape varies by tenant. The error usually tells you the exact missing/invalid fields.
 Create endpoint attempts included '$extConfigCollectionUri' and '/beta/...'.
 Details: $(Get-ExceptionMessageText -ErrorObject $_)
 "@
+    }
   }
 }
 else {
   Write-Step "Updating External Authentication Method configuration targeting + enablement (best-effort)..."
-  $extConfigPatchUri = ($extConfigCollectionUri.TrimEnd("/") + "/$($extConfig.id)")
-  $desiredIncludeTargets = @((New-ExternalAuthMethodIncludeTarget -GroupId $wrapper.Id))
-  $currentState = [string](Get-GraphMemberValue -Object $extConfig -Name "state")
-  $currentDisplayName = [string](Get-GraphMemberValue -Object $extConfig -Name "displayName")
-  if ([string]::IsNullOrWhiteSpace($currentDisplayName)) {
-    $currentDisplayName = $Name
-  }
-
-  $currentAppId = [string](Get-GraphMemberValue -Object $extConfig -Name "appId")
-  $currentOidc = Get-GraphMemberValue -Object $extConfig -Name "openIdConnectSetting"
-  $currentClientId = if ($null -ne $currentOidc) { [string](Get-GraphMemberValue -Object $currentOidc -Name "clientId") } else { $null }
-  $currentDiscoveryEndpoint = if ($null -ne $currentOidc) { [string](Get-GraphMemberValue -Object $currentOidc -Name "discoveryUrl") } else { $null }
-  if ([string]::IsNullOrWhiteSpace($currentClientId)) {
-    $currentClientId = [string](Get-GraphMemberValue -Object $extConfig -Name "clientId")
-  }
-  if ([string]::IsNullOrWhiteSpace($currentDiscoveryEndpoint)) {
-    $currentDiscoveryEndpoint = [string](Get-GraphMemberValue -Object $extConfig -Name "discoveryEndpoint")
-  }
-
-  $resolvedPatchClientId = if ($hasAllProviderConfigInputs) { $ClientId } else { $currentClientId }
-  $resolvedPatchDiscoveryEndpoint = if ($hasAllProviderConfigInputs) { $DiscoveryEndpoint } else { $currentDiscoveryEndpoint }
-  $resolvedPatchAppId = if ($hasAllProviderConfigInputs) { $AppId } else { $currentAppId }
-  $canPatchProviderFields = (
-    -not [string]::IsNullOrWhiteSpace($resolvedPatchClientId) -and
-    -not [string]::IsNullOrWhiteSpace($resolvedPatchDiscoveryEndpoint) -and
-    -not [string]::IsNullOrWhiteSpace($resolvedPatchAppId)
-  )
-
-  $stateMatches = ($currentState -eq "enabled")
-  $targetMatches = Test-ExternalAuthMethodConfigIncludesGroup -Configuration $extConfig -GroupId $wrapper.Id
-  $providerMatches = $true
-  if ($hasAllProviderConfigInputs) {
-    $providerMatches = (
-      ($resolvedPatchClientId -eq $ClientId) -and
-      ($resolvedPatchDiscoveryEndpoint -eq $DiscoveryEndpoint) -and
-      ($resolvedPatchAppId -eq $AppId)
-    )
-  }
-
-  if ($stateMatches -and $targetMatches -and $providerMatches) {
-    Write-Host "   External auth method config is already enabled and targeted to the wrapper group." -ForegroundColor Green
+  $wrapperGroupIdForExternalAuth = if ($wrapper -and $wrapper.Id) { [string]$wrapper.Id } else { $null }
+  if ([string]::IsNullOrWhiteSpace($wrapperGroupIdForExternalAuth)) {
+    if ($WhatIfPreference) {
+      Write-Host "   Wrapper group target is planned only (-WhatIf); skipping concrete EAM target reconciliation." -ForegroundColor Yellow
+      Write-Host "   Planned external auth method config update after wrapper group creation." -ForegroundColor Yellow
+    }
+    else {
+      $warningText = "Wrapper group '$WrapperGroupName' is unavailable; skipping external auth method config update."
+      $rolloutWarnings.Add($warningText) | Out-Null
+      Write-Warning $warningText
+    }
   }
   else {
-    # Current schema patch payload (preferred). Preserve provider fields from the existing config when they were not supplied
-    # so the PATCH uses a complete external auth shape instead of an underspecified delta.
-    $patchBody = @{
-      state = "enabled"
-      displayName = $currentDisplayName
-      includeTargets = @($desiredIncludeTargets)
-    }
-    $odataTypeValue = [string](Get-GraphMemberValue -Object $extConfig -Name "@odata.type")
-    if (-not [string]::IsNullOrWhiteSpace($odataTypeValue)) {
-      $patchBody["@odata.type"] = $odataTypeValue
+    $extConfigPatchUri = ($extConfigCollectionUri.TrimEnd("/") + "/$($extConfig.id)")
+    $desiredIncludeTargets = @((New-ExternalAuthMethodIncludeTarget -GroupId $wrapperGroupIdForExternalAuth))
+    $currentState = [string](Get-GraphMemberValue -Object $extConfig -Name "state")
+    $currentDisplayName = [string](Get-GraphMemberValue -Object $extConfig -Name "displayName")
+    if ([string]::IsNullOrWhiteSpace($currentDisplayName)) {
+      $currentDisplayName = $Name
     }
 
-    $currentExcludeTargets = Get-GraphMemberValue -Object $extConfig -Name "excludeTargets"
-    if ($null -ne $currentExcludeTargets) {
-      $patchBody["excludeTargets"] = @(Convert-GraphObjectToPlainValue -Value $currentExcludeTargets)
+    $currentAppId = [string](Get-GraphMemberValue -Object $extConfig -Name "appId")
+    $currentOidc = Get-GraphMemberValue -Object $extConfig -Name "openIdConnectSetting"
+    $currentClientId = if ($null -ne $currentOidc) { [string](Get-GraphMemberValue -Object $currentOidc -Name "clientId") } else { $null }
+    $currentDiscoveryEndpoint = if ($null -ne $currentOidc) { [string](Get-GraphMemberValue -Object $currentOidc -Name "discoveryUrl") } else { $null }
+    if ([string]::IsNullOrWhiteSpace($currentClientId)) {
+      $currentClientId = [string](Get-GraphMemberValue -Object $extConfig -Name "clientId")
+    }
+    if ([string]::IsNullOrWhiteSpace($currentDiscoveryEndpoint)) {
+      $currentDiscoveryEndpoint = [string](Get-GraphMemberValue -Object $extConfig -Name "discoveryEndpoint")
     }
 
-    if ($canPatchProviderFields) {
-      $patchBody["openIdConnectSetting"] = @{
-        clientId     = $resolvedPatchClientId
-        discoveryUrl = $resolvedPatchDiscoveryEndpoint
+    $resolvedPatchClientId = if ($hasAllProviderConfigInputs) { $ClientId } else { $currentClientId }
+    $resolvedPatchDiscoveryEndpoint = if ($hasAllProviderConfigInputs) { $DiscoveryEndpoint } else { $currentDiscoveryEndpoint }
+    $resolvedPatchAppId = if ($hasAllProviderConfigInputs) { $AppId } else { $currentAppId }
+    $canPatchProviderFields = (
+      -not [string]::IsNullOrWhiteSpace($resolvedPatchClientId) -and
+      -not [string]::IsNullOrWhiteSpace($resolvedPatchDiscoveryEndpoint) -and
+      -not [string]::IsNullOrWhiteSpace($resolvedPatchAppId)
+    )
+
+    $stateMatches = ($currentState -eq "enabled")
+    $targetMatches = Test-ExternalAuthMethodConfigIncludesGroup -Configuration $extConfig -GroupId $wrapperGroupIdForExternalAuth
+    $providerMatches = $true
+    if ($hasAllProviderConfigInputs) {
+      $providerMatches = (
+        ($resolvedPatchClientId -eq $ClientId) -and
+        ($resolvedPatchDiscoveryEndpoint -eq $DiscoveryEndpoint) -and
+        ($resolvedPatchAppId -eq $AppId)
+      )
+    }
+
+    if ($stateMatches -and $targetMatches -and $providerMatches) {
+      Write-Host "   External auth method config is already enabled and targeted to the wrapper group." -ForegroundColor Green
+    }
+    else {
+      # Current schema patch payload (preferred). Preserve provider fields from the existing config when they were not supplied
+      # so the PATCH uses a complete external auth shape instead of an underspecified delta.
+      $patchBody = @{
+        state = "enabled"
+        displayName = $currentDisplayName
+        includeTargets = @($desiredIncludeTargets)
       }
-      $patchBody["appId"] = $resolvedPatchAppId
-    }
+      $odataTypeValue = [string](Get-GraphMemberValue -Object $extConfig -Name "@odata.type")
+      if (-not [string]::IsNullOrWhiteSpace($odataTypeValue)) {
+        $patchBody["@odata.type"] = $odataTypeValue
+      }
 
-    # Legacy preview schema patch payload fallback.
-    $legacyPatchBody = @{
-      state = "enabled"
-      displayName = $currentDisplayName
-      includeTarget = $desiredIncludeTargets[0]
-    }
-    if (-not [string]::IsNullOrWhiteSpace($odataTypeValue)) {
-      $legacyPatchBody["@odata.type"] = $odataTypeValue
-    }
-    if ($null -ne $currentExcludeTargets) {
-      $legacyPatchBody["excludeTargets"] = @(Convert-GraphObjectToPlainValue -Value $currentExcludeTargets)
-    }
-    if ($canPatchProviderFields) {
-      $legacyPatchBody["clientId"] = $resolvedPatchClientId
-      $legacyPatchBody["discoveryEndpoint"] = $resolvedPatchDiscoveryEndpoint
-      $legacyPatchBody["appId"] = $resolvedPatchAppId
-    }
+      $currentExcludeTargets = Get-GraphMemberValue -Object $extConfig -Name "excludeTargets"
+      if ($null -ne $currentExcludeTargets) {
+        $patchBody["excludeTargets"] = @(Convert-GraphObjectToPlainValue -Value $currentExcludeTargets)
+      }
+
+      if ($canPatchProviderFields) {
+        $patchBody["openIdConnectSetting"] = @{
+          clientId     = $resolvedPatchClientId
+          discoveryUrl = $resolvedPatchDiscoveryEndpoint
+        }
+        $patchBody["appId"] = $resolvedPatchAppId
+      }
+
+      # Legacy preview schema patch payload fallback.
+      $legacyPatchBody = @{
+        state = "enabled"
+        displayName = $currentDisplayName
+        includeTarget = $desiredIncludeTargets[0]
+      }
+      if (-not [string]::IsNullOrWhiteSpace($odataTypeValue)) {
+        $legacyPatchBody["@odata.type"] = $odataTypeValue
+      }
+      if ($null -ne $currentExcludeTargets) {
+        $legacyPatchBody["excludeTargets"] = @(Convert-GraphObjectToPlainValue -Value $currentExcludeTargets)
+      }
+      if ($canPatchProviderFields) {
+        $legacyPatchBody["clientId"] = $resolvedPatchClientId
+        $legacyPatchBody["discoveryEndpoint"] = $resolvedPatchDiscoveryEndpoint
+        $legacyPatchBody["appId"] = $resolvedPatchAppId
+      }
 
     try {
       if ($PSCmdlet.ShouldProcess($Name, "Update External Authentication Method configuration '$($extConfig.id)'")) {
         if (-not $hasAllProviderConfigInputs) {
           Write-Host "   Provider config fields were not supplied; reusing the existing provider identifiers from the resolved config." -ForegroundColor Yellow
         }
-        try {
-          Invoke-Beta -Method PATCH -Uri $extConfigPatchUri -Body $patchBody | Out-Null
-        }
-        catch {
-          # Retry legacy patch shape for tenants still on older preview schema behavior.
-          Write-Warning "Primary external auth config PATCH payload failed; trying legacy preview payload shape. Details: $($_.Exception.Message)"
-          Invoke-Beta -Method PATCH -Uri $extConfigPatchUri -Body $legacyPatchBody | Out-Null
-        }
+          try {
+            Invoke-Beta -Method PATCH -Uri $extConfigPatchUri -Body $patchBody | Out-Null
+          }
+          catch {
+            # Retry legacy patch shape for tenants still on older preview schema behavior.
+            Write-Warning "Primary external auth config PATCH payload failed; trying legacy preview payload shape. Details: $($_.Exception.Message)"
+            Invoke-Beta -Method PATCH -Uri $extConfigPatchUri -Body $legacyPatchBody | Out-Null
+          }
         Write-Host "   Updated external auth method config id: $($extConfig.id)" -ForegroundColor Green
       }
       else {
@@ -2911,9 +2989,12 @@ else {
       }
     }
     catch {
-      Write-Warning "Could not PATCH external auth method config. You may need to adjust fields for your tenant. Details: $($_.Exception.Message)"
+      $warningText = "Could not PATCH external auth method config. You may need to adjust fields for your tenant. Details: $($_.Exception.Message)"
+      $rolloutWarnings.Add($warningText) | Out-Null
+      Write-Warning $warningText
     }
   }
+}
 }
 
 # --- 4b) Exclude wrapper group from common Microsoft MFA methods (best-effort) ---
