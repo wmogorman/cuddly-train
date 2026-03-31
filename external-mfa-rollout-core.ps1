@@ -1115,9 +1115,9 @@ function Invoke-EamOnlyPilotReadinessAudit {
   Write-Host "     1) Entra -> Protection -> Password reset -> Registration -> 'Require users to register when signing in' = No (during pilot testing)"
   Write-Host "     2) Entra -> Protection -> Password reset -> Properties -> Self service password reset enabled = No (strict external-only requirement)"
   Write-Host "     3) Entra -> Protection -> Password reset -> Authentication methods -> Mobile phone / Office phone disabled; do not require extra recovery methods"
-  Write-Host "     4) Test a pilot user that is a DIRECT member of '$WrapperGroupName' (nested membership can delay/confuse troubleshooting)"
+  Write-Host "     4) Test a pilot user that is a DIRECT member of '$WrapperGroupName' (direct wrapper membership is the authoritative enforcement target)"
   if (-not [string]::IsNullOrWhiteSpace($PilotGroupName)) {
-    Write-Host "        (Pilot group '$PilotGroupName' may be nested in the wrapper; direct membership is recommended for troubleshooting.)"
+    Write-Host "        (Pilot source group '$PilotGroupName' should be synced into '$WrapperGroupName' as direct users; confirm the test user appears directly in the wrapper before troubleshooting sign-in behavior.)"
   }
 
   if ($warningCount -eq 0) {
@@ -1652,42 +1652,94 @@ function Sync-ManagedPilotGlobalAdministratorGroup {
   return [pscustomobject]$result
 }
 
-function Set-WrapperGroupNestedTargets {
+function Sync-WrapperGroupDirectUserMembers {
   param(
     [Parameter(Mandatory=$true)][string]$WrapperGroupId,
-    [Parameter(Mandatory=$true)][string[]]$DesiredNestedGroupIds,
-    [Parameter(Mandatory=$true)][string[]]$ManagedNestedGroupIds
+    [Parameter(Mandatory=$true)][object[]]$SourceGroups
+  )
+
+  $sourceGroupsResolved = @(
+    $SourceGroups |
+      Where-Object { $_ -and -not [string]::IsNullOrWhiteSpace([string](Get-GraphMemberValue -Object $_ -Name "id")) } |
+      Sort-Object { [string](Get-GraphMemberValue -Object $_ -Name "id") } -Unique
   )
 
   $currentMembers = @(Get-MgGroupMember -GroupId $WrapperGroupId -All -ErrorAction Stop)
-  $currentGroupIds = @{}
+  $currentDirectUsers = @{}
+  $currentDirectGroups = @{}
   foreach ($member in $currentMembers) {
     $memberId = Get-DirectoryObjectId -Object $member
     $memberType = [string](Get-DirectoryObjectTypeName -Object $member)
-    if (-not [string]::IsNullOrWhiteSpace($memberId) -and $memberType -match "(?i)\.group$") {
-      $currentGroupIds[$memberId] = $member
+    if ([string]::IsNullOrWhiteSpace($memberId)) {
+      continue
+    }
+
+    if ($memberType -match "(?i)\.user$") {
+      $currentDirectUsers[$memberId] = $member
+    }
+    elseif ($memberType -match "(?i)\.group$") {
+      $currentDirectGroups[$memberId] = $member
     }
   }
 
-  foreach ($groupId in @($DesiredNestedGroupIds | Where-Object { -not $currentGroupIds.ContainsKey($_) })) {
-    if ($PSCmdlet.ShouldProcess("wrapper group [$WrapperGroupId]", "Add nested target group [$groupId]")) {
+  $desiredUsers = @{}
+  foreach ($sourceGroup in $sourceGroupsResolved) {
+    $sourceGroupId = [string](Get-GraphMemberValue -Object $sourceGroup -Name "id")
+    $sourceGroupName = [string](Get-GraphMemberValue -Object $sourceGroup -Name "displayName")
+    if ([string]::IsNullOrWhiteSpace($sourceGroupName)) {
+      $sourceGroupName = $sourceGroupId
+    }
+
+    $sourceUsers = @(Get-GroupTransitiveUsers -GroupId $sourceGroupId)
+    Write-Host "   Source group '$sourceGroupName' contributes $($sourceUsers.Count) transitive user(s)." -ForegroundColor DarkCyan
+    foreach ($sourceUser in $sourceUsers) {
+      if (-not [string]::IsNullOrWhiteSpace([string]$sourceUser.Id)) {
+        $desiredUsers[[string]$sourceUser.Id] = $sourceUser
+      }
+    }
+  }
+
+  foreach ($userId in @($desiredUsers.Keys | Where-Object { -not $currentDirectUsers.ContainsKey($_) })) {
+    $label = if (-not [string]::IsNullOrWhiteSpace([string]$desiredUsers[$userId].UserPrincipalName)) {
+      [string]$desiredUsers[$userId].UserPrincipalName
+    }
+    elseif (-not [string]::IsNullOrWhiteSpace([string]$desiredUsers[$userId].DisplayName)) {
+      [string]$desiredUsers[$userId].DisplayName
+    }
+    else {
+      $userId
+    }
+
+    if ($PSCmdlet.ShouldProcess("wrapper group [$WrapperGroupId]", "Add synced direct user '$label' [$userId]")) {
       New-MgGroupMemberByRef -GroupId $WrapperGroupId -BodyParameter @{
-        "@odata.id" = "https://graph.microsoft.com/v1.0/directoryObjects/$groupId"
+        "@odata.id" = "https://graph.microsoft.com/v1.0/directoryObjects/$userId"
       } | Out-Null
-      Write-Host "   Nested target group '$groupId' into wrapper group." -ForegroundColor Green
+      Write-Host "   Added synced direct user '$label' to wrapper group." -ForegroundColor Green
     }
     else {
-      Write-Host "   Planned nesting of target group '$groupId' into wrapper group." -ForegroundColor Yellow
+      Write-Host "   Planned add of synced direct user '$label' to wrapper group." -ForegroundColor Yellow
     }
   }
 
-  foreach ($groupId in @($ManagedNestedGroupIds | Where-Object { $currentGroupIds.ContainsKey($_) -and ($DesiredNestedGroupIds -notcontains $_) })) {
-    if ($PSCmdlet.ShouldProcess("wrapper group [$WrapperGroupId]", "Remove managed nested target group [$groupId]")) {
-      Remove-MgGroupMemberByRef -GroupId $WrapperGroupId -DirectoryObjectId $groupId -ErrorAction Stop | Out-Null
-      Write-Host "   Removed managed target group '$groupId' from wrapper group." -ForegroundColor Green
+  foreach ($userId in @($currentDirectUsers.Keys | Where-Object { -not $desiredUsers.ContainsKey($_) })) {
+    $label = Get-DirectoryObjectDisplay -Object $currentDirectUsers[$userId]
+    if ($PSCmdlet.ShouldProcess("wrapper group [$WrapperGroupId]", "Remove stale synced direct user '$label' [$userId]")) {
+      Remove-MgGroupMemberByRef -GroupId $WrapperGroupId -DirectoryObjectId $userId -ErrorAction Stop | Out-Null
+      Write-Host "   Removed stale direct user '$label' from wrapper group." -ForegroundColor Green
     }
     else {
-      Write-Host "   Planned removal of managed target group '$groupId' from wrapper group." -ForegroundColor Yellow
+      Write-Host "   Planned removal of stale direct user '$label' from wrapper group." -ForegroundColor Yellow
+    }
+  }
+
+  foreach ($groupId in @($currentDirectGroups.Keys)) {
+    $label = Get-DirectoryObjectDisplay -Object $currentDirectGroups[$groupId]
+    if ($PSCmdlet.ShouldProcess("wrapper group [$WrapperGroupId]", "Remove direct nested group '$label' [$groupId]")) {
+      Remove-MgGroupMemberByRef -GroupId $WrapperGroupId -DirectoryObjectId $groupId -ErrorAction Stop | Out-Null
+      Write-Host "   Removed nested group '$label' from wrapper group to enforce the direct-membership model." -ForegroundColor Green
+    }
+    else {
+      Write-Host "   Planned removal of nested group '$label' from wrapper group to enforce the direct-membership model." -ForegroundColor Yellow
     }
   }
 }
@@ -2536,8 +2588,7 @@ if (-not $isOffboarding) {
     Write-Host "   Wrapper group creation is planned only (-WhatIf)." -ForegroundColor Yellow
   }
 
-  $desiredWrapperTargetGroupIds = @()
-  $managedWrapperTargetGroupIds = New-Object System.Collections.Generic.List[string]
+  $desiredWrapperSourceGroups = New-Object System.Collections.Generic.List[object]
   $pilot = $null
 
   if ($Stage -eq "PilotGlobalAdmins") {
@@ -2547,7 +2598,7 @@ if (-not $isOffboarding) {
     )
 
     if ($hasExistingPilotGroupOverride) {
-      Write-Step "Resolving existing pilot group for wrapper targeting..."
+      Write-Step "Resolving existing pilot source group..."
       $pilot = Resolve-ExistingPilotGroup -ExistingPilotGroupId $ExistingPilotGroupId -ExistingPilotGroupName $ExistingPilotGroupName
       if (-not $pilot -or -not $pilot.Id) {
         throw "The requested existing pilot group could not be resolved."
@@ -2557,63 +2608,48 @@ if (-not $isOffboarding) {
         throw "Existing pilot group '$($pilot.DisplayName)' cannot be the same group as the wrapper group '$WrapperGroupName'."
       }
 
-      $desiredWrapperTargetGroupIds = @($pilot.Id)
-      $managedWrapperTargetGroupIds.Add($pilot.Id) | Out-Null
-      Write-Host "   Using existing pilot group: $($pilot.DisplayName) [$($pilot.Id)]" -ForegroundColor Green
-      Write-Host "   Managed pilot group '$PilotGroupName' will be removed from the wrapper if it is still nested there." -ForegroundColor Yellow
+      $desiredWrapperSourceGroups.Add($pilot) | Out-Null
+      Write-Host "   Using existing pilot source group: $($pilot.DisplayName) [$($pilot.Id)]" -ForegroundColor Green
+      Write-Host "   Wrapper membership will be synced directly from this source group." -ForegroundColor Yellow
     }
     else {
       $pilotSync = Sync-ManagedPilotGlobalAdministratorGroup -PilotGroupName $PilotGroupName
       $pilot = $pilotSync.Group
       if ($pilot -and $pilot.Id) {
-        $desiredWrapperTargetGroupIds = @($pilot.Id)
-        $managedWrapperTargetGroupIds.Add($pilot.Id) | Out-Null
+        $desiredWrapperSourceGroups.Add($pilot) | Out-Null
       }
     }
   }
   else {
-    Write-Step "Resolving final rollout target groups..."
+    Write-Step "Resolving final rollout source groups..."
     foreach ($groupId in @(ConvertTo-StringArray -Value $FinalTargetGroupIds | Sort-Object -Unique)) {
-      $targetGroup = Resolve-GroupById -GroupId $groupId
-      if (-not $targetGroup) {
+      $sourceGroup = Resolve-GroupById -GroupId $groupId
+      if (-not $sourceGroup) {
         throw "Final target group '$groupId' could not be resolved."
       }
 
-      $desiredWrapperTargetGroupIds += $targetGroup.Id
-      $managedWrapperTargetGroupIds.Add($targetGroup.Id) | Out-Null
-      Write-Host "   Final target group: $($targetGroup.DisplayName) [$($targetGroup.Id)]" -ForegroundColor Green
+      $desiredWrapperSourceGroups.Add($sourceGroup) | Out-Null
+      Write-Host "   Final source group: $($sourceGroup.DisplayName) [$($sourceGroup.Id)]" -ForegroundColor Green
     }
   }
 
-  $existingPilotGroup = Get-GroupByDisplayNameUnique -DisplayName $PilotGroupName
-  if ($existingPilotGroup -and $existingPilotGroup.Id -and ($managedWrapperTargetGroupIds -notcontains $existingPilotGroup.Id)) {
-    $managedWrapperTargetGroupIds.Add($existingPilotGroup.Id) | Out-Null
-  }
-
-  foreach ($groupId in @(ConvertTo-StringArray -Value $FinalTargetGroupIds | Sort-Object -Unique)) {
-    if ($managedWrapperTargetGroupIds -notcontains $groupId) {
-      $managedWrapperTargetGroupIds.Add($groupId) | Out-Null
-    }
-  }
-
-  Write-Step "Reconciling wrapper-group target nesting..."
+  Write-Step "Reconciling direct wrapper-user membership from source groups..."
   try {
-    if (-not $wrapper.Id -or @($desiredWrapperTargetGroupIds).Count -eq 0) {
-      Write-Host "   Skipping wrapper target nesting because the wrapper group or desired target groups are planned only." -ForegroundColor Yellow
+    if (-not $wrapper.Id -or @($desiredWrapperSourceGroups | Where-Object { $_ -and $_.Id }).Count -eq 0) {
+      Write-Host "   Skipping direct wrapper-user sync because the wrapper group or desired source groups are planned only." -ForegroundColor Yellow
     }
     else {
-      Set-WrapperGroupNestedTargets `
+      Sync-WrapperGroupDirectUserMembers `
         -WrapperGroupId $wrapper.Id `
-        -DesiredNestedGroupIds @($desiredWrapperTargetGroupIds | Sort-Object -Unique) `
-        -ManagedNestedGroupIds @($managedWrapperTargetGroupIds | Sort-Object -Unique)
+        -SourceGroups @($desiredWrapperSourceGroups.ToArray())
     }
   }
   catch {
-    Write-Warning "Could not reconcile wrapper-group target nesting. Details: $($_.Exception.Message)"
+    Write-Warning "Could not reconcile direct wrapper-user membership from source groups. Details: $($_.Exception.Message)"
   }
 }
 else {
-  Write-Host "==> Skipping wrapper and target-group reconciliation in offboarding mode." -ForegroundColor Cyan
+  Write-Host "==> Skipping wrapper/source-group reconciliation in offboarding mode." -ForegroundColor Cyan
 }
 
 # --- 4) Create/Update External Authentication Method configuration ---
@@ -3412,15 +3448,16 @@ if ($isOffboarding) {
 else {
   # Rollout checklist: confirm Duo is active and Microsoft prompts are no longer preferred.
   Write-Host "  1) Entra -> Authentication methods -> External authentication methods: confirm '$Name' enabled + targeted to '$WrapperGroupName'"
-  Write-Host "  2) Entra -> Conditional Access: confirm '$CaPolicyName' enabled and scoped correctly"
-  Write-Host "  3) Entra -> Conditional Access: confirm break-glass group '$BreakGlassGroupId' is excluded from '$CaPolicyName'"
-  Write-Host "  4) Entra -> Conditional Access: confirm any matched legacy Duo custom-control CA policies also exclude '$BreakGlassGroupId' during coexistence"
-  Write-Host "  5) Entra -> Authentication methods -> Policies -> Microsoft Authenticator: confirm the policy state matches your chosen script parameters"
-  Write-Host "  6) Entra -> Authentication methods -> Policies: confirm common Microsoft MFA methods exclude '$WrapperGroupName' (Authenticator/SMS/Voice/OATH, if enabled)"
-  Write-Host "  7) Entra -> Authentication methods -> Registration campaign / System-preferred MFA: confirm the policy states match your chosen script parameters"
-  Write-Host "  8) If bulk registration was enabled: Entra/myaccount -> Security info: confirm wrapper-group users have '$Name' registered"
-  Write-Host "  9) Review the EAM-only pilot readiness audit output (expected values for Security Defaults / SSPR / Password reset registration)"
-  Write-Host "  10) myaccount.microsoft.com -> Security info / sign-in: confirm target users use External MFA and are not offered unintended Microsoft MFA methods"
+  Write-Host "  2) Entra -> Groups -> '$WrapperGroupName': confirm expected source-group users are DIRECT members and stale nested groups are absent"
+  Write-Host "  3) Entra -> Conditional Access: confirm '$CaPolicyName' enabled and scoped correctly"
+  Write-Host "  4) Entra -> Conditional Access: confirm break-glass group '$BreakGlassGroupId' is excluded from '$CaPolicyName'"
+  Write-Host "  5) Entra -> Conditional Access: confirm any matched legacy Duo custom-control CA policies also exclude '$BreakGlassGroupId' during coexistence"
+  Write-Host "  6) Entra -> Authentication methods -> Policies -> Microsoft Authenticator: confirm the policy state matches your chosen script parameters"
+  Write-Host "  7) Entra -> Authentication methods -> Policies: confirm common Microsoft MFA methods exclude '$WrapperGroupName' (Authenticator/SMS/Voice/OATH, if enabled)"
+  Write-Host "  8) Entra -> Authentication methods -> Registration campaign / System-preferred MFA: confirm the policy states match your chosen script parameters"
+  Write-Host "  9) If bulk registration was enabled: Entra/myaccount -> Security info: confirm wrapper-group users have '$Name' registered"
+  Write-Host "  10) Review the EAM-only pilot readiness audit output (expected values for Security Defaults / SSPR / Password reset registration)"
+  Write-Host "  11) myaccount.microsoft.com -> Security info / sign-in: confirm target users use External MFA and are not offered unintended Microsoft MFA methods"
 }
 Write-Host ""
 Write-Host "Note: This script changes tenant auth method policy settings (best-effort). It only adds per-user External Authentication Method registrations when -BulkRegisterExternalAuthMethodForWrapperGroupUsers is enabled; it does not remove other per-user MFA registrations. If user prompts still look wrong, review the user's registered methods and tenant authentication method policies." -ForegroundColor Yellow

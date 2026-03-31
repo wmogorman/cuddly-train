@@ -7,7 +7,8 @@
       "caScopeMode": "MirrorLegacy",
       "guestSupport": false,
       "disableAdminSspr": true,
-      "existingPilotGroupName": "ActaMSP Global Administrators Audit",
+      "existingPilotSourceGroupName": "ActaMSP Global Administrators Audit",
+      "wrapperGroupName": "DMX-ExternalMFA-Users",
       "breakGlassGroupId": "22222222-2222-2222-2222-222222222222",
       "legacyPolicyNames": [
         "Duo MFA - Legacy Custom Control"
@@ -29,9 +30,10 @@
       "explicitAppIds": [
         "00000002-0000-0ff1-ce00-000000000000"
       ],
-      "finalTargetGroupIds": [
+      "finalSourceGroupIds": [
         "55555555-5555-5555-5555-555555555555"
       ],
+      "wrapperGroupName": "DMX-ExternalMFA-Users",
       "duo": {
         "clientId": "standard-duo-client-id",
         "guestClientId": "guest-duo-client-id",

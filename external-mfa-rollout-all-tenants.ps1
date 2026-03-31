@@ -8,6 +8,13 @@
   - App-only: provide -ClientId/-Thumbprint and the core script will connect certificate-authenticated per tenant.
 
   Auto-discovery is only supported in app-only mode. Discovered tenant IDs are filtered to entries present in the JSON config.
+
+  Group targeting model:
+  - wrapperGroupName remains the single enforcement target for EAM, CA, and auth-method exclusions.
+  - existingPilotSourceGroupId / existingPilotSourceGroupName (or the legacy existingPilotGroup* keys) identify the
+    maintained pilot source group whose users will be synced directly into the wrapper.
+  - finalSourceGroupIds (or the legacy finalTargetGroupIds key) identify the maintained final source groups whose
+    transitive users will be synced directly into the wrapper.
 #>
 
 [CmdletBinding()]
@@ -281,6 +288,26 @@ $results = New-Object System.Collections.Generic.List[object]
 foreach ($tenant in $resolvedTargets) {
   $tenantId = [string]$tenant.tenantId
   $tenantDuo = Get-ConfigValue -Object $tenant -Name "duo"
+  $finalSourceGroupIds = Get-ConfigValue -Object $tenant -Name "finalSourceGroupIds"
+  if ($null -eq $finalSourceGroupIds) {
+    $finalSourceGroupIds = Get-ConfigValue -Object $tenant -Name "finalTargetGroupIds"
+  }
+
+  $existingPilotSourceGroupId = Get-ConfigValue -Object $tenant -Name "existingPilotSourceGroupId"
+  if ($null -eq $existingPilotSourceGroupId) {
+    $existingPilotSourceGroupId = Get-ConfigValue -Object $tenant -Name "existingPilotGroupId"
+  }
+
+  $existingPilotSourceGroupName = Get-ConfigValue -Object $tenant -Name "existingPilotSourceGroupName"
+  if ($null -eq $existingPilotSourceGroupName) {
+    $existingPilotSourceGroupName = Get-ConfigValue -Object $tenant -Name "existingPilotGroupName"
+  }
+
+  $pilotSourceGroupName = Get-ConfigValue -Object $tenant -Name "pilotSourceGroupName"
+  if ($null -eq $pilotSourceGroupName) {
+    $pilotSourceGroupName = Get-ConfigValue -Object $tenant -Name "pilotGroupName"
+  }
+
   $rolloutParams = @{
     Name = [string](Get-ConfigValue -Object $tenant -Name "name" -Default $(Get-ConfigValue -Object $tenantDuo -Name "name" -Default "Cisco Duo"))
     ClientId = [string](Get-ConfigValue -Object $tenantDuo -Name "clientId")
@@ -292,7 +319,7 @@ foreach ($tenant in $resolvedTargets) {
     CaScopeMode = [string](Get-ConfigValue -Object $tenant -Name "caScopeMode" -Default "MirrorLegacy")
     LegacyPolicyNames = @(ConvertTo-Array -Value (Get-ConfigValue -Object $tenant -Name "legacyPolicyNames"))
     ExplicitAppIds = @(ConvertTo-Array -Value (Get-ConfigValue -Object $tenant -Name "explicitAppIds"))
-    FinalTargetGroupIds = @(ConvertTo-Array -Value (Get-ConfigValue -Object $tenant -Name "finalTargetGroupIds"))
+    FinalTargetGroupIds = @(ConvertTo-Array -Value $finalSourceGroupIds)
     BreakGlassGroupId = [string](Get-ConfigValue -Object $tenant -Name "breakGlassGroupId")
     GuestSupport = [bool](Get-ConfigValue -Object $tenant -Name "guestSupport" -Default $false)
     BulkRegisterExternalAuthMethodForWrapperGroupUsers = [bool](Get-ConfigValue -Object $tenant -Name "bulkRegisterExternalAuth" -Default $false)
@@ -304,9 +331,9 @@ foreach ($tenant in $resolvedTargets) {
     EnforceStrictExternalOnlyTenantPrereqs = [bool](Get-ConfigValue -Object $tenant -Name "enforceStrictExternalOnlyTenantPrereqs" -Default $false)
     DisableAdminSspr = [bool](Get-ConfigValue -Object $tenant -Name "disableAdminSspr" -Default $false)
     FailOnManualBlockers = [bool](Get-ConfigValue -Object $tenant -Name "failOnManualBlockers" -Default $true)
-    PilotGroupName = [string](Get-ConfigValue -Object $tenant -Name "pilotGroupName" -Default "DMX-ExternalMFA-Pilot-GlobalAdmins")
-    ExistingPilotGroupId = [string](Get-ConfigValue -Object $tenant -Name "existingPilotGroupId")
-    ExistingPilotGroupName = [string](Get-ConfigValue -Object $tenant -Name "existingPilotGroupName")
+    PilotGroupName = [string]$(if ([string]::IsNullOrWhiteSpace([string]$pilotSourceGroupName)) { "DMX-ExternalMFA-Pilot-GlobalAdmins" } else { [string]$pilotSourceGroupName })
+    ExistingPilotGroupId = [string]$existingPilotSourceGroupId
+    ExistingPilotGroupName = [string]$existingPilotSourceGroupName
     WrapperGroupName = [string](Get-ConfigValue -Object $tenant -Name "wrapperGroupName" -Default "DMX-ExternalMFA-Users")
     CaPolicyName = [string](Get-ConfigValue -Object $tenant -Name "caPolicyName" -Default "DMX - Require MFA (External MFA)")
     TargetTenantId = $tenantId

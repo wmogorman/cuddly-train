@@ -136,12 +136,12 @@ $txtExternalConfigId = New-TextBoxControl -X 240 -Y ($y - 2) -Width 660
 $tabBasics.Controls.Add($txtExternalConfigId)
 $y += 34
 
-$tabBasics.Controls.Add((New-LabelControl -Text "PilotGroupName" -X 16 -Y $y))
+$tabBasics.Controls.Add((New-LabelControl -Text "PilotGroupName (pilot source)" -X 16 -Y $y))
 $txtPilotGroup = New-TextBoxControl -X 240 -Y ($y - 2) -Width 660 -Text "DMX-ExternalMFA-Pilot-GlobalAdmins"
 $tabBasics.Controls.Add($txtPilotGroup)
 $y += 34
 
-$tabBasics.Controls.Add((New-LabelControl -Text "WrapperGroupName" -X 16 -Y $y))
+$tabBasics.Controls.Add((New-LabelControl -Text "WrapperGroupName (direct users)" -X 16 -Y $y))
 $txtWrapperGroup = New-TextBoxControl -X 240 -Y ($y - 2) -Width 660 -Text "DMX-ExternalMFA-Users"
 $tabBasics.Controls.Add($txtWrapperGroup)
 $y += 34
@@ -182,7 +182,7 @@ $y2 += 28
 
 $cbDisableSystemPreferred = New-CheckBoxControl -Text "Disable system-preferred MFA" -X 20 -Y $y2 -Checked $true -Width 420
 $tabOptions.Controls.Add($cbDisableSystemPreferred)
-$cbRestrictMethods = New-CheckBoxControl -Text "Restrict common Microsoft MFA methods for wrapper group" -X 460 -Y $y2 -Checked $true -Width 420
+$cbRestrictMethods = New-CheckBoxControl -Text "Restrict common Microsoft MFA methods for wrapper users" -X 460 -Y $y2 -Checked $true -Width 420
 $tabOptions.Controls.Add($cbRestrictMethods)
 $y2 += 36
 
@@ -194,7 +194,7 @@ $y2 += 92
 $tabOptions.Controls.Add((New-LabelControl -Text "Bulk registration" -X 16 -Y $y2 -Width 200))
 $y2 += 30
 
-$cbBulkRegister = New-CheckBoxControl -Text "Bulk-register External MFA for wrapper-group users" -X 20 -Y $y2 -Checked $false -Width 420
+$cbBulkRegister = New-CheckBoxControl -Text "Bulk-register External MFA for wrapper users" -X 20 -Y $y2 -Checked $false -Width 420
 $tabOptions.Controls.Add($cbBulkRegister)
 $cbBulkSkipDisabled = New-CheckBoxControl -Text "Skip disabled users during bulk registration" -X 460 -Y $y2 -Checked $true -Width 420
 $tabOptions.Controls.Add($cbBulkSkipDisabled)
@@ -229,8 +229,11 @@ Recommended workflow:
 2. If creating a NEW EAM, also provide ClientId, DiscoveryEndpoint, and AppId.
 3. If the EAM already exists in Entra, leave ExternalAuthConfigId blank first; the script should find it automatically by name. Only use ExternalAuthConfigId if lookup fails and you need an override.
 4. Provide BreakGlassGroupId for the emergency admin exclusion before running a rollout.
-5. Leave Microsoft Authenticator enabled unless you intentionally want the script to disable it.
-6. Use Run In Console so teammates can complete Microsoft Graph interactive sign-in.
+5. PilotGroupName identifies the managed pilot SOURCE group when you let the script mirror Global Administrators automatically.
+6. WrapperGroupName is the direct-user enforcement group that EAM, CA, and auth-method exclusions target.
+7. The rollout syncs transitive users from maintained source groups into the wrapper as DIRECT members; it does not rely on nested groups inside the wrapper.
+8. Leave Microsoft Authenticator enabled unless you intentionally want the script to disable it.
+9. Use Run In Console so teammates can complete Microsoft Graph interactive sign-in.
 
 High-impact options:
 - Enforce strict external-only tenant prereqs:
