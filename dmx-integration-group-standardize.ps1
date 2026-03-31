@@ -1,6 +1,6 @@
 <#
-Standardize the DMX Integration Group across target tenants.
-- Canonical name: DMX Integration Group
+Standardize the ActaMSP Integration Group across target tenants.
+- Canonical name: ActaMSP Integration Group
 - Dynamic rule: enabled internal members with at least one enabled assigned plan
 - Fallback: assigned security group with direct membership sync when dynamic membership is unavailable
 #>
@@ -17,8 +17,8 @@ param(
     [string[]]$ExcludeTenantId,
     [string]$ClientId = "f45ddef0-f613-4c3d-92d1-6b80bf00e6cf",
     [string]$Thumbprint = "D0278AED132F9C816A815A4BFFF0F48CE8FAECEF",
-    [string]$GroupDisplayName = "DMX Integration Group",
-    [string[]]$LegacyGroupDisplayName = @("DMX_Integration_Group"),
+    [string]$GroupDisplayName = "ActaMSP Integration Group",
+    [string[]]$LegacyGroupDisplayName = @("DMX Integration Group", "DMX_Integration_Group", "Datamax_Integration_Group", "Datamax Integration"),
     [switch]$DryRun,
     [switch]$StopOnError
 )
@@ -553,6 +553,14 @@ function Test-IsDynamicGroupLicenseConstraintError {
         return $false
     }
 
+    if ($message -match "(?i)\bNoLicenseForOperation\b") {
+        return $true
+    }
+
+    if ($message -match "(?i)tenant does not have proper license") {
+        return $true
+    }
+
     return (
         $message -match "(?i)(dynamic|membershiprule|membership rule|group type)" -and
         $message -match "(?i)(premium|p1|license|licensing|sku|subscription|unsupported)"
@@ -586,10 +594,33 @@ function Get-ManagedGroupById {
     }
 }
 
+function Set-ManagedGroupDisplayNameIfStale {
+    param(
+        [Parameter(Mandatory = $true)]$Group,
+        [string]$ExpectedDisplayName,
+        [string]$TenantLabel,
+        [string]$Reason = "an earlier update"
+    )
+
+    if ([string]::IsNullOrWhiteSpace($ExpectedDisplayName)) {
+        return $Group
+    }
+
+    if ([string]$Group.DisplayName -ne $ExpectedDisplayName) {
+        Write-Log -Level "WARN" -Tenant $TenantLabel -Message "Group display name has not propagated through Graph reads after $Reason; continuing with '$ExpectedDisplayName' locally."
+        $Group | Add-Member -NotePropertyName DisplayName -NotePropertyValue $ExpectedDisplayName -Force
+    }
+
+    return $Group
+}
+
 function Get-ManagedIntegrationGroupCandidates {
     param([string]$CanonicalDisplayName, [string[]]$LegacyDisplayNames, [string]$TenantLabel)
 
-    $searchNames = @($CanonicalDisplayName + @($LegacyDisplayNames) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Sort-Object -Unique)
+    $searchNames = @(
+        @($CanonicalDisplayName)
+        @($LegacyDisplayNames)
+    ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Sort-Object -Unique
     $matchesById = @{}
 
     foreach ($name in $searchNames) {
@@ -617,17 +648,14 @@ function Find-ManagedGroupByMailNickname {
         })
 }
 
-function Get-GroupTypesArrayList {
+function Get-GroupTypesArray {
     param([Parameter(Mandatory = $true)]$Group)
 
-    $groupTypes = [System.Collections.ArrayList]::new()
-    foreach ($groupType in @($Group.GroupTypes)) {
-        if (-not [string]::IsNullOrWhiteSpace([string]$groupType)) {
-            $groupTypes.Add([string]$groupType) | Out-Null
-        }
-    }
-
-    return $groupTypes
+    return @(
+        @($Group.GroupTypes) |
+        Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } |
+        ForEach-Object { [string]$_ }
+    )
 }
 
 function Rename-ManagedGroupToCanonical {
@@ -652,7 +680,8 @@ function Rename-ManagedGroupToCanonical {
     } | Out-Null
 
     Write-Log -Tenant $TenantLabel -Message "Renamed group '$($Group.DisplayName)' [$($Group.Id)] to '$DisplayName'"
-    return Get-ManagedGroupById -GroupId $Group.Id -TenantLabel $TenantLabel
+    $updated = Get-ManagedGroupById -GroupId $Group.Id -TenantLabel $TenantLabel
+    return Set-ManagedGroupDisplayNameIfStale -Group $updated -ExpectedDisplayName $DisplayName -TenantLabel $TenantLabel -Reason "the rename"
 }
 
 function New-ManagedSecurityGroup {
@@ -739,17 +768,17 @@ function Update-DynamicGroupSettings {
     } | Out-Null
 
     Write-Log -Tenant $TenantLabel -Message "Updated dynamic membership settings for '$($Group.DisplayName)' [$($Group.Id)]"
-    return Get-ManagedGroupById -GroupId $Group.Id -TenantLabel $TenantLabel
+    $updated = Get-ManagedGroupById -GroupId $Group.Id -TenantLabel $TenantLabel
+    return Set-ManagedGroupDisplayNameIfStale -Group $updated -ExpectedDisplayName ([string]$Group.DisplayName) -TenantLabel $TenantLabel -Reason "the dynamic settings update"
 }
 
 function Convert-GroupToDynamic {
     param([Parameter(Mandatory = $true)]$Group, [string]$TenantLabel)
 
-    $groupTypes = Get-GroupTypesArrayList -Group $Group
-    if (-not $groupTypes.Contains($script:DynamicGroupType)) {
-        $groupTypes.Add($script:DynamicGroupType) | Out-Null
+    $typesToApply = @(Get-GroupTypesArray -Group $Group)
+    if ($typesToApply -notcontains $script:DynamicGroupType) {
+        $typesToApply = @($typesToApply + $script:DynamicGroupType)
     }
-    $typesToApply = @($groupTypes.ToArray())
 
     if ($DryRun) {
         Write-Log -Tenant $TenantLabel -Message "DRY RUN: would convert assigned group '$($Group.DisplayName)' [$($Group.Id)] to dynamic membership"
@@ -770,24 +799,25 @@ function Convert-GroupToDynamic {
     } | Out-Null
 
     Write-Log -Tenant $TenantLabel -Message "Converted group '$($Group.DisplayName)' [$($Group.Id)] to dynamic membership"
-    return Get-ManagedGroupById -GroupId $Group.Id -TenantLabel $TenantLabel
+    $updated = Get-ManagedGroupById -GroupId $Group.Id -TenantLabel $TenantLabel
+    return Set-ManagedGroupDisplayNameIfStale -Group $updated -ExpectedDisplayName ([string]$Group.DisplayName) -TenantLabel $TenantLabel -Reason "the dynamic conversion"
 }
 
 function Convert-GroupToAssigned {
     param([Parameter(Mandatory = $true)]$Group, [string]$TenantLabel)
 
-    $groupTypes = Get-GroupTypesArrayList -Group $Group
-    if ($groupTypes.Contains($script:DynamicGroupType)) {
-        [void]$groupTypes.Remove($script:DynamicGroupType)
-    }
-    $typesToApply = @($groupTypes.ToArray())
+    $typesToApply = @(
+        @(Get-GroupTypesArray -Group $Group) |
+        Where-Object { $_ -ne $script:DynamicGroupType }
+    )
 
     Invoke-WithRetry -Tenant $TenantLabel -Operation "Convert group to assigned" -Script {
         Update-MgGroup -GroupId $Group.Id -GroupTypes $typesToApply -MembershipRuleProcessingState "Paused" -ErrorAction Stop
     } | Out-Null
 
     Write-Log -Tenant $TenantLabel -Message "Converted group '$($Group.DisplayName)' [$($Group.Id)] to assigned membership"
-    return Get-ManagedGroupById -GroupId $Group.Id -TenantLabel $TenantLabel
+    $updated = Get-ManagedGroupById -GroupId $Group.Id -TenantLabel $TenantLabel
+    return Set-ManagedGroupDisplayNameIfStale -Group $updated -ExpectedDisplayName ([string]$Group.DisplayName) -TenantLabel $TenantLabel -Reason "the assigned fallback conversion"
 }
 
 function Test-UserHasEnabledAssignedPlan {
@@ -936,7 +966,7 @@ function Sync-AssignedGroupMembers {
     )
 
     $snapshot = if ($null -ne $InitialSnapshot) { $InitialSnapshot } else { Get-GroupMemberSnapshot -Group $Group -TenantLabel $TenantLabel -RetryOnNotFound:$GroupJustCreated }
-    if ($snapshot.NonUserMembers.Count -gt 0) {
+    if (@($snapshot.NonUserMembers).Count -gt 0) {
         $preview = Format-DirectoryObjectPreview -Objects $snapshot.NonUserMembers
         throw "Manual review required: assigned group '$($Group.DisplayName)' [$($Group.Id)] has direct non-user members. Preview: $preview"
     }
@@ -1140,7 +1170,7 @@ function Standardize-TenantIntegrationGroup {
             }
         }
         else {
-            if ($currentSnapshot.NonUserMembers.Count -gt 0) {
+            if (@($currentSnapshot.NonUserMembers).Count -gt 0) {
                 Add-UniqueAction -Actions $actions -Action "FailedManualReview"
                 $preview = Format-DirectoryObjectPreview -Objects $currentSnapshot.NonUserMembers
                 throw "Manual review required: assigned group '$($selectedGroup.DisplayName)' [$($selectedGroup.Id)] has direct non-user members. Preview: $preview"
@@ -1182,7 +1212,12 @@ function Standardize-TenantIntegrationGroup {
 
             $summary.Mode = "Assigned"
             $syncResult = Sync-AssignedGroupMembers -Group $selectedGroup -DesiredUsersById $desiredUsersById -TenantLabel $tenantLogLabel -InitialSnapshot $currentSnapshot -GroupJustCreated:$groupJustCreated
-            $summary.CurrentUsers = $syncResult.Snapshot.UserCount
+            if ($DryRun) {
+                $summary.CurrentUsers = $syncResult.Snapshot.UserCount
+            }
+            else {
+                $summary.CurrentUsers = $syncResult.Snapshot.UserCount + $syncResult.Added - $syncResult.Removed
+            }
             $summary.Added += $syncResult.Added
             $summary.Removed += $syncResult.Removed
             $summary.WarningCount += $syncResult.WarningCount
