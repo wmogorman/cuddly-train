@@ -6,6 +6,7 @@
       "stage": "PilotGlobalAdmins",
       "caScopeMode": "MirrorLegacy",
       "guestSupport": false,
+      "existingPilotGroupName": "ActaMSP Global Administrators Audit",
       "breakGlassGroupId": "22222222-2222-2222-2222-222222222222",
       "legacyPolicyNames": [
         "Duo MFA - Legacy Custom Control"
@@ -34,8 +35,7 @@
         "clientId": "standard-duo-client-id",
         "guestClientId": "guest-duo-client-id",
         "discoveryEndpoint": "https://us.azureauth.duosecurity.com/.well-known/openid-configuration",
-        "appId": "duo-app-id",
-        "externalAuthConfigId": "66666666-6666-6666-6666-666666666666"
+        "appId": "duo-app-id"
       }
     }
   ]

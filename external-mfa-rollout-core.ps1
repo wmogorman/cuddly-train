@@ -22,8 +22,9 @@
   Application (resource) AppId / identifier required by the external auth method configuration
 
 .PARAMETER ExternalAuthConfigId
-  Optional existing External Authentication Method configuration ID. When provided, the script skips EAM discovery/create
-  and updates/targets this specific configuration directly (useful when Graph list responses are inconsistent).
+  Optional override for an existing External Authentication Method configuration ID. Normally the script reuses an
+  existing EAM automatically by display name and provider identifiers; use this only when Graph lookup is inconsistent
+  and you need to force a specific config.
 
 .PARAMETER AuditEamOnlyPilotReadiness
   Run a best-effort diagnostic summary (no changes) for common settings that cause EAM-only pilot users to get stuck
@@ -75,7 +76,7 @@ param(
   [Parameter(Mandatory=$false)]
   [string]$AppId,
 
-  # Optional explicit EAM config ID to bypass discovery/create when the config already exists.
+  # Optional override to force a specific existing EAM config when automatic lookup is unreliable.
   [Parameter(Mandatory=$false)]
   [string]$ExternalAuthConfigId,
 
@@ -89,6 +90,12 @@ param(
 
   [Parameter(Mandatory=$false)]
   [string]$PilotGroupName = "DMX-ExternalMFA-Pilot-GlobalAdmins",
+
+  [Parameter(Mandatory=$false)]
+  [string]$ExistingPilotGroupId,
+
+  [Parameter(Mandatory=$false)]
+  [string]$ExistingPilotGroupName,
 
   [Parameter(Mandatory=$false)]
   [string]$WrapperGroupName = "DMX-ExternalMFA-Users",
@@ -368,6 +375,111 @@ function Test-GraphMemberExists {
   }
 
   return ($null -ne $Object.PSObject.Properties[$Name])
+}
+
+function Convert-GraphObjectToPlainValue {
+  param([Parameter(Mandatory=$true)]$Value)
+
+  if ($null -eq $Value) {
+    return $null
+  }
+
+  if (
+    $Value -is [string] -or
+    $Value -is [char] -or
+    $Value -is [bool] -or
+    $Value -is [byte] -or
+    $Value -is [int16] -or
+    $Value -is [int32] -or
+    $Value -is [int64] -or
+    $Value -is [uint16] -or
+    $Value -is [uint32] -or
+    $Value -is [uint64] -or
+    $Value -is [single] -or
+    $Value -is [double] -or
+    $Value -is [decimal] -or
+    $Value -is [datetime] -or
+    $Value -is [guid]
+  ) {
+    return $Value
+  }
+
+  if ($Value -is [System.Collections.IDictionary]) {
+    $hash = @{}
+    foreach ($key in $Value.Keys) {
+      $keyName = [string]$key
+      if ($keyName -like "@odata.*") {
+        continue
+      }
+
+      $hash[$keyName] = Convert-GraphObjectToPlainValue -Value $Value[$key]
+    }
+    return $hash
+  }
+
+  if (($Value -is [System.Collections.IEnumerable]) -and -not ($Value -is [string])) {
+    $items = @()
+    foreach ($item in $Value) {
+      $items += ,(Convert-GraphObjectToPlainValue -Value $item)
+    }
+    return @($items)
+  }
+
+  $plainObject = @{}
+  foreach ($prop in $Value.PSObject.Properties) {
+    if ($prop.Name -like "@odata.*") {
+      continue
+    }
+
+    $plainObject[$prop.Name] = Convert-GraphObjectToPlainValue -Value $prop.Value
+  }
+
+  return $plainObject
+}
+
+function New-ExternalAuthMethodIncludeTarget {
+  param([Parameter(Mandatory=$true)][string]$GroupId)
+
+  return @{
+    targetType = "group"
+    id         = $GroupId
+    isRegistrationRequired = $false
+  }
+}
+
+function Get-ExternalAuthMethodIncludeTargets {
+  param([Parameter(Mandatory=$true)]$Configuration)
+
+  if (Test-GraphMemberExists -Object $Configuration -Name "includeTargets") {
+    $targets = Get-GraphMemberValue -Object $Configuration -Name "includeTargets"
+    if ($null -ne $targets) {
+      return @(Convert-GraphObjectToPlainValue -Value $targets)
+    }
+  }
+
+  if (Test-GraphMemberExists -Object $Configuration -Name "includeTarget") {
+    $target = Get-GraphMemberValue -Object $Configuration -Name "includeTarget"
+    if ($null -ne $target) {
+      return @((Convert-GraphObjectToPlainValue -Value $target))
+    }
+  }
+
+  return @()
+}
+
+function Test-ExternalAuthMethodConfigIncludesGroup {
+  param(
+    [Parameter(Mandatory=$true)]$Configuration,
+    [Parameter(Mandatory=$true)][string]$GroupId
+  )
+
+  return @(
+    Get-ExternalAuthMethodIncludeTargets -Configuration $Configuration | Where-Object {
+      $targetType = [string](Get-GraphMemberValue -Object $_ -Name "targetType")
+      $idValue = [string](Get-GraphMemberValue -Object $_ -Name "id")
+      ($targetType -eq "group") -and ($idValue -eq $GroupId)
+    }
+  ).Count -gt 0
 }
 
 function Invoke-GraphGetAllPages {
@@ -1302,6 +1414,40 @@ function Resolve-GroupById {
   }
 }
 
+function Resolve-ExistingPilotGroup {
+  param(
+    [Parameter(Mandatory=$false)][string]$ExistingPilotGroupId,
+    [Parameter(Mandatory=$false)][string]$ExistingPilotGroupName
+  )
+
+  $hasGroupId = -not [string]::IsNullOrWhiteSpace($ExistingPilotGroupId)
+  $hasGroupName = -not [string]::IsNullOrWhiteSpace($ExistingPilotGroupName)
+
+  if (-not $hasGroupId -and -not $hasGroupName) {
+    return $null
+  }
+
+  if ($hasGroupId -and $hasGroupName) {
+    throw "Specify either ExistingPilotGroupId or ExistingPilotGroupName, not both."
+  }
+
+  if ($hasGroupId) {
+    $resolvedById = Resolve-GroupById -GroupId $ExistingPilotGroupId
+    if (-not $resolvedById) {
+      throw "Existing pilot group '$ExistingPilotGroupId' was not found."
+    }
+
+    return $resolvedById
+  }
+
+  $resolvedByName = Get-GroupByDisplayNameUnique -DisplayName $ExistingPilotGroupName
+  if (-not $resolvedByName) {
+    throw "Existing pilot group '$ExistingPilotGroupName' was not found."
+  }
+
+  return $resolvedByName
+}
+
 function Ensure-SecurityGroup {
   param(
     [Parameter(Mandatory=$true)][string]$DisplayName,
@@ -1482,7 +1628,7 @@ function Resolve-LegacyDuoConditionalAccessPolicies {
     $resolved = New-Object System.Collections.Generic.List[object]
     foreach ($policyName in $PolicyNames) {
       $match = @($Policies | Where-Object { $_.displayName -eq $policyName } | Select-Object -First 1)
-      if ($match.Count -eq 0) {
+      if (@($match).Count -eq 0) {
         throw "Legacy Conditional Access policy '$policyName' was not found."
       }
 
@@ -1498,7 +1644,7 @@ function Resolve-LegacyDuoConditionalAccessPolicies {
         $state = [string](Get-GraphMemberValue -Object $_ -Name "state")
         $grantControls = Get-GraphMemberValue -Object $_ -Name "grantControls"
         $customFactors = if ($null -ne $grantControls) { ConvertTo-StringArray -Value (Get-GraphMemberValue -Object $grantControls -Name "customAuthenticationFactors") } else { @() }
-        ($state -ne "disabled") -and ($customFactors.Count -gt 0)
+        ($state -ne "disabled") -and (@($customFactors).Count -gt 0)
       }
   )
 }
@@ -1529,7 +1675,7 @@ function Get-LegacyConditionalAccessUnsupportedReasons {
     }
 
     $clientAppTypes = ConvertTo-StringArray -Value (Get-GraphMemberValue -Object $conditions -Name "clientAppTypes")
-    if ($clientAppTypes.Count -gt 0 -and @($clientAppTypes | Where-Object { $_ -ne "all" }).Count -gt 0) {
+    if (@($clientAppTypes).Count -gt 0 -and @($clientAppTypes | Where-Object { $_ -ne "all" }).Count -gt 0) {
       $reasons.Add("uses client app types other than 'all'") | Out-Null
     }
   }
@@ -1553,7 +1699,7 @@ function Get-LegacyConditionalAccessUnsupportedReasons {
         $value = Get-GraphMemberValue -Object $sessionControls -Name $_
         $null -ne $value
       })
-    if ($sessionPropertyNames.Count -gt 0) {
+    if (@($sessionPropertyNames).Count -gt 0) {
       $reasons.Add("uses session controls that would not be mirrored") | Out-Null
     }
   }
@@ -1575,7 +1721,10 @@ function Get-MirroredConditionalAccessApplicationScope {
       continue
     }
 
-    foreach ($appId in @(ConvertTo-StringArray -Value (Get-GraphMemberValue -Object $applications -Name "includeApplications"))) {
+    $policyIncludeApplications = @(ConvertTo-StringArray -Value (Get-GraphMemberValue -Object $applications -Name "includeApplications"))
+    $policyExcludeApplications = @(ConvertTo-StringArray -Value (Get-GraphMemberValue -Object $applications -Name "excludeApplications"))
+
+    foreach ($appId in $policyIncludeApplications) {
       if ($appId -eq "All") {
         $includeAll = $true
       }
@@ -1584,7 +1733,11 @@ function Get-MirroredConditionalAccessApplicationScope {
       }
     }
 
-    foreach ($appId in @(ConvertTo-StringArray -Value (Get-GraphMemberValue -Object $applications -Name "excludeApplications"))) {
+    if (-not $includeAll -and @($policyIncludeApplications).Count -eq 0 -and @($policyExcludeApplications).Count -gt 0) {
+      $includeAll = $true
+    }
+
+    foreach ($appId in $policyExcludeApplications) {
       if (-not $excludeApplications.Contains($appId)) {
         $excludeApplications.Add($appId) | Out-Null
       }
@@ -1630,9 +1783,14 @@ function Get-DesiredConditionalAccessApplicationsBlock {
         throw "CaScopeMode MirrorLegacy requires a mirrored application scope."
       }
 
+      $mirroredIncludeApplications = @(ConvertTo-StringArray -Value $MirroredScope.IncludeApplications)
+      if (@($mirroredIncludeApplications).Count -eq 0) {
+        throw "CaScopeMode MirrorLegacy resolved to an empty included-resource scope. Supply ExplicitAppIds or fix the legacy policy targeting first."
+      }
+
       return @{
-        includeApplications = @($MirroredScope.IncludeApplications)
-        excludeApplications = @($MirroredScope.ExcludeApplications)
+        includeApplications = @($mirroredIncludeApplications)
+        excludeApplications = @(ConvertTo-StringArray -Value $MirroredScope.ExcludeApplications)
       }
     }
   }
@@ -1644,7 +1802,8 @@ function Add-WrapperGroupExclusionToConditionalAccessPolicy {
     [Parameter(Mandatory=$true)][string]$WrapperGroupId
   )
 
-  $users = Get-GraphMemberValue -Object (Get-GraphMemberValue -Object $Policy -Name "conditions") -Name "users"
+  $conditions = Get-GraphMemberValue -Object $Policy -Name "conditions"
+  $users = if ($null -ne $conditions) { Get-GraphMemberValue -Object $conditions -Name "users" } else { $null }
   $excludeGroups = if ($null -ne $users) { ConvertTo-StringArray -Value (Get-GraphMemberValue -Object $users -Name "excludeGroups") } else { @() }
 
   if ($excludeGroups -contains $WrapperGroupId) {
@@ -1702,6 +1861,8 @@ function Invoke-ExternalMfaPreflight {
     [Parameter(Mandatory=$false)][string[]]$ExplicitAppIds,
     [Parameter(Mandatory=$false)][string[]]$FinalTargetGroupIds,
     [Parameter(Mandatory=$false)][string]$BreakGlassGroupId,
+    [Parameter(Mandatory=$false)][string]$ExistingPilotGroupId,
+    [Parameter(Mandatory=$false)][string]$ExistingPilotGroupName,
     [Parameter(Mandatory=$false)][bool]$GuestSupport,
     [Parameter(Mandatory=$false)][string]$GuestClientId,
     [Parameter(Mandatory=$false)][bool]$EnforceStrictExternalOnlyTenantPrereqs
@@ -1742,6 +1903,32 @@ function Invoke-ExternalMfaPreflight {
 
   if ($Stage -eq "FinalGroups" -and @($FinalTargetGroupIds).Count -eq 0) {
     $manualBlockers.Add((New-ExternalMfaPreflightFinding -Category "ManualBlocker" -Code "FinalTargetGroupsMissing" -Message "Stage FinalGroups requires one or more FinalTargetGroupIds.")) | Out-Null
+  }
+
+  if (-not [string]::IsNullOrWhiteSpace($ExistingPilotGroupId) -and -not [string]::IsNullOrWhiteSpace($ExistingPilotGroupName)) {
+    $manualBlockers.Add((New-ExternalMfaPreflightFinding -Category "ManualBlocker" -Code "ExistingPilotGroupAmbiguous" -Message "Specify either ExistingPilotGroupId or ExistingPilotGroupName, not both.")) | Out-Null
+  }
+
+  if ($Stage -ne "PilotGlobalAdmins" -and (
+      -not [string]::IsNullOrWhiteSpace($ExistingPilotGroupId) -or
+      -not [string]::IsNullOrWhiteSpace($ExistingPilotGroupName)
+    )) {
+    $manualBlockers.Add((New-ExternalMfaPreflightFinding -Category "ManualBlocker" -Code "ExistingPilotGroupStageMismatch" -Message "ExistingPilotGroupId/ExistingPilotGroupName can only be used when Stage is PilotGlobalAdmins.")) | Out-Null
+  }
+
+  if ($Stage -eq "PilotGlobalAdmins" -and (
+      -not [string]::IsNullOrWhiteSpace($ExistingPilotGroupId) -or
+      -not [string]::IsNullOrWhiteSpace($ExistingPilotGroupName)
+    )) {
+    try {
+      $existingPilotGroup = Resolve-ExistingPilotGroup -ExistingPilotGroupId $ExistingPilotGroupId -ExistingPilotGroupName $ExistingPilotGroupName
+      if (-not $existingPilotGroup) {
+        $manualBlockers.Add((New-ExternalMfaPreflightFinding -Category "ManualBlocker" -Code "ExistingPilotGroupNotFound" -Message "The requested existing pilot group could not be resolved.")) | Out-Null
+      }
+    }
+    catch {
+      $manualBlockers.Add((New-ExternalMfaPreflightFinding -Category "ManualBlocker" -Code "ExistingPilotGroupResolutionFailed" -Message $_.Exception.Message)) | Out-Null
+    }
   }
 
   foreach ($groupId in @(ConvertTo-StringArray -Value $FinalTargetGroupIds | Sort-Object -Unique)) {
@@ -1823,21 +2010,21 @@ function Invoke-ExternalMfaPreflight {
       $allPolicies = Get-ConditionalAccessPolicies
       $legacyPolicies = @(Resolve-LegacyDuoConditionalAccessPolicies -Policies $allPolicies -PolicyNames $LegacyPolicyNames)
 
-      if ($legacyPolicies.Count -eq 0) {
+      if (@($legacyPolicies).Count -eq 0) {
         $manualBlockers.Add((New-ExternalMfaPreflightFinding -Category "ManualBlocker" -Code "LegacyPoliciesNotFound" -Message "No enabled legacy Duo custom-control Conditional Access policies were found to mirror.")) | Out-Null
       }
       else {
         foreach ($legacyPolicy in $legacyPolicies) {
           $unsupportedReasons = @(Get-LegacyConditionalAccessUnsupportedReasons -Policy $legacyPolicy)
-          if ($unsupportedReasons.Count -gt 0) {
+          if (@($unsupportedReasons).Count -gt 0) {
             $manualBlockers.Add((New-ExternalMfaPreflightFinding -Category "ManualBlocker" -Code "LegacyPolicyUnsupported" -Message "Legacy CA policy '$($legacyPolicy.displayName)' has unsupported conditions: $($unsupportedReasons -join '; ').")) | Out-Null
           }
         }
 
         if (@($manualBlockers | Where-Object { $_.Code -eq "LegacyPolicyUnsupported" }).Count -eq 0) {
           $mirroredScope = Get-MirroredConditionalAccessApplicationScope -Policies $legacyPolicies
-          if (@($mirroredScope.IncludeApplications).Count -eq 0) {
-            $manualBlockers.Add((New-ExternalMfaPreflightFinding -Category "ManualBlocker" -Code "LegacyPolicyAppScopeMissing" -Message "Resolved legacy policies did not expose a supported cloud-app scope to mirror.")) | Out-Null
+          if (@(ConvertTo-StringArray -Value $mirroredScope.IncludeApplications).Count -eq 0) {
+            $manualBlockers.Add((New-ExternalMfaPreflightFinding -Category "ManualBlocker" -Code "LegacyPolicyMirrorScopeEmpty" -Message "MirrorLegacy resolved to an empty included-resource scope. Fix the legacy Duo CA policy targeting or use CaScopeMode AllApps/ExplicitApps.")) | Out-Null
           }
         }
       }
@@ -1851,8 +2038,8 @@ function Invoke-ExternalMfaPreflight {
   }
 
   return [pscustomobject]@{
-    AutoFixableFindings = @($autoFixable)
-    ManualBlockerFindings = @($manualBlockers)
+    AutoFixableFindings = @($autoFixable.ToArray())
+    ManualBlockerFindings = @($manualBlockers.ToArray())
     LegacyPolicies = @($legacyPolicies)
     MirroredScope = $mirroredScope
     BreakGlassGroup = $breakGlassGroup
@@ -1891,6 +2078,12 @@ function Invoke-ExternalMfaTenantRollout {
 
     [Parameter(Mandatory=$false)]
     [string]$PilotGroupName = "DMX-ExternalMFA-Pilot-GlobalAdmins",
+
+    [Parameter(Mandatory=$false)]
+    [string]$ExistingPilotGroupId,
+
+    [Parameter(Mandatory=$false)]
+    [string]$ExistingPilotGroupName,
 
     [Parameter(Mandatory=$false)]
     [string]$WrapperGroupName = "DMX-ExternalMFA-Users",
@@ -1978,6 +2171,7 @@ function Invoke-ExternalMfaTenantRollout {
     Ensure-Module -ModuleName "Microsoft.Graph"
 
 $scopes = @(
+  "Policy.Read.All",
   "Policy.ReadWrite.AuthenticationMethod",
   "Policy.ReadWrite.ConditionalAccess",
   "Group.ReadWrite.All",
@@ -2015,24 +2209,25 @@ if ($isOffboarding) {
   Write-Step "Offboarding mode enabled: removing Duo CA and restoring Microsoft-preferred MFA settings (best-effort)."
 }
 else {
-  $providerConfigInputNames = @("ClientId","DiscoveryEndpoint","AppId")
   $providedProviderConfigInputs = @(
-    foreach ($paramName in $providerConfigInputNames) {
-      $value = Get-Variable -Name $paramName -ValueOnly
-      if (-not [string]::IsNullOrWhiteSpace([string]$value)) {
-        $paramName
+    foreach ($paramName in @("ClientId","DiscoveryEndpoint","AppId")) {
+      if ($PSBoundParameters.ContainsKey($paramName)) {
+        $value = Get-Variable -Name $paramName -ValueOnly
+        if (-not [string]::IsNullOrWhiteSpace([string]$value)) {
+          $paramName
+        }
       }
     }
   )
 
-  $hasAllProviderConfigInputs = ($providedProviderConfigInputs.Count -eq $providerConfigInputNames.Count)
-  $hasAnyProviderConfigInputs = ($providedProviderConfigInputs.Count -gt 0)
+  $hasAllProviderConfigInputs = (@($providedProviderConfigInputs).Count -eq 3)
+  $hasAnyProviderConfigInputs = (@($providedProviderConfigInputs).Count -gt 0)
 
   if ($hasAnyProviderConfigInputs -and -not $hasAllProviderConfigInputs) {
-    Write-Warning "Provider config inputs are incomplete ($($providedProviderConfigInputs -join ', ')). The script will attempt to reuse an existing EAM by name/ID, but it cannot create a new EAM or fully reconcile provider fields unless ClientId, DiscoveryEndpoint, and AppId are all supplied."
+    Write-Warning "Provider config inputs are incomplete ($($providedProviderConfigInputs -join ', ')). The script can still reuse an existing EAM automatically, but it cannot create a new EAM or fully reconcile provider fields unless ClientId, DiscoveryEndpoint, and AppId are all supplied."
   }
   elseif (-not $hasAllProviderConfigInputs) {
-    Write-Host "   ClientId/DiscoveryEndpoint/AppId not supplied. The script will reuse an existing EAM (by -ExternalAuthConfigId or -Name) and skip provider-field reconciliation. If no matching EAM exists, creation will fail until those values are provided." -ForegroundColor Yellow
+    Write-Host "   ClientId/DiscoveryEndpoint/AppId not supplied. The script will try to reuse an existing EAM automatically by name first, then provider identifiers when available. If no matching EAM exists, creation will fail until those values are provided." -ForegroundColor Yellow
   }
 
   Write-Host "   Target posture (strict external-only): Duo External MFA only for '$WrapperGroupName' (Microsoft Authenticator/SMS/Voice/OATH excluded by default)." -ForegroundColor Yellow
@@ -2049,6 +2244,8 @@ if (-not $isOffboarding) {
     -ExplicitAppIds $ExplicitAppIds `
     -FinalTargetGroupIds $FinalTargetGroupIds `
     -BreakGlassGroupId $BreakGlassGroupId `
+    -ExistingPilotGroupId $ExistingPilotGroupId `
+    -ExistingPilotGroupName $ExistingPilotGroupName `
     -GuestSupport $GuestSupport `
     -GuestClientId $GuestClientId `
     -EnforceStrictExternalOnlyTenantPrereqs $EnforceStrictExternalOnlyTenantPrereqs
@@ -2150,11 +2347,34 @@ if (-not $isOffboarding) {
   $pilot = $null
 
   if ($Stage -eq "PilotGlobalAdmins") {
-    $pilotSync = Sync-ManagedPilotGlobalAdministratorGroup -PilotGroupName $PilotGroupName
-    $pilot = $pilotSync.Group
-    if ($pilot -and $pilot.Id) {
+    $hasExistingPilotGroupOverride = (
+      -not [string]::IsNullOrWhiteSpace($ExistingPilotGroupId) -or
+      -not [string]::IsNullOrWhiteSpace($ExistingPilotGroupName)
+    )
+
+    if ($hasExistingPilotGroupOverride) {
+      Write-Step "Resolving existing pilot group for wrapper targeting..."
+      $pilot = Resolve-ExistingPilotGroup -ExistingPilotGroupId $ExistingPilotGroupId -ExistingPilotGroupName $ExistingPilotGroupName
+      if (-not $pilot -or -not $pilot.Id) {
+        throw "The requested existing pilot group could not be resolved."
+      }
+
+      if ($pilot.Id -eq $wrapper.Id) {
+        throw "Existing pilot group '$($pilot.DisplayName)' cannot be the same group as the wrapper group '$WrapperGroupName'."
+      }
+
       $desiredWrapperTargetGroupIds = @($pilot.Id)
       $managedWrapperTargetGroupIds.Add($pilot.Id) | Out-Null
+      Write-Host "   Using existing pilot group: $($pilot.DisplayName) [$($pilot.Id)]" -ForegroundColor Green
+      Write-Host "   Managed pilot group '$PilotGroupName' will be removed from the wrapper if it is still nested there." -ForegroundColor Yellow
+    }
+    else {
+      $pilotSync = Sync-ManagedPilotGlobalAdministratorGroup -PilotGroupName $PilotGroupName
+      $pilot = $pilotSync.Group
+      if ($pilot -and $pilot.Id) {
+        $desiredWrapperTargetGroupIds = @($pilot.Id)
+        $managedWrapperTargetGroupIds.Add($pilot.Id) | Out-Null
+      }
     }
   }
   else {
@@ -2289,6 +2509,29 @@ if ((-not $skipExternalAuthConfigDueToWhatIfQueryFailure) -and (-not $isOffboard
   }
 }
 
+if (-not $skipExternalAuthConfigDueToWhatIfQueryFailure -and $extConfig -and -not $isOffboarding) {
+  $resolvedExternalAuthConfigId = [string](Get-GraphMemberValue -Object $extConfig -Name "id")
+  if (-not [string]::IsNullOrWhiteSpace($resolvedExternalAuthConfigId)) {
+    try {
+      $extById = Get-ExternalAuthMethodConfigById -Id $resolvedExternalAuthConfigId
+      if ($extById.Item) {
+        $extConfig = $extById.Item
+        if ($extById.QueryUri -match "^/beta/") {
+          $extConfigCollectionUri = "/beta/policies/authenticationMethodsPolicy/authenticationMethodConfigurations"
+        }
+        else {
+          $extConfigCollectionUri = "/v1.0/policies/authenticationMethodsPolicy/authenticationMethodConfigurations"
+        }
+      }
+    }
+    catch {
+      Write-Warning "Could not refresh existing External Authentication Method configuration '$resolvedExternalAuthConfigId' by id. Continuing with the list response shape. Details: $($_.Exception.Message)"
+    }
+
+    Write-Host "   Resolved existing External Authentication Method configuration id: $resolvedExternalAuthConfigId" -ForegroundColor Green
+  }
+}
+
 if ($skipExternalAuthConfigDueToWhatIfQueryFailure) {
   if ($WhatIfPreference) {
     Write-Host "   Planned external auth method configuration create/update (query skipped in -WhatIf)." -ForegroundColor Yellow
@@ -2338,10 +2581,7 @@ elseif (-not $extConfig) {
       discoveryUrl = $DiscoveryEndpoint
     }
     includeTargets = @(
-      @{
-        targetType = "group"
-        id         = $wrapper.Id
-      }
+      (New-ExternalAuthMethodIncludeTarget -GroupId $wrapper.Id)
     )
   }
 
@@ -2354,10 +2594,7 @@ elseif (-not $extConfig) {
     discoveryEndpoint = $DiscoveryEndpoint
     appId             = $AppId
     # includeTarget is common for auth method configurations
-    includeTarget     = @{
-      targetType = "group"
-      id         = $wrapper.Id
-    }
+    includeTarget     = (New-ExternalAuthMethodIncludeTarget -GroupId $wrapper.Id)
   }
 
   try {
@@ -2427,57 +2664,113 @@ Details: $(Get-ExceptionMessageText -ErrorObject $_)
 else {
   Write-Step "Updating External Authentication Method configuration targeting + enablement (best-effort)..."
   $extConfigPatchUri = ($extConfigCollectionUri.TrimEnd("/") + "/$($extConfig.id)")
-  # Current schema patch payload (preferred).
-  $patchBody = @{
-    state = "enabled"
-    includeTargets = @(
-      @{
-        targetType = "group"
-        id         = $wrapper.Id
-      }
+  $desiredIncludeTargets = @((New-ExternalAuthMethodIncludeTarget -GroupId $wrapper.Id))
+  $currentState = [string](Get-GraphMemberValue -Object $extConfig -Name "state")
+  $currentDisplayName = [string](Get-GraphMemberValue -Object $extConfig -Name "displayName")
+  if ([string]::IsNullOrWhiteSpace($currentDisplayName)) {
+    $currentDisplayName = $Name
+  }
+
+  $currentAppId = [string](Get-GraphMemberValue -Object $extConfig -Name "appId")
+  $currentOidc = Get-GraphMemberValue -Object $extConfig -Name "openIdConnectSetting"
+  $currentClientId = if ($null -ne $currentOidc) { [string](Get-GraphMemberValue -Object $currentOidc -Name "clientId") } else { $null }
+  $currentDiscoveryEndpoint = if ($null -ne $currentOidc) { [string](Get-GraphMemberValue -Object $currentOidc -Name "discoveryUrl") } else { $null }
+  if ([string]::IsNullOrWhiteSpace($currentClientId)) {
+    $currentClientId = [string](Get-GraphMemberValue -Object $extConfig -Name "clientId")
+  }
+  if ([string]::IsNullOrWhiteSpace($currentDiscoveryEndpoint)) {
+    $currentDiscoveryEndpoint = [string](Get-GraphMemberValue -Object $extConfig -Name "discoveryEndpoint")
+  }
+
+  $resolvedPatchClientId = if ($hasAllProviderConfigInputs) { $ClientId } else { $currentClientId }
+  $resolvedPatchDiscoveryEndpoint = if ($hasAllProviderConfigInputs) { $DiscoveryEndpoint } else { $currentDiscoveryEndpoint }
+  $resolvedPatchAppId = if ($hasAllProviderConfigInputs) { $AppId } else { $currentAppId }
+  $canPatchProviderFields = (
+    -not [string]::IsNullOrWhiteSpace($resolvedPatchClientId) -and
+    -not [string]::IsNullOrWhiteSpace($resolvedPatchDiscoveryEndpoint) -and
+    -not [string]::IsNullOrWhiteSpace($resolvedPatchAppId)
+  )
+
+  $stateMatches = ($currentState -eq "enabled")
+  $targetMatches = Test-ExternalAuthMethodConfigIncludesGroup -Configuration $extConfig -GroupId $wrapper.Id
+  $providerMatches = $true
+  if ($hasAllProviderConfigInputs) {
+    $providerMatches = (
+      ($resolvedPatchClientId -eq $ClientId) -and
+      ($resolvedPatchDiscoveryEndpoint -eq $DiscoveryEndpoint) -and
+      ($resolvedPatchAppId -eq $AppId)
     )
   }
-  if ($hasAllProviderConfigInputs) {
-    $patchBody["openIdConnectSetting"] = @{
-      clientId     = $ClientId
-      discoveryUrl = $DiscoveryEndpoint
+
+  if ($stateMatches -and $targetMatches -and $providerMatches) {
+    Write-Host "   External auth method config is already enabled and targeted to the wrapper group." -ForegroundColor Green
+  }
+  else {
+    # Current schema patch payload (preferred). Preserve provider fields from the existing config when they were not supplied
+    # so the PATCH uses a complete external auth shape instead of an underspecified delta.
+    $patchBody = @{
+      state = "enabled"
+      displayName = $currentDisplayName
+      includeTargets = @($desiredIncludeTargets)
     }
-    $patchBody["appId"] = $AppId
-  }
-  # Legacy preview schema patch payload fallback.
-  $legacyPatchBody = @{
-    state = "enabled"
-    includeTarget = @{
-      targetType = "group"
-      id         = $wrapper.Id
+    $odataTypeValue = [string](Get-GraphMemberValue -Object $extConfig -Name "@odata.type")
+    if (-not [string]::IsNullOrWhiteSpace($odataTypeValue)) {
+      $patchBody["@odata.type"] = $odataTypeValue
     }
-  }
-  if ($hasAllProviderConfigInputs) {
-    $legacyPatchBody["clientId"] = $ClientId
-    $legacyPatchBody["discoveryEndpoint"] = $DiscoveryEndpoint
-    $legacyPatchBody["appId"] = $AppId
-  }
-  try {
-    if ($PSCmdlet.ShouldProcess($Name, "Update External Authentication Method configuration '$($extConfig.id)'")) {
-      if (-not $hasAllProviderConfigInputs) {
-        Write-Host "   Provider config fields (ClientId/DiscoveryEndpoint/AppId) were not supplied; updating only state + group targeting." -ForegroundColor Yellow
+
+    $currentExcludeTargets = Get-GraphMemberValue -Object $extConfig -Name "excludeTargets"
+    if ($null -ne $currentExcludeTargets) {
+      $patchBody["excludeTargets"] = @(Convert-GraphObjectToPlainValue -Value $currentExcludeTargets)
+    }
+
+    if ($canPatchProviderFields) {
+      $patchBody["openIdConnectSetting"] = @{
+        clientId     = $resolvedPatchClientId
+        discoveryUrl = $resolvedPatchDiscoveryEndpoint
       }
-      try {
-        Invoke-Beta -Method PATCH -Uri $extConfigPatchUri -Body $patchBody | Out-Null
-      }
-      catch {
-        # Retry legacy patch shape for tenants still on older preview schema behavior.
-        Write-Warning "Primary external auth config PATCH payload failed; trying legacy preview payload shape. Details: $($_.Exception.Message)"
-        Invoke-Beta -Method PATCH -Uri $extConfigPatchUri -Body $legacyPatchBody | Out-Null
-      }
-      Write-Host "   Updated external auth method config id: $($extConfig.id)" -ForegroundColor Green
+      $patchBody["appId"] = $resolvedPatchAppId
     }
-    else {
-      Write-Host "   Planned external auth method config update." -ForegroundColor Yellow
+
+    # Legacy preview schema patch payload fallback.
+    $legacyPatchBody = @{
+      state = "enabled"
+      displayName = $currentDisplayName
+      includeTarget = $desiredIncludeTargets[0]
     }
-  }
-  catch {
-    Write-Warning "Could not PATCH external auth method config. You may need to adjust fields for your tenant. Details: $($_.Exception.Message)"
+    if (-not [string]::IsNullOrWhiteSpace($odataTypeValue)) {
+      $legacyPatchBody["@odata.type"] = $odataTypeValue
+    }
+    if ($null -ne $currentExcludeTargets) {
+      $legacyPatchBody["excludeTargets"] = @(Convert-GraphObjectToPlainValue -Value $currentExcludeTargets)
+    }
+    if ($canPatchProviderFields) {
+      $legacyPatchBody["clientId"] = $resolvedPatchClientId
+      $legacyPatchBody["discoveryEndpoint"] = $resolvedPatchDiscoveryEndpoint
+      $legacyPatchBody["appId"] = $resolvedPatchAppId
+    }
+
+    try {
+      if ($PSCmdlet.ShouldProcess($Name, "Update External Authentication Method configuration '$($extConfig.id)'")) {
+        if (-not $hasAllProviderConfigInputs) {
+          Write-Host "   Provider config fields were not supplied; reusing the existing provider identifiers from the resolved config." -ForegroundColor Yellow
+        }
+        try {
+          Invoke-Beta -Method PATCH -Uri $extConfigPatchUri -Body $patchBody | Out-Null
+        }
+        catch {
+          # Retry legacy patch shape for tenants still on older preview schema behavior.
+          Write-Warning "Primary external auth config PATCH payload failed; trying legacy preview payload shape. Details: $($_.Exception.Message)"
+          Invoke-Beta -Method PATCH -Uri $extConfigPatchUri -Body $legacyPatchBody | Out-Null
+        }
+        Write-Host "   Updated external auth method config id: $($extConfig.id)" -ForegroundColor Green
+      }
+      else {
+        Write-Host "   Planned external auth method config update." -ForegroundColor Yellow
+      }
+    }
+    catch {
+      Write-Warning "Could not PATCH external auth method config. You may need to adjust fields for your tenant. Details: $($_.Exception.Message)"
+    }
   }
 }
 
@@ -2603,7 +2896,7 @@ $allCaPolicies = @()
 $skipCaDueToWhatIfQueryFailure = $false
 try {
   $allCaPolicies = @(Get-ConditionalAccessPolicies)
-  $existingCa = @($allCaPolicies | Where-Object { $_.displayName -eq $CaPolicyName } | Select-Object -First 1)
+  $existingCa = $allCaPolicies | Where-Object { $_.displayName -eq $CaPolicyName } | Select-Object -First 1
 }
 catch {
   if ($WhatIfPreference) {
@@ -2624,7 +2917,8 @@ if (-not $isOffboarding) {
   $existingExcludeUsers = @()
   $existingExcludeGroups = @()
   if ($existingCa) {
-    $existingUsersConditions = Get-GraphMemberValue -Object (Get-GraphMemberValue -Object $existingCa -Name "conditions") -Name "users"
+    $existingCaConditions = Get-GraphMemberValue -Object $existingCa -Name "conditions"
+    $existingUsersConditions = if ($null -ne $existingCaConditions) { Get-GraphMemberValue -Object $existingCaConditions -Name "users" } else { $null }
     if ($null -ne $existingUsersConditions) {
       $existingExcludeUsers = @(ConvertTo-StringArray -Value (Get-GraphMemberValue -Object $existingUsersConditions -Name "excludeUsers"))
       $existingExcludeGroups = @(ConvertTo-StringArray -Value (Get-GraphMemberValue -Object $existingUsersConditions -Name "excludeGroups"))
@@ -2712,7 +3006,7 @@ else {
   }
 }
 
-if (-not $isOffboarding -and $CaScopeMode -eq "MirrorLegacy" -and $preflightSummary -and $preflightSummary.LegacyPolicies.Count -gt 0) {
+if (-not $isOffboarding -and $CaScopeMode -eq "MirrorLegacy" -and $preflightSummary -and @($preflightSummary.LegacyPolicies).Count -gt 0) {
   if (-not $wrapper -or -not $wrapper.Id) {
     Write-Warning "Wrapper group '$WrapperGroupName' is unavailable; skipping legacy Conditional Access policy exclusions."
   }

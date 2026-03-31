@@ -304,6 +304,8 @@ foreach ($tenant in $resolvedTargets) {
     EnforceStrictExternalOnlyTenantPrereqs = [bool](Get-ConfigValue -Object $tenant -Name "enforceStrictExternalOnlyTenantPrereqs" -Default $false)
     FailOnManualBlockers = [bool](Get-ConfigValue -Object $tenant -Name "failOnManualBlockers" -Default $true)
     PilotGroupName = [string](Get-ConfigValue -Object $tenant -Name "pilotGroupName" -Default "DMX-ExternalMFA-Pilot-GlobalAdmins")
+    ExistingPilotGroupId = [string](Get-ConfigValue -Object $tenant -Name "existingPilotGroupId")
+    ExistingPilotGroupName = [string](Get-ConfigValue -Object $tenant -Name "existingPilotGroupName")
     WrapperGroupName = [string](Get-ConfigValue -Object $tenant -Name "wrapperGroupName" -Default "DMX-ExternalMFA-Users")
     CaPolicyName = [string](Get-ConfigValue -Object $tenant -Name "caPolicyName" -Default "DMX - Require MFA (External MFA)")
     TargetTenantId = $tenantId

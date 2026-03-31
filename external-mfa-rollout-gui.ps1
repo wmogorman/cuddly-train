@@ -131,7 +131,7 @@ $txtAppId = New-TextBoxControl -X 240 -Y ($y - 2) -Width 660
 $tabBasics.Controls.Add($txtAppId)
 $y += 34
 
-$tabBasics.Controls.Add((New-LabelControl -Text "ExternalAuthConfigId (recommended if EAM already exists)" -X 16 -Y $y))
+$tabBasics.Controls.Add((New-LabelControl -Text "ExternalAuthConfigId (optional override only)" -X 16 -Y $y))
 $txtExternalConfigId = New-TextBoxControl -X 240 -Y ($y - 2) -Width 660
 $tabBasics.Controls.Add($txtExternalConfigId)
 $y += 34
@@ -223,7 +223,7 @@ Use this GUI to launch external-mfa-rollout.ps1 for teammates.
 Recommended workflow:
 1. Fill required rollout value: Name.
 2. If creating a NEW EAM, also provide ClientId, DiscoveryEndpoint, and AppId.
-3. If the EAM already exists in Entra, paste ExternalAuthConfigId (recommended) and you can leave ClientId/DiscoveryEndpoint/AppId blank.
+3. If the EAM already exists in Entra, leave ExternalAuthConfigId blank first; the script should find it automatically by name. Only use ExternalAuthConfigId if lookup fails and you need an override.
 4. Provide BreakGlassGroupId for the emergency admin exclusion before running a rollout.
 5. Leave Microsoft Authenticator enabled unless you intentionally want the script to disable it.
 6. Use Run In Console so teammates can complete Microsoft Graph interactive sign-in.
