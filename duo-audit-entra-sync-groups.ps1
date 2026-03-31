@@ -9,6 +9,17 @@
 
   This script is read-only. It does not modify Duo sync configuration.
 
+.NOTES
+  Usage note:
+  - This audit uses current sync-managed Duo groups returned by the documented
+    Admin API as evidence.
+  - Duo's documented API does not expose the selected group list shown on the
+    Microsoft Entra ID sync configuration page in the Duo Admin Panel.
+  - A tenant flagged as missing may still have a group selected in the UI if
+    that selection is not currently visible through /admin/v1/groups.
+  - Treat flagged results as an audit shortlist and validate edge cases in the
+    Duo UI when needed.
+
 .REQUIREMENTS
   - Windows PowerShell 5.1+ (or PowerShell 7+)
   - Parent Accounts API application credentials (IKey/SKey/ParentApiHost)
