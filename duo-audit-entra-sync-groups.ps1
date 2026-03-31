@@ -458,6 +458,8 @@ $summary = [ordered]@{
 $results = @()
 
 Write-Host ("Targeting {0} child account(s). Required groups: {1}" -f $summary.TotalAccounts, ($RequiredGroupNames -join ", "))
+Write-Host "Inference note: this audit uses current sync-managed Duo groups from the documented Admin API as evidence. Duo's documented API does not expose the selected group list shown on the Entra sync configuration page."
+Write-Host ""
 
 foreach ($acct in $accounts) {
   $childId = [string]$acct.account_id
@@ -525,7 +527,7 @@ foreach ($acct in $accounts) {
           $results += New-AuditRow -AccountName $childName -AccountId $childId -ApiHost $childHost `
             -DirectoryKey $directoryKey -DirectoryName $directoryName -RequiredGroupName $requiredGroupName `
             -Present $false -EvidenceGroupName "" -Status "UnknownNotMaterialized" `
-            -Notes "No current sync-managed Entra groups matched this sync name in Duo group output."
+            -Notes "No current sync-managed Entra groups matched this sync name in Duo group output. The documented Admin API does not expose the selected group list from the sync configuration page."
         }
 
         continue
@@ -554,11 +556,11 @@ foreach ($acct in $accounts) {
       if ($missingGroups.Count -eq 0) {
         $summary.CompliantSyncs++
         $syncStatus = "Compliant"
-        $syncNotes = "All required groups are present."
+        $syncNotes = "All required groups are present in current sync-managed Duo group output."
       } else {
         $summary.MissingRequiredSyncs++
         $syncStatus = "MissingRequiredGroup"
-        $syncNotes = "Missing required groups: $($missingGroups -join ", ")"
+        $syncNotes = "Missing from current sync-managed Duo group output: $($missingGroups -join ", "). The documented Admin API does not expose the selected group list from the sync configuration page, so validate flagged tenants in the Duo UI if needed."
       }
 
       Write-Host ("    [{0}] {1}" -f $directoryName, $syncStatus)
