@@ -102,6 +102,9 @@ param(
   [bool]$EnforceStrictExternalOnlyTenantPrereqs = $false,
 
   [Parameter(Mandatory=$false)]
+  [bool]$DisableAdminSspr = $false,
+
+  [Parameter(Mandatory=$false)]
   [switch]$PreflightOnly,
 
   [Parameter(Mandatory=$false)]

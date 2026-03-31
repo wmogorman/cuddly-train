@@ -302,6 +302,7 @@ foreach ($tenant in $resolvedTargets) {
     RestrictCommonMicrosoftMfaMethodsForWrapperGroup = [bool](Get-ConfigValue -Object $tenant -Name "restrictCommonMicrosoftMfaMethodsForWrapperGroup" -Default $true)
     AuditEamOnlyPilotReadiness = [bool](Get-ConfigValue -Object $tenant -Name "auditEamOnlyPilotReadiness" -Default $true)
     EnforceStrictExternalOnlyTenantPrereqs = [bool](Get-ConfigValue -Object $tenant -Name "enforceStrictExternalOnlyTenantPrereqs" -Default $false)
+    DisableAdminSspr = [bool](Get-ConfigValue -Object $tenant -Name "disableAdminSspr" -Default $false)
     FailOnManualBlockers = [bool](Get-ConfigValue -Object $tenant -Name "failOnManualBlockers" -Default $true)
     PilotGroupName = [string](Get-ConfigValue -Object $tenant -Name "pilotGroupName" -Default "DMX-ExternalMFA-Pilot-GlobalAdmins")
     ExistingPilotGroupId = [string](Get-ConfigValue -Object $tenant -Name "existingPilotGroupId")

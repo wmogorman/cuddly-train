@@ -37,6 +37,11 @@
   Note: Password reset / SSPR portal settings (registration prompt, SSPR enabled scope, reset methods) are not
   reliably exposed via supported Graph endpoints in this script and still require manual configuration.
 
+.PARAMETER DisableAdminSspr
+  Best-effort tenant-wide enforcement for the admin SSPR authorizationPolicy flag only
+  (authorizationPolicy.allowedToUseSSPR / allowedToUseSspr = false). This does not disable the end-user
+  Password reset blade settings and does not replace the broader strict-prereqs switch.
+
 .PARAMETER DisableMicrosoftAuthenticatorPolicy
   Disable the Microsoft Authenticator authentication method policy (best-effort) so users aren't offered Authenticator for MFA.
 
@@ -165,6 +170,10 @@ param(
   # Best-effort tenant-wide enforcement for strict external-only prerequisites (high impact).
   [Parameter(Mandatory=$false)]
   [bool]$EnforceStrictExternalOnlyTenantPrereqs = $false,
+
+  # Best-effort tenant-wide enforcement for the admin SSPR authorizationPolicy flag only.
+  [Parameter(Mandatory=$false)]
+  [bool]$DisableAdminSspr = $false,
 
   [Parameter(Mandatory=$false)]
   [switch]$PreflightOnly,
@@ -378,7 +387,7 @@ function Test-GraphMemberExists {
 }
 
 function Convert-GraphObjectToPlainValue {
-  param([Parameter(Mandatory=$true)]$Value)
+  param([Parameter(Mandatory=$false)][AllowNull()]$Value)
 
   if ($null -eq $Value) {
     return $null
@@ -1017,7 +1026,7 @@ function Invoke-EamOnlyPilotReadinessAudit {
     Write-Warning "Could not query Security Defaults policy. Verify manually: Entra ID -> Properties -> Manage security defaults. Details: $($_.Exception.Message)"
   }
 
-  # SSPR enablement is a useful signal. If enabled, combined registration can still require additional methods.
+  # Admin SSPR is a useful signal for GA pilots. If enabled, admin reset registration can still cause conflicting loops.
   try {
     $authorizationPolicy = Invoke-Beta -Method GET -Uri "/v1.0/policies/authorizationPolicy"
     $ssprFlagName = $null
@@ -1032,20 +1041,20 @@ function Invoke-EamOnlyPilotReadinessAudit {
       $ssprEnabled = [bool](Get-GraphMemberValue -Object $authorizationPolicy -Name $ssprFlagName)
       if ($ssprEnabled) {
         $warningCount++
-        $finding = "SSPR appears enabled (authorizationPolicy.$ssprFlagName = true)"
+        $finding = "Admin SSPR flag appears enabled (authorizationPolicy.$ssprFlagName = true)"
         $diagnosticFindings += $finding
-        Write-Warning "$finding. Combined registration/SSPR requirements may cause 'Let's keep your account secure' loops for EAM-only pilots."
+        Write-Warning "$finding. For Global Administrator pilots, this can cause conflicting password reset registration or 'Let's keep your account secure' loops."
       }
       else {
-        Write-Host "   SSPR enablement signal (authorizationPolicy.$ssprFlagName): false" -ForegroundColor Green
+        Write-Host "   Admin SSPR flag (authorizationPolicy.$ssprFlagName): false" -ForegroundColor Green
       }
     }
     else {
-      Write-Host "   authorizationPolicy did not expose an SSPR enablement flag in this tenant response." -ForegroundColor Yellow
+      Write-Host "   authorizationPolicy did not expose an admin SSPR flag in this tenant response." -ForegroundColor Yellow
     }
   }
   catch {
-    Write-Warning "Could not query authorizationPolicy SSPR signal. Details: $($_.Exception.Message)"
+    Write-Warning "Could not query authorizationPolicy admin SSPR flag. Details: $($_.Exception.Message)"
   }
 
   # Surface auth-method policy signals the script already manipulates so the operator sees current state in one place.
@@ -1083,7 +1092,7 @@ function Invoke-EamOnlyPilotReadinessAudit {
   }
 
   Write-Host "   Manual checks still required for loop troubleshooting (Password reset / SSPR portal coverage is inconsistent in supported Graph APIs)." -ForegroundColor Yellow
-  Write-Host "   (The optional -EnforceStrictExternalOnlyTenantPrereqs switch only covers Security Defaults + admin SSPR flag.)" -ForegroundColor Yellow
+  Write-Host "   (Use -DisableAdminSspr `$true to script the admin SSPR flag only, or -EnforceStrictExternalOnlyTenantPrereqs `$true for Security Defaults + admin SSPR.)" -ForegroundColor Yellow
   Write-Host "   For a STRICT external-only pilot, verify these expected values:" -ForegroundColor Yellow
   Write-Host "     1) Entra -> Protection -> Password reset -> Registration -> 'Require users to register when signing in' = No (during pilot testing)"
   Write-Host "     2) Entra -> Protection -> Password reset -> Properties -> Self service password reset enabled = No (strict external-only requirement)"
@@ -1106,65 +1115,85 @@ function Invoke-EamOnlyPilotReadinessAudit {
 }
 
 function Invoke-StrictExternalOnlyTenantPrereqEnforcement {
-  Write-Step "Enforcing strict external-only tenant prerequisites (best-effort, high impact)..."
+  param(
+    [Parameter(Mandatory=$false)][bool]$DisableSecurityDefaults = $true,
+    [Parameter(Mandatory=$false)][bool]$DisableAdminSspr = $true
+  )
+
+  if ($DisableSecurityDefaults -and $DisableAdminSspr) {
+    Write-Step "Enforcing strict external-only tenant prerequisites (best-effort, high impact)..."
+  }
+  elseif ($DisableAdminSspr) {
+    Write-Step "Disabling admin SSPR flag (best-effort, tenant-wide)..."
+  }
+  elseif ($DisableSecurityDefaults) {
+    Write-Step "Disabling Security Defaults (best-effort, tenant-wide)..."
+  }
+  else {
+    return
+  }
 
   # 1) Security Defaults must be off for strict external-only pilot behavior.
-  try {
-    $secDefaults = Invoke-Beta -Method GET -Uri "/v1.0/policies/identitySecurityDefaultsEnforcementPolicy"
-    $isEnabled = [bool](Get-GraphMemberValue -Object $secDefaults -Name "isEnabled")
-    if (-not $isEnabled) {
-      Write-Host "   Security Defaults already disabled." -ForegroundColor Green
-    }
-    else {
-      if ($PSCmdlet.ShouldProcess("identitySecurityDefaultsEnforcementPolicy", "Disable Security Defaults")) {
-        Invoke-Beta -Method PATCH -Uri "/v1.0/policies/identitySecurityDefaultsEnforcementPolicy" -Body @{
-          isEnabled = $false
-        } | Out-Null
-        Write-Host "   Disabled Security Defaults." -ForegroundColor Green
+  if ($DisableSecurityDefaults) {
+    try {
+      $secDefaults = Invoke-Beta -Method GET -Uri "/v1.0/policies/identitySecurityDefaultsEnforcementPolicy"
+      $isEnabled = [bool](Get-GraphMemberValue -Object $secDefaults -Name "isEnabled")
+      if (-not $isEnabled) {
+        Write-Host "   Security Defaults already disabled." -ForegroundColor Green
       }
       else {
-        Write-Host "   Planned disable Security Defaults." -ForegroundColor Yellow
+        if ($PSCmdlet.ShouldProcess("identitySecurityDefaultsEnforcementPolicy", "Disable Security Defaults")) {
+          Invoke-Beta -Method PATCH -Uri "/v1.0/policies/identitySecurityDefaultsEnforcementPolicy" -Body @{
+            isEnabled = $false
+          } | Out-Null
+          Write-Host "   Disabled Security Defaults." -ForegroundColor Green
+        }
+        else {
+          Write-Host "   Planned disable Security Defaults." -ForegroundColor Yellow
+        }
       }
     }
-  }
-  catch {
-    Write-Warning "Could not query/update Security Defaults. Verify manually: Entra ID -> Properties -> Manage security defaults = No. Details: $($_.Exception.Message)"
+    catch {
+      Write-Warning "Could not query/update Security Defaults. Verify manually: Entra ID -> Properties -> Manage security defaults = No. Details: $($_.Exception.Message)"
+    }
   }
 
   # 2) Disable admin SSPR signal (this is not the full Password reset / SSPR configuration).
-  try {
-    $authorizationPolicy = Invoke-Beta -Method GET -Uri "/v1.0/policies/authorizationPolicy"
-    $ssprFlagName = $null
-    foreach ($candidate in @("allowedToUseSSPR","allowedToUseSspr")) {
-      if (Test-GraphMemberExists -Object $authorizationPolicy -Name $candidate) {
-        $ssprFlagName = $candidate
-        break
+  if ($DisableAdminSspr) {
+    try {
+      $authorizationPolicy = Invoke-Beta -Method GET -Uri "/v1.0/policies/authorizationPolicy"
+      $ssprFlagName = $null
+      foreach ($candidate in @("allowedToUseSSPR","allowedToUseSspr")) {
+        if (Test-GraphMemberExists -Object $authorizationPolicy -Name $candidate) {
+          $ssprFlagName = $candidate
+          break
+        }
       }
-    }
 
-    if (-not $ssprFlagName) {
-      Write-Host "   authorizationPolicy did not expose an admin SSPR flag; skipping admin SSPR enforcement." -ForegroundColor Yellow
-    }
-    else {
-      $currentValue = [bool](Get-GraphMemberValue -Object $authorizationPolicy -Name $ssprFlagName)
-      if (-not $currentValue) {
-        Write-Host "   Admin SSPR flag (authorizationPolicy.$ssprFlagName) already false." -ForegroundColor Green
+      if (-not $ssprFlagName) {
+        Write-Host "   authorizationPolicy did not expose an admin SSPR flag; skipping admin SSPR enforcement." -ForegroundColor Yellow
       }
       else {
-        if ($PSCmdlet.ShouldProcess("authorizationPolicy", "Set $ssprFlagName = false (disable admin SSPR)")) {
-          Invoke-Beta -Method PATCH -Uri "/v1.0/policies/authorizationPolicy" -Body @{
-            $ssprFlagName = $false
-          } | Out-Null
-          Write-Host "   Set authorizationPolicy.$ssprFlagName = false (admin SSPR disabled)." -ForegroundColor Green
+        $currentValue = [bool](Get-GraphMemberValue -Object $authorizationPolicy -Name $ssprFlagName)
+        if (-not $currentValue) {
+          Write-Host "   Admin SSPR flag (authorizationPolicy.$ssprFlagName) already false." -ForegroundColor Green
         }
         else {
-          Write-Host "   Planned authorizationPolicy.$ssprFlagName = false (admin SSPR disable)." -ForegroundColor Yellow
+          if ($PSCmdlet.ShouldProcess("authorizationPolicy", "Set $ssprFlagName = false (disable admin SSPR)")) {
+            Invoke-Beta -Method PATCH -Uri "/v1.0/policies/authorizationPolicy" -Body @{
+              $ssprFlagName = $false
+            } | Out-Null
+            Write-Host "   Set authorizationPolicy.$ssprFlagName = false (admin SSPR disabled)." -ForegroundColor Green
+          }
+          else {
+            Write-Host "   Planned authorizationPolicy.$ssprFlagName = false (admin SSPR disable)." -ForegroundColor Yellow
+          }
         }
       }
     }
-  }
-  catch {
-    Write-Warning "Could not query/update authorizationPolicy admin SSPR flag. This does NOT cover full Password reset / SSPR settings. Details: $($_.Exception.Message)"
+    catch {
+      Write-Warning "Could not query/update authorizationPolicy admin SSPR flag. This does NOT cover full Password reset / SSPR settings. Details: $($_.Exception.Message)"
+    }
   }
 
   Write-Host "   Manual-only (not reliably enforced by this script via supported Graph APIs):" -ForegroundColor Yellow
@@ -1324,6 +1353,42 @@ function Ensure-GraphProfileSelection {
   }
 }
 
+function Assert-GraphContextHasRequiredScopes {
+  param(
+    [Parameter(Mandatory=$true)]$Context,
+    [Parameter(Mandatory=$false)][string[]]$RequiredScopes
+  )
+
+  $required = @(ConvertTo-StringArray -Value $RequiredScopes | Sort-Object -Unique)
+  if (@($required).Count -eq 0) {
+    return
+  }
+
+  $available = @()
+  if (Test-GraphMemberExists -Object $Context -Name "Scopes") {
+    $available = @(ConvertTo-StringArray -Value (Get-GraphMemberValue -Object $Context -Name "Scopes") | Sort-Object -Unique)
+  }
+
+  if (@($available).Count -eq 0) {
+    return
+  }
+
+  $availableLookup = @{}
+  foreach ($scopeName in $available) {
+    $availableLookup[[string]$scopeName.ToLowerInvariant()] = $true
+  }
+
+  $missingScopes = @(
+    $required | Where-Object {
+      -not $availableLookup.ContainsKey(([string]$_).ToLowerInvariant())
+    }
+  )
+
+  if (@($missingScopes).Count -gt 0) {
+    throw "Existing Microsoft Graph context is missing required delegated scopes for -SkipGraphConnect: $($missingScopes -join ', '). Reconnect with Connect-MgGraph for this tenant or rerun without -SkipGraphConnect."
+  }
+}
+
 function Connect-ExternalMfaGraph {
   param(
     [Parameter(Mandatory=$false)][string]$TargetTenantId,
@@ -1345,6 +1410,7 @@ function Connect-ExternalMfaGraph {
       throw "Existing Microsoft Graph context tenant '$($existingContext.TenantId)' does not match requested tenant '$TargetTenantId'."
     }
 
+    Assert-GraphContextHasRequiredScopes -Context $existingContext -RequiredScopes $Scopes
     Ensure-GraphProfileSelection
     return [pscustomobject]@{
       ConnectedByScript = $false
@@ -1796,36 +1862,101 @@ function Get-DesiredConditionalAccessApplicationsBlock {
   }
 }
 
-function Add-WrapperGroupExclusionToConditionalAccessPolicy {
+function Add-LegacyConditionalAccessGroupExclusions {
   param(
     [Parameter(Mandatory=$true)]$Policy,
-    [Parameter(Mandatory=$true)][string]$WrapperGroupId
+    [Parameter(Mandatory=$false)][string]$WrapperGroupId,
+    [Parameter(Mandatory=$false)][string]$BreakGlassGroupId
   )
 
   $conditions = Get-GraphMemberValue -Object $Policy -Name "conditions"
   $users = if ($null -ne $conditions) { Get-GraphMemberValue -Object $conditions -Name "users" } else { $null }
   $excludeGroups = if ($null -ne $users) { ConvertTo-StringArray -Value (Get-GraphMemberValue -Object $users -Name "excludeGroups") } else { @() }
 
-  if ($excludeGroups -contains $WrapperGroupId) {
-    Write-Host "   Legacy CA policy '$($Policy.displayName)' already excludes the wrapper group." -ForegroundColor Green
+  $requestedExcludeGroups = @(
+    (ConvertTo-StringArray -Value @($WrapperGroupId, $BreakGlassGroupId)) |
+      Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } |
+      Sort-Object -Unique
+  )
+  if (@($requestedExcludeGroups).Count -eq 0) {
     return
   }
 
-  $updatedExcludeGroups = @($excludeGroups + $WrapperGroupId | Sort-Object -Unique)
-  $patchBody = @{
-    conditions = @{
-      users = @{
-        excludeGroups = $updatedExcludeGroups
+  $missingExcludeGroups = @($requestedExcludeGroups | Where-Object { $excludeGroups -notcontains $_ })
+  if (@($missingExcludeGroups).Count -eq 0) {
+    Write-Host "   Legacy CA policy '$($Policy.displayName)' already excludes the requested groups." -ForegroundColor Green
+    return
+  }
+
+  $updatedExcludeGroups = @($excludeGroups + $requestedExcludeGroups | Sort-Object -Unique)
+  $usersPatch = @{}
+  foreach ($propName in @("includeUsers","excludeUsers","includeGroups","excludeGroups","includeRoles","excludeRoles")) {
+    if ($null -ne $users -and (Test-GraphMemberExists -Object $users -Name $propName)) {
+      $propValue = @(ConvertTo-StringArray -Value (Get-GraphMemberValue -Object $users -Name $propName))
+      if ($propName -eq "excludeGroups") {
+        $propValue = @($updatedExcludeGroups)
+      }
+      $usersPatch[$propName] = $propValue
+    }
+  }
+  foreach ($propName in @("includeGuestsOrExternalUsers","excludeGuestsOrExternalUsers")) {
+    if ($null -ne $users -and (Test-GraphMemberExists -Object $users -Name $propName)) {
+      $propValue = Get-GraphMemberValue -Object $users -Name $propName
+      if ($null -ne $propValue) {
+        $usersPatch[$propName] = Convert-GraphObjectToPlainValue -Value $propValue
       }
     }
   }
+  $usersPatch["excludeGroups"] = @($updatedExcludeGroups)
+  $patchBody = @{
+    conditions = @{
+      users = $usersPatch
+    }
+  }
 
-  if ($PSCmdlet.ShouldProcess($Policy.displayName, "Add wrapper group exclusion to legacy Conditional Access policy")) {
-    Invoke-Beta -Method PATCH -Uri "/beta/identity/conditionalAccess/policies/$($Policy.id)" -Body $patchBody | Out-Null
-    Write-Host "   Added wrapper-group exclusion to legacy CA policy '$($Policy.displayName)'." -ForegroundColor Green
+  $changeLabels = @()
+  if (-not [string]::IsNullOrWhiteSpace($WrapperGroupId) -and ($missingExcludeGroups -contains $WrapperGroupId)) {
+    $changeLabels += "wrapper group"
+  }
+  if (-not [string]::IsNullOrWhiteSpace($BreakGlassGroupId) -and ($missingExcludeGroups -contains $BreakGlassGroupId)) {
+    $changeLabels += "break-glass group"
+  }
+  $changeLabel = if (@($changeLabels).Count -gt 0) { $changeLabels -join " + " } else { "requested groups" }
+
+  if ($PSCmdlet.ShouldProcess($Policy.displayName, "Add $changeLabel exclusion(s) to legacy Conditional Access policy")) {
+    try {
+      Invoke-Beta -Method PATCH -Uri "/beta/identity/conditionalAccess/policies/$($Policy.id)" -Body $patchBody | Out-Null
+    }
+    catch {
+      $legacyConditionsPatch = if ($null -ne $conditions) { Convert-GraphObjectToPlainValue -Value $conditions } else { @{} }
+      if ($null -eq $legacyConditionsPatch -or -not ($legacyConditionsPatch -is [System.Collections.IDictionary])) {
+        $legacyConditionsPatch = @{}
+      }
+      $legacyConditionsPatch["users"] = $usersPatch
+
+      $fallbackPatchBody = @{
+        displayName = [string](Get-GraphMemberValue -Object $Policy -Name "displayName")
+        state = [string](Get-GraphMemberValue -Object $Policy -Name "state")
+        conditions = $legacyConditionsPatch
+      }
+
+      $grantControls = Get-GraphMemberValue -Object $Policy -Name "grantControls"
+      if ($null -ne $grantControls) {
+        $fallbackPatchBody["grantControls"] = Convert-GraphObjectToPlainValue -Value $grantControls
+      }
+
+      $sessionControls = Get-GraphMemberValue -Object $Policy -Name "sessionControls"
+      if ($null -ne $sessionControls) {
+        $fallbackPatchBody["sessionControls"] = Convert-GraphObjectToPlainValue -Value $sessionControls
+      }
+
+      Write-Warning "Primary legacy CA exclusion PATCH failed; trying full policy payload. Details: $($_.Exception.Message)"
+      Invoke-Beta -Method PATCH -Uri "/beta/identity/conditionalAccess/policies/$($Policy.id)" -Body $fallbackPatchBody | Out-Null
+    }
+    Write-Host "   Added $changeLabel exclusion(s) to legacy CA policy '$($Policy.displayName)'." -ForegroundColor Green
   }
   else {
-    Write-Host "   Planned wrapper-group exclusion add for legacy CA policy '$($Policy.displayName)'." -ForegroundColor Yellow
+    Write-Host "   Planned $changeLabel exclusion(s) on legacy CA policy '$($Policy.displayName)'." -ForegroundColor Yellow
   }
 }
 
@@ -1865,7 +1996,8 @@ function Invoke-ExternalMfaPreflight {
     [Parameter(Mandatory=$false)][string]$ExistingPilotGroupName,
     [Parameter(Mandatory=$false)][bool]$GuestSupport,
     [Parameter(Mandatory=$false)][string]$GuestClientId,
-    [Parameter(Mandatory=$false)][bool]$EnforceStrictExternalOnlyTenantPrereqs
+    [Parameter(Mandatory=$false)][bool]$EnforceStrictExternalOnlyTenantPrereqs,
+    [Parameter(Mandatory=$false)][bool]$DisableAdminSspr
   )
 
   $autoFixable = New-Object System.Collections.Generic.List[object]
@@ -1966,8 +2098,8 @@ function Invoke-ExternalMfaPreflight {
     if ($ssprFlagName) {
       $ssprEnabled = [bool](Get-GraphMemberValue -Object $authorizationPolicy -Name $ssprFlagName)
       if ($ssprEnabled) {
-        $finding = New-ExternalMfaPreflightFinding -Category $(if ($EnforceStrictExternalOnlyTenantPrereqs) { "AutoFixable" } else { "ManualBlocker" }) -Code "PasswordResetRegistrationConflict" -Message "authorizationPolicy.$ssprFlagName is enabled and may force conflicting password reset registration."
-        if ($EnforceStrictExternalOnlyTenantPrereqs) {
+        $finding = New-ExternalMfaPreflightFinding -Category $(if ($EnforceStrictExternalOnlyTenantPrereqs -or $DisableAdminSspr) { "AutoFixable" } else { "ManualBlocker" }) -Code "AdminSsprEnabled" -Message "Admin SSPR is enabled (authorizationPolicy.$ssprFlagName = true). For Global Administrator pilots, disable this flag to reduce conflicting password reset registration prompts."
+        if ($EnforceStrictExternalOnlyTenantPrereqs -or $DisableAdminSspr) {
           $autoFixable.Add($finding) | Out-Null
         }
         else {
@@ -1977,7 +2109,7 @@ function Invoke-ExternalMfaPreflight {
     }
   }
   catch {
-    $manualBlockers.Add((New-ExternalMfaPreflightFinding -Category "ManualBlocker" -Code "PasswordResetRegistrationUnknown" -Message "Could not query authorizationPolicy SSPR signal. Details: $($_.Exception.Message)")) | Out-Null
+    $manualBlockers.Add((New-ExternalMfaPreflightFinding -Category "ManualBlocker" -Code "AdminSsprUnknown" -Message "Could not query authorizationPolicy admin SSPR flag. Details: $($_.Exception.Message)")) | Out-Null
   }
 
   try {
@@ -2143,6 +2275,9 @@ function Invoke-ExternalMfaTenantRollout {
     [bool]$EnforceStrictExternalOnlyTenantPrereqs = $false,
 
     [Parameter(Mandatory=$false)]
+    [bool]$DisableAdminSspr = $false,
+
+    [Parameter(Mandatory=$false)]
     [switch]$PreflightOnly,
 
     [Parameter(Mandatory=$false)]
@@ -2165,6 +2300,7 @@ function Invoke-ExternalMfaTenantRollout {
   )
 
   $graphConnection = $null
+  $rolloutWarnings = New-Object System.Collections.Generic.List[string]
   try {
 
     # --- Prereqs ---
@@ -2182,8 +2318,11 @@ if ($BulkRegisterExternalAuthMethodForWrapperGroupUsers) {
   $scopes += "UserAuthMethod-External.ReadWrite.All"
 }
 
-if ($EnforceStrictExternalOnlyTenantPrereqs) {
+if ($EnforceStrictExternalOnlyTenantPrereqs -or $DisableAdminSspr) {
   $scopes += "Policy.ReadWrite.Authorization"
+}
+
+if ($EnforceStrictExternalOnlyTenantPrereqs) {
   $scopes += "Policy.ReadWrite.SecurityDefaults"
 }
 
@@ -2248,7 +2387,8 @@ if (-not $isOffboarding) {
     -ExistingPilotGroupName $ExistingPilotGroupName `
     -GuestSupport $GuestSupport `
     -GuestClientId $GuestClientId `
-    -EnforceStrictExternalOnlyTenantPrereqs $EnforceStrictExternalOnlyTenantPrereqs
+    -EnforceStrictExternalOnlyTenantPrereqs $EnforceStrictExternalOnlyTenantPrereqs `
+    -DisableAdminSspr $DisableAdminSspr
 
   Write-ExternalMfaPreflightSummary -Summary $preflightSummary
 
@@ -2283,13 +2423,15 @@ else {
   $preflightSummary = $null
 }
 
-if ($EnforceStrictExternalOnlyTenantPrereqs) {
+if ($EnforceStrictExternalOnlyTenantPrereqs -or $DisableAdminSspr) {
   if ($isOffboarding) {
     Write-Host "==> Skipping strict external-only tenant prerequisite enforcement in offboarding mode." -ForegroundColor Cyan
   }
   else {
     try {
-      Invoke-StrictExternalOnlyTenantPrereqEnforcement
+      Invoke-StrictExternalOnlyTenantPrereqEnforcement `
+        -DisableSecurityDefaults $EnforceStrictExternalOnlyTenantPrereqs `
+        -DisableAdminSspr ($EnforceStrictExternalOnlyTenantPrereqs -or $DisableAdminSspr)
     }
     catch {
       Write-Warning "Could not complete strict external-only tenant prerequisite enforcement. Continuing. Details: $($_.Exception.Message)"
@@ -2297,7 +2439,7 @@ if ($EnforceStrictExternalOnlyTenantPrereqs) {
   }
 }
 else {
-  Write-Host "==> Skipping strict external-only tenant prerequisite enforcement by parameter." -ForegroundColor Cyan
+  Write-Host "==> Skipping Security Defaults/admin SSPR prerequisite enforcement by parameter." -ForegroundColor Cyan
 }
 
 # --- 1) Complete Authentication Methods migration (UCP) ---
@@ -3011,13 +3153,15 @@ if (-not $isOffboarding -and $CaScopeMode -eq "MirrorLegacy" -and $preflightSumm
     Write-Warning "Wrapper group '$WrapperGroupName' is unavailable; skipping legacy Conditional Access policy exclusions."
   }
   else {
-    Write-Step "Ensuring matched legacy Duo Conditional Access policies exclude the wrapper group..."
+    Write-Step "Ensuring matched legacy Duo Conditional Access policies exclude the wrapper and break-glass groups..."
     foreach ($legacyPolicy in $preflightSummary.LegacyPolicies) {
       try {
-        Add-WrapperGroupExclusionToConditionalAccessPolicy -Policy $legacyPolicy -WrapperGroupId $wrapper.Id
+        Add-LegacyConditionalAccessGroupExclusions -Policy $legacyPolicy -WrapperGroupId $wrapper.Id -BreakGlassGroupId $BreakGlassGroupId
       }
       catch {
-        Write-Warning "Could not update legacy CA policy '$($legacyPolicy.displayName)'. Details: $($_.Exception.Message)"
+        $warningText = "Could not update legacy CA policy '$($legacyPolicy.displayName)'. Details: $($_.Exception.Message)"
+        $rolloutWarnings.Add($warningText) | Out-Null
+        Write-Warning $warningText
       }
     }
   }
@@ -3188,27 +3332,41 @@ else {
   # Rollout checklist: confirm Duo is active and Microsoft prompts are no longer preferred.
   Write-Host "  1) Entra -> Authentication methods -> External authentication methods: confirm '$Name' enabled + targeted to '$WrapperGroupName'"
   Write-Host "  2) Entra -> Conditional Access: confirm '$CaPolicyName' enabled and scoped correctly"
-  Write-Host "  3) Entra -> Conditional Access: confirm break-glass group '$BreakGlassGroupId' is excluded"
-  Write-Host "  4) Entra -> Authentication methods -> Policies -> Microsoft Authenticator: confirm the policy state matches your chosen script parameters"
-  Write-Host "  5) Entra -> Authentication methods -> Policies: confirm common Microsoft MFA methods exclude '$WrapperGroupName' (Authenticator/SMS/Voice/OATH, if enabled)"
-  Write-Host "  6) Entra -> Authentication methods -> Registration campaign / System-preferred MFA: confirm the policy states match your chosen script parameters"
-  Write-Host "  7) If bulk registration was enabled: Entra/myaccount -> Security info: confirm wrapper-group users have '$Name' registered"
-  Write-Host "  8) Review the EAM-only pilot readiness audit output (expected values for Security Defaults / SSPR / Password reset registration)"
-  Write-Host "  9) myaccount.microsoft.com -> Security info / sign-in: confirm target users use External MFA and are not offered unintended Microsoft MFA methods"
+  Write-Host "  3) Entra -> Conditional Access: confirm break-glass group '$BreakGlassGroupId' is excluded from '$CaPolicyName'"
+  Write-Host "  4) Entra -> Conditional Access: confirm any matched legacy Duo custom-control CA policies also exclude '$BreakGlassGroupId' during coexistence"
+  Write-Host "  5) Entra -> Authentication methods -> Policies -> Microsoft Authenticator: confirm the policy state matches your chosen script parameters"
+  Write-Host "  6) Entra -> Authentication methods -> Policies: confirm common Microsoft MFA methods exclude '$WrapperGroupName' (Authenticator/SMS/Voice/OATH, if enabled)"
+  Write-Host "  7) Entra -> Authentication methods -> Registration campaign / System-preferred MFA: confirm the policy states match your chosen script parameters"
+  Write-Host "  8) If bulk registration was enabled: Entra/myaccount -> Security info: confirm wrapper-group users have '$Name' registered"
+  Write-Host "  9) Review the EAM-only pilot readiness audit output (expected values for Security Defaults / SSPR / Password reset registration)"
+  Write-Host "  10) myaccount.microsoft.com -> Security info / sign-in: confirm target users use External MFA and are not offered unintended Microsoft MFA methods"
 }
 Write-Host ""
 Write-Host "Note: This script changes tenant auth method policy settings (best-effort). It only adds per-user External Authentication Method registrations when -BulkRegisterExternalAuthMethodForWrapperGroupUsers is enabled; it does not remove other per-user MFA registrations. If user prompts still look wrong, review the user's registered methods and tenant authentication method policies." -ForegroundColor Yellow
 Write-Host "Note: Bulk per-user registration requires delegated Graph scope 'UserAuthMethod-External.ReadWrite.All' (requested automatically when that option is enabled)." -ForegroundColor Yellow
 Write-Host "Note: Use -EnforceStrictExternalOnlyTenantPrereqs `$true to automatically disable Security Defaults and the admin SSPR authorizationPolicy flag (best-effort, tenant-wide)." -ForegroundColor Yellow
+Write-Host "Note: Use -DisableAdminSspr `$true to disable only the admin SSPR authorizationPolicy flag without touching Security Defaults." -ForegroundColor Yellow
 Write-Host "Note: Strict external-only rollout also requires Password reset / SSPR settings to be disabled manually (the script audits these signals but does not reliably enforce SSPR disablement via Graph)." -ForegroundColor Yellow
+if (@($rolloutWarnings).Count -gt 0) {
+  Write-Host ""
+  Write-Host "Rollout warnings:" -ForegroundColor Yellow
+  foreach ($warningText in $rolloutWarnings) {
+    Write-Host "  - $warningText" -ForegroundColor Yellow
+  }
+}
 
 return [pscustomobject]@{
   Tenant = $tenantLabel
-  Status = $(if ($isOffboarding) { "Offboarded" } else { "Success" })
+  Status = $(
+    if ($isOffboarding) { "Offboarded" }
+    elseif (@($rolloutWarnings).Count -gt 0) { "SuccessWithWarnings" }
+    else { "Success" }
+  )
   Stage = $Stage
   CaScopeMode = $CaScopeMode
   ManualBlockers = $(if ($preflightSummary) { $preflightSummary.ManualBlockerFindings.Count } else { 0 })
   AutoFixable = $(if ($preflightSummary) { $preflightSummary.AutoFixableFindings.Count } else { 0 })
+  Warnings = @($rolloutWarnings.ToArray())
 }
   }
   finally {

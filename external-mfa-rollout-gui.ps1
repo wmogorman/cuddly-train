@@ -211,6 +211,10 @@ $cbEnforcePrereqs = New-CheckBoxControl -Text "Enforce strict external-only tena
 $tabOptions.Controls.Add($cbEnforcePrereqs)
 $y2 += 28
 
+$cbDisableAdminSspr = New-CheckBoxControl -Text "Disable admin SSPR flag only (authorizationPolicy.allowedToUseSSPR = false)" -X 20 -Y $y2 -Checked $false -Width 860
+$tabOptions.Controls.Add($cbDisableAdminSspr)
+$y2 += 28
+
 $cbAuditReadiness = New-CheckBoxControl -Text "Run EAM-only readiness audit (diagnostic output)" -X 20 -Y $y2 -Checked $true -Width 420
 $tabOptions.Controls.Add($cbAuditReadiness)
 
@@ -231,6 +235,8 @@ Recommended workflow:
 High-impact options:
 - Enforce strict external-only tenant prereqs:
   Tenant-wide changes (best-effort) that disable Security Defaults and the admin SSPR authorizationPolicy flag.
+- Disable admin SSPR flag only:
+  Tenant-wide change (best-effort) that sets authorizationPolicy.allowedToUseSSPR to false without changing Security Defaults.
 - Offboard:
   Reverses the rollout (CA policy removal + EAM disable + Microsoft-preferred settings restore).
 
@@ -311,6 +317,7 @@ function Get-UiState {
     BulkIncludeGuestUsers          = $cbBulkIncludeGuests.Checked
     AuditReadiness                 = $cbAuditReadiness.Checked
     EnforceStrictPrereqs           = $cbEnforcePrereqs.Checked
+    DisableAdminSspr               = $cbDisableAdminSspr.Checked
   }
 }
 
@@ -419,7 +426,8 @@ function Build-RunCommand {
     @{ Name = "BulkRegisterSkipDisabledUsers"; Value = $State.BulkSkipDisabledUsers },
     @{ Name = "BulkRegisterIncludeGuestUsers"; Value = $State.BulkIncludeGuestUsers },
     @{ Name = "AuditEamOnlyPilotReadiness"; Value = $State.AuditReadiness },
-    @{ Name = "EnforceStrictExternalOnlyTenantPrereqs"; Value = $State.EnforceStrictPrereqs }
+    @{ Name = "EnforceStrictExternalOnlyTenantPrereqs"; Value = $State.EnforceStrictPrereqs },
+    @{ Name = "DisableAdminSspr"; Value = $State.DisableAdminSspr }
   )
 
   foreach ($p in $boolParams) {
@@ -520,7 +528,7 @@ $allRefreshControls = @(
   $txtPilotGroup, $txtWrapperGroup, $txtCaPolicy, $txtBreakGlassGroupId, $txtExcludedMethods,
   $cbOffboard, $cbWhatIf, $cbConfirmFalse, $cbNoExit, $cbDisableMsAuth, $cbDisableRegCampaign,
   $cbDisableSystemPreferred, $cbRestrictMethods, $cbBulkRegister, $cbBulkSkipDisabled,
-  $cbBulkIncludeGuests, $cbAuditReadiness, $cbEnforcePrereqs
+  $cbBulkIncludeGuests, $cbAuditReadiness, $cbEnforcePrereqs, $cbDisableAdminSspr
 )
 
 foreach ($ctl in $allRefreshControls) {
