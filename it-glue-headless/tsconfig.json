@@ -1,7 +1,7 @@
 {
   "compilerOptions": {
     "target": "ES2020",
-    "module": "ESNext",
+    "module": "NodeNext",
     "moduleResolution": "NodeNext",
     "lib": ["ES2020", "DOM"],
     "types": ["node"],
@@ -15,6 +15,7 @@
     "isolatedModules": true
   },
   "include": [
-    "it-glue-headless/**/*.ts"
+    "../it-glue-headless/**/*.ts",
+    "../datto-edr-headless/**/*.ts"
   ]
 }

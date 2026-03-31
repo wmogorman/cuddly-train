@@ -5,7 +5,9 @@
   "scripts": {
     "setup": "playwright install chromium",
     "start": "tsx it-glue-headless/ng-snmp-md5aes.ts",
-    "start:headed": "cross-env HEADED=1 tsx it-glue-headless/ng-snmp-md5aes.ts"
+    "start:headed": "cross-env HEADED=1 tsx it-glue-headless/ng-snmp-md5aes.ts",
+    "edr:policy-snapshot": "tsx datto-edr-headless/datto-edr-policy-snapshot.ts",
+    "edr:policy-snapshot:headed": "cross-env HEADED=1 tsx datto-edr-headless/datto-edr-policy-snapshot.ts"
   },
   "dependencies": {
     "dotenv": "16.4.5",

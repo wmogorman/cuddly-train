@@ -1,4 +1,4 @@
-import { chromium, expect, Page, Locator } from 'playwright';
+import { chromium, Page, Locator } from 'playwright';
 import * as fs from 'fs';
 import * as path from 'path';
 import 'dotenv/config';
@@ -63,7 +63,7 @@ async function ensureLogin(page: Page) {
   // Give time for SSO/MFA; user may need to interact if headed.
   await page.waitForLoadState('networkidle', { timeout: 120_000 });
   // Confirm by checking we can see top-nav or dashboard
-  await expect(page.getByRole('link', { name: /Dashboard/i }).first()).toBeVisible({ timeout: 60_000 });
+  await page.getByRole('link', { name: /Dashboard/i }).first().waitFor({ state: 'visible', timeout: 60_000 });
 }
 
 async function goToNetworkGlue(page: Page) {

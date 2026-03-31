@@ -1,0 +1,93 @@
+{
+  "InstanceUrl": "https://yourinstance.infocyte.com",
+  "TokenEnvVar": "DATTO_EDR_TOKEN",
+  "PolicyBaselines": {
+    "Datto EDR": {
+      "ExpectedPolicyName": "Standard Datto EDR",
+      "ExpectedEnabled": true,
+      "ExpectedSettings": {
+        "networkContainment": true
+      }
+    },
+    "Datto AV": {
+      "ExpectedPolicyName": "Standard Datto AV",
+      "ExpectedEnabled": true,
+      "ExpectedSettings": {
+        "realTimeProtection": true
+      }
+    },
+    "Ransomware": {
+      "ExpectedPolicyName": "Standard Ransomware",
+      "ExpectedEnabled": true,
+      "ExpectedSettings": {
+        "enhancedMonitoring": true
+      }
+    },
+    "Windows Defender": {
+      "ExpectedPolicyName": "Standard Windows Defender",
+      "ExpectedEnabled": true,
+      "ExpectedSettings": {
+        "useAdvancedRansomwareProtection": true
+      }
+    },
+    "Automated Response": {
+      "ExpectedPolicyName": "Standard Automated Response",
+      "ExpectedEnabled": true,
+      "ExpectedSettings": {
+        "automaticResponse": true
+      }
+    }
+  },
+  "AssignmentRules": [
+    {
+      "OrganizationName": "*",
+      "LocationName": "*",
+      "Policies": {
+        "Datto EDR": "Standard Datto EDR",
+        "Datto AV": "Standard Datto AV",
+        "Ransomware": "Standard Ransomware",
+        "Windows Defender": "Standard Windows Defender",
+        "Automated Response": "Standard Automated Response"
+      }
+    },
+    {
+      "OrganizationName": "Example Org",
+      "LocationName": "Servers",
+      "Policies": {
+        "Datto AV": "Server AV Policy"
+      }
+    }
+  ],
+  "AllowedExceptions": [
+    {
+      "OrganizationName": "Example Org",
+      "LocationName": "Legacy Lab",
+      "PolicyType": "Windows Defender",
+      "ControlName": "PolicyAssignment",
+      "ExpiresOn": "2026-12-31",
+      "Notes": "Temporary exception for validation-only hosts."
+    }
+  ],
+  "ApiDiscovery": {
+    "PoliciesEndpointCandidates": [
+      "policies",
+      "namedPolicies"
+    ],
+    "OrganizationsEndpointCandidates": [
+      "organizations"
+    ],
+    "LocationsEndpointCandidates": [
+      "targets",
+      "locations"
+    ],
+    "AssignmentsEndpointCandidates": [
+      "policyAssignments",
+      "organizationPolicyAssignments",
+      "targetPolicyAssignments"
+    ]
+  },
+  "UiFallback": {
+    "Command": "npx tsx datto-edr-headless/datto-edr-policy-snapshot.ts --config <CONFIG_PATH> --output <OUTPUT_PATH>",
+    "OutputJsonPath": "./datto-edr-ui-snapshot.json"
+  }
+}
