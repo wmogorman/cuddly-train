@@ -1,0 +1,593 @@
+[2026-04-01 16:33:56] [INFO] [9f50b569-9e79-47a5-bbe6-f362934d55a0] Connecting to discovery tenant for partner relationship lookup.
+[2026-04-01 16:34:01] [WARN] [9f50b569-9e79-47a5-bbe6-f362934d55a0] Select-MgProfile not available in this SDK version; using default Graph profile.
+[2026-04-01 16:34:03] [INFO] [Datamax, Inc.] Discovered 0 tenant(s) from active GDAP relationships.
+[2026-04-01 16:34:03] [INFO] [Datamax, Inc.] Discovered 49 tenant(s) from active customer contracts.
+[2026-04-01 16:34:03] [INFO] Starting break-glass compliance for 49 tenant(s).
+[2026-04-01 16:34:03] [INFO] [Proforma Horizon Total Source] Connecting to Microsoft Graph
+[2026-04-01 16:34:04] [WARN] [Proforma Horizon Total Source] Select-MgProfile not available in this SDK version; using default Graph profile.
+[2026-04-01 16:34:04] [INFO] [Proforma Horizon Total Source] Connected. Tenant: Proforma Horizon Total Source AppId: f45ddef0-f613-4c3d-92d1-6b80bf00e6cf AuthType: AppOnly
+[2026-04-01 16:34:04] [INFO] [Proforma Horizon Total Source] Resolved role: Global Administrator [653f36ec-1971-4bc1-b185-05f2aa9606c1]
+[2026-04-01 16:34:04] [INFO] [Proforma Horizon Total Source] Current Global Administrator role member count: 3
+[2026-04-01 16:34:05] [INFO] [Proforma Horizon Total Source] Break-glass group not found: ActaMSP Break Glass
+[2026-04-01 16:34:05] [INFO] [Proforma Horizon Total Source] DRY RUN: would create group 'ActaMSP Break Glass'
+[2026-04-01 16:34:05] [INFO] [Proforma Horizon Total Source] Current break-glass group direct member count: 0
+[2026-04-01 16:34:05] [INFO] [Proforma Horizon Total Source] DRY RUN: would create break-glass user 'actamsp-breakglass@ProformaHorizon.onmicrosoft.com' with display name 'ActaMSP Break Glass Emergency Access'
+[2026-04-01 16:34:05] [INFO] [Proforma Horizon Total Source] DRY RUN: would add 'actamsp-breakglass@ProformaHorizon.onmicrosoft.com' [<dry-run-user>] to break-glass group 'ActaMSP Break Glass' [<dry-run-group>]
+[2026-04-01 16:34:05] [INFO] [Proforma Horizon Total Source] DRY RUN: would assign Global Administrator to 'actamsp-breakglass@ProformaHorizon.onmicrosoft.com' [<dry-run-user>]
+[2026-04-01 16:34:05] [INFO] [Proforma Horizon Total Source] Tenant compliance complete. Action=CreatedGroup+CreatedUser+AddedUserToGroup+AssignedGlobalAdmin
+[2026-04-01 16:34:05] [INFO] [JE Allen Company] Connecting to Microsoft Graph
+[2026-04-01 16:34:06] [WARN] [JE Allen Company] Select-MgProfile not available in this SDK version; using default Graph profile.
+[2026-04-01 16:34:07] [INFO] [J.E. Allen Company] Connected. Tenant: J.E. Allen Company AppId: f45ddef0-f613-4c3d-92d1-6b80bf00e6cf AuthType: AppOnly
+[2026-04-01 16:34:07] [INFO] [J.E. Allen Company] Resolved role: Global Administrator [a79fc3fe-1247-453b-83c4-c307b53aa01b]
+[2026-04-01 16:34:07] [INFO] [J.E. Allen Company] Current Global Administrator role member count: 2
+[2026-04-01 16:34:07] [INFO] [J.E. Allen Company] Break-glass group not found: ActaMSP Break Glass
+[2026-04-01 16:34:07] [INFO] [J.E. Allen Company] DRY RUN: would create group 'ActaMSP Break Glass'
+[2026-04-01 16:34:07] [INFO] [J.E. Allen Company] Current break-glass group direct member count: 0
+[2026-04-01 16:34:07] [INFO] [J.E. Allen Company] DRY RUN: would create break-glass user 'actamsp-breakglass@jeallen1.onmicrosoft.com' with display name 'ActaMSP Break Glass Emergency Access'
+[2026-04-01 16:34:07] [INFO] [J.E. Allen Company] DRY RUN: would add 'actamsp-breakglass@jeallen1.onmicrosoft.com' [<dry-run-user>] to break-glass group 'ActaMSP Break Glass' [<dry-run-group>]
+[2026-04-01 16:34:07] [INFO] [J.E. Allen Company] DRY RUN: would assign Global Administrator to 'actamsp-breakglass@jeallen1.onmicrosoft.com' [<dry-run-user>]
+[2026-04-01 16:34:07] [INFO] [J.E. Allen Company] Tenant compliance complete. Action=CreatedGroup+CreatedUser+AddedUserToGroup+AssignedGlobalAdmin
+[2026-04-01 16:34:07] [INFO] [SMA Architects] Connecting to Microsoft Graph
+[2026-04-01 16:34:08] [ERROR] [SMA Architects] Tenant compliance failed: AADSTS7000229: Audit app is not onboarded in this tenant (enterprise app/service principal missing). Run enterprise-app-onboard-all-partners.ps1 for this tenant. [Code=AADSTS7000229]
+[2026-04-01 16:34:08] [INFO] [Dave Grundfest Company] Connecting to Microsoft Graph
+[2026-04-01 16:34:09] [WARN] [Dave Grundfest Company] Select-MgProfile not available in this SDK version; using default Graph profile.
+[2026-04-01 16:34:09] [INFO] [Dave Grundfest Company] Connected. Tenant: Dave Grundfest Company AppId: f45ddef0-f613-4c3d-92d1-6b80bf00e6cf AuthType: AppOnly
+[2026-04-01 16:34:09] [INFO] [Dave Grundfest Company] Resolved role: Global Administrator [68da5e0c-fb1e-4f98-b06b-557ecd1aed78]
+[2026-04-01 16:34:09] [INFO] [Dave Grundfest Company] Current Global Administrator role member count: 3
+[2026-04-01 16:34:09] [INFO] [Dave Grundfest Company] Break-glass group not found: ActaMSP Break Glass
+[2026-04-01 16:34:09] [INFO] [Dave Grundfest Company] DRY RUN: would create group 'ActaMSP Break Glass'
+[2026-04-01 16:34:09] [INFO] [Dave Grundfest Company] Current break-glass group direct member count: 0
+[2026-04-01 16:34:09] [INFO] [Dave Grundfest Company] DRY RUN: would create break-glass user 'actamsp-breakglass@grundfest1.onmicrosoft.com' with display name 'ActaMSP Break Glass Emergency Access'
+[2026-04-01 16:34:09] [INFO] [Dave Grundfest Company] DRY RUN: would add 'actamsp-breakglass@grundfest1.onmicrosoft.com' [<dry-run-user>] to break-glass group 'ActaMSP Break Glass' [<dry-run-group>]
+[2026-04-01 16:34:09] [INFO] [Dave Grundfest Company] DRY RUN: would assign Global Administrator to 'actamsp-breakglass@grundfest1.onmicrosoft.com' [<dry-run-user>]
+[2026-04-01 16:34:09] [INFO] [Dave Grundfest Company] Tenant compliance complete. Action=CreatedGroup+CreatedUser+AddedUserToGroup+AssignedGlobalAdmin
+[2026-04-01 16:34:09] [INFO] [Riverside Box Supply Co.] Connecting to Microsoft Graph
+[2026-04-01 16:34:10] [ERROR] [Riverside Box Supply Co.] Tenant compliance failed: AADSTS7000229: Audit app is not onboarded in this tenant (enterprise app/service principal missing). Run enterprise-app-onboard-all-partners.ps1 for this tenant. [Code=AADSTS7000229]
+[2026-04-01 16:34:10] [INFO] [Power Technology] Connecting to Microsoft Graph
+[2026-04-01 16:34:11] [ERROR] [Power Technology] Tenant compliance failed: AADSTS7000229: Audit app is not onboarded in this tenant (enterprise app/service principal missing). Run enterprise-app-onboard-all-partners.ps1 for this tenant. [Code=AADSTS7000229]
+[2026-04-01 16:34:11] [INFO] [AVCOR Construction, LLC] Connecting to Microsoft Graph
+[2026-04-01 16:34:12] [WARN] [AVCOR Construction, LLC] Select-MgProfile not available in this SDK version; using default Graph profile.
+[2026-04-01 16:34:12] [INFO] [AVCOR Construction] Connected. Tenant: AVCOR Construction AppId: f45ddef0-f613-4c3d-92d1-6b80bf00e6cf AuthType: AppOnly
+[2026-04-01 16:34:12] [INFO] [AVCOR Construction] Resolved role: Global Administrator [802a22d4-ee03-4f56-b63b-06fa99d8043c]
+[2026-04-01 16:34:13] [INFO] [AVCOR Construction] Current Global Administrator role member count: 6
+[2026-04-01 16:34:13] [INFO] [AVCOR Construction] Break-glass group not found: ActaMSP Break Glass
+[2026-04-01 16:34:13] [INFO] [AVCOR Construction] DRY RUN: would create group 'ActaMSP Break Glass'
+[2026-04-01 16:34:13] [INFO] [AVCOR Construction] Current break-glass group direct member count: 0
+[2026-04-01 16:34:13] [INFO] [AVCOR Construction] DRY RUN: would create break-glass user 'actamsp-breakglass@avcor.onmicrosoft.com' with display name 'ActaMSP Break Glass Emergency Access'
+[2026-04-01 16:34:13] [INFO] [AVCOR Construction] DRY RUN: would add 'actamsp-breakglass@avcor.onmicrosoft.com' [<dry-run-user>] to break-glass group 'ActaMSP Break Glass' [<dry-run-group>]
+[2026-04-01 16:34:13] [INFO] [AVCOR Construction] DRY RUN: would assign Global Administrator to 'actamsp-breakglass@avcor.onmicrosoft.com' [<dry-run-user>]
+[2026-04-01 16:34:13] [INFO] [AVCOR Construction] Tenant compliance complete. Action=CreatedGroup+CreatedUser+AddedUserToGroup+AssignedGlobalAdmin
+[2026-04-01 16:34:13] [INFO] [Advanced Tree and Shrub Care, Inc.] Connecting to Microsoft Graph
+[2026-04-01 16:34:14] [WARN] [Advanced Tree and Shrub Care, Inc.] Select-MgProfile not available in this SDK version; using default Graph profile.
+[2026-04-01 16:34:14] [INFO] [Advanced Tree & Shrub Care] Connected. Tenant: Advanced Tree & Shrub Care AppId: f45ddef0-f613-4c3d-92d1-6b80bf00e6cf AuthType: AppOnly
+[2026-04-01 16:34:14] [INFO] [Advanced Tree & Shrub Care] Resolved role: Global Administrator [78e0dd11-f478-431d-9362-60f7451d8245]
+[2026-04-01 16:34:14] [INFO] [Advanced Tree & Shrub Care] Current Global Administrator role member count: 2
+[2026-04-01 16:34:14] [INFO] [Advanced Tree & Shrub Care] Break-glass group not found: ActaMSP Break Glass
+[2026-04-01 16:34:14] [INFO] [Advanced Tree & Shrub Care] DRY RUN: would create group 'ActaMSP Break Glass'
+[2026-04-01 16:34:14] [INFO] [Advanced Tree & Shrub Care] Current break-glass group direct member count: 0
+[2026-04-01 16:34:15] [INFO] [Advanced Tree & Shrub Care] DRY RUN: would create break-glass user 'actamsp-breakglass@AdvancedTreeCareInc.onmicrosoft.com' with display name 'ActaMSP Break Glass Emergency Access'
+[2026-04-01 16:34:15] [INFO] [Advanced Tree & Shrub Care] DRY RUN: would add 'actamsp-breakglass@AdvancedTreeCareInc.onmicrosoft.com' [<dry-run-user>] to break-glass group 'ActaMSP Break Glass' [<dry-run-group>]
+[2026-04-01 16:34:15] [INFO] [Advanced Tree & Shrub Care] DRY RUN: would assign Global Administrator to 'actamsp-breakglass@AdvancedTreeCareInc.onmicrosoft.com' [<dry-run-user>]
+[2026-04-01 16:34:15] [INFO] [Advanced Tree & Shrub Care] Tenant compliance complete. Action=CreatedGroup+CreatedUser+AddedUserToGroup+AssignedGlobalAdmin
+[2026-04-01 16:34:15] [INFO] [Baim Law Firm] Connecting to Microsoft Graph
+[2026-04-01 16:34:16] [WARN] [Baim Law Firm] Select-MgProfile not available in this SDK version; using default Graph profile.
+[2026-04-01 16:34:16] [INFO] [Baim Law Firm] Connected. Tenant: Baim Law Firm AppId: f45ddef0-f613-4c3d-92d1-6b80bf00e6cf AuthType: AppOnly
+[2026-04-01 16:34:16] [INFO] [Baim Law Firm] Resolved role: Global Administrator [b39ad5dc-ae3f-4f1a-a0c7-be5694b01626]
+[2026-04-01 16:34:16] [INFO] [Baim Law Firm] Current Global Administrator role member count: 2
+[2026-04-01 16:34:16] [INFO] [Baim Law Firm] Break-glass group not found: ActaMSP Break Glass
+[2026-04-01 16:34:16] [INFO] [Baim Law Firm] DRY RUN: would create group 'ActaMSP Break Glass'
+[2026-04-01 16:34:16] [INFO] [Baim Law Firm] Current break-glass group direct member count: 0
+[2026-04-01 16:34:17] [INFO] [Baim Law Firm] DRY RUN: would create break-glass user 'actamsp-breakglass@BaimLawPB1.onmicrosoft.com' with display name 'ActaMSP Break Glass Emergency Access'
+[2026-04-01 16:34:17] [INFO] [Baim Law Firm] DRY RUN: would add 'actamsp-breakglass@BaimLawPB1.onmicrosoft.com' [<dry-run-user>] to break-glass group 'ActaMSP Break Glass' [<dry-run-group>]
+[2026-04-01 16:34:17] [INFO] [Baim Law Firm] DRY RUN: would assign Global Administrator to 'actamsp-breakglass@BaimLawPB1.onmicrosoft.com' [<dry-run-user>]
+[2026-04-01 16:34:17] [INFO] [Baim Law Firm] Tenant compliance complete. Action=CreatedGroup+CreatedUser+AddedUserToGroup+AssignedGlobalAdmin
+[2026-04-01 16:34:17] [INFO] [Gibbs Service Company] Connecting to Microsoft Graph
+[2026-04-01 16:34:18] [WARN] [Gibbs Service Company] Select-MgProfile not available in this SDK version; using default Graph profile.
+[2026-04-01 16:34:18] [INFO] [Gibbs Service Company, Inc.] Connected. Tenant: Gibbs Service Company, Inc. AppId: f45ddef0-f613-4c3d-92d1-6b80bf00e6cf AuthType: AppOnly
+[2026-04-01 16:34:18] [INFO] [Gibbs Service Company, Inc.] Resolved role: Global Administrator [bea9c0d7-3513-4b8a-a3ef-9abf2d9510ed]
+[2026-04-01 16:34:18] [INFO] [Gibbs Service Company, Inc.] Current Global Administrator role member count: 2
+[2026-04-01 16:34:18] [INFO] [Gibbs Service Company, Inc.] Break-glass group not found: ActaMSP Break Glass
+[2026-04-01 16:34:18] [INFO] [Gibbs Service Company, Inc.] DRY RUN: would create group 'ActaMSP Break Glass'
+[2026-04-01 16:34:18] [INFO] [Gibbs Service Company, Inc.] Current break-glass group direct member count: 0
+[2026-04-01 16:34:19] [INFO] [Gibbs Service Company, Inc.] DRY RUN: would create break-glass user 'actamsp-breakglass@GibbsServiceCompany.onmicrosoft.com' with display name 'ActaMSP Break Glass Emergency Access'
+[2026-04-01 16:34:19] [INFO] [Gibbs Service Company, Inc.] DRY RUN: would add 'actamsp-breakglass@GibbsServiceCompany.onmicrosoft.com' [<dry-run-user>] to break-glass group 'ActaMSP Break Glass' [<dry-run-group>]
+[2026-04-01 16:34:19] [INFO] [Gibbs Service Company, Inc.] DRY RUN: would assign Global Administrator to 'actamsp-breakglass@GibbsServiceCompany.onmicrosoft.com' [<dry-run-user>]
+[2026-04-01 16:34:19] [INFO] [Gibbs Service Company, Inc.] Tenant compliance complete. Action=CreatedGroup+CreatedUser+AddedUserToGroup+AssignedGlobalAdmin
+[2026-04-01 16:34:19] [INFO] [Barham Architects, LLC] Connecting to Microsoft Graph
+[2026-04-01 16:34:20] [WARN] [Barham Architects, LLC] Select-MgProfile not available in this SDK version; using default Graph profile.
+[2026-04-01 16:34:20] [INFO] [Barham Architects, LLC] Connected. Tenant: Barham Architects, LLC AppId: f45ddef0-f613-4c3d-92d1-6b80bf00e6cf AuthType: AppOnly
+[2026-04-01 16:34:20] [INFO] [Barham Architects, LLC] Resolved role: Global Administrator [ba883984-b12b-42dc-9e52-2e059e5b03be]
+[2026-04-01 16:34:20] [INFO] [Barham Architects, LLC] Current Global Administrator role member count: 2
+[2026-04-01 16:34:20] [INFO] [Barham Architects, LLC] Break-glass group not found: ActaMSP Break Glass
+[2026-04-01 16:34:20] [INFO] [Barham Architects, LLC] DRY RUN: would create group 'ActaMSP Break Glass'
+[2026-04-01 16:34:20] [INFO] [Barham Architects, LLC] Current break-glass group direct member count: 0
+[2026-04-01 16:34:20] [INFO] [Barham Architects, LLC] DRY RUN: would create break-glass user 'actamsp-breakglass@barhamarch.onmicrosoft.com' with display name 'ActaMSP Break Glass Emergency Access'
+[2026-04-01 16:34:20] [INFO] [Barham Architects, LLC] DRY RUN: would add 'actamsp-breakglass@barhamarch.onmicrosoft.com' [<dry-run-user>] to break-glass group 'ActaMSP Break Glass' [<dry-run-group>]
+[2026-04-01 16:34:20] [INFO] [Barham Architects, LLC] DRY RUN: would assign Global Administrator to 'actamsp-breakglass@barhamarch.onmicrosoft.com' [<dry-run-user>]
+[2026-04-01 16:34:20] [INFO] [Barham Architects, LLC] Tenant compliance complete. Action=CreatedGroup+CreatedUser+AddedUserToGroup+AssignedGlobalAdmin
+[2026-04-01 16:34:20] [INFO] [SJS and Company] Connecting to Microsoft Graph
+[2026-04-01 16:34:21] [ERROR] [SJS and Company] Tenant compliance failed: AADSTS7000229: Audit app is not onboarded in this tenant (enterprise app/service principal missing). Run enterprise-app-onboard-all-partners.ps1 for this tenant. [Code=AADSTS7000229]
+[2026-04-01 16:34:21] [INFO] [Access 2 Mobility] Connecting to Microsoft Graph
+[2026-04-01 16:34:22] [WARN] [Access 2 Mobility] Select-MgProfile not available in this SDK version; using default Graph profile.
+[2026-04-01 16:34:22] [INFO] [Access2Mobility] Connected. Tenant: Access2Mobility AppId: f45ddef0-f613-4c3d-92d1-6b80bf00e6cf AuthType: AppOnly
+[2026-04-01 16:34:22] [INFO] [Access2Mobility] Resolved role: Global Administrator [0295c06f-240e-49f1-8085-8066b0cec416]
+[2026-04-01 16:34:22] [INFO] [Access2Mobility] Current Global Administrator role member count: 2
+[2026-04-01 16:34:22] [INFO] [Access2Mobility] Break-glass group not found: ActaMSP Break Glass
+[2026-04-01 16:34:22] [INFO] [Access2Mobility] DRY RUN: would create group 'ActaMSP Break Glass'
+[2026-04-01 16:34:22] [INFO] [Access2Mobility] Current break-glass group direct member count: 0
+[2026-04-01 16:34:22] [INFO] [Access2Mobility] DRY RUN: would create break-glass user 'actamsp-breakglass@Access2Mobility645.onmicrosoft.com' with display name 'ActaMSP Break Glass Emergency Access'
+[2026-04-01 16:34:23] [INFO] [Access2Mobility] DRY RUN: would add 'actamsp-breakglass@Access2Mobility645.onmicrosoft.com' [<dry-run-user>] to break-glass group 'ActaMSP Break Glass' [<dry-run-group>]
+[2026-04-01 16:34:23] [INFO] [Access2Mobility] DRY RUN: would assign Global Administrator to 'actamsp-breakglass@Access2Mobility645.onmicrosoft.com' [<dry-run-user>]
+[2026-04-01 16:34:23] [INFO] [Access2Mobility] Tenant compliance complete. Action=CreatedGroup+CreatedUser+AddedUserToGroup+AssignedGlobalAdmin
+[2026-04-01 16:34:23] [INFO] [HART CONSTRUCTION] Connecting to Microsoft Graph
+[2026-04-01 16:34:24] [WARN] [HART CONSTRUCTION] Select-MgProfile not available in this SDK version; using default Graph profile.
+[2026-04-01 16:34:24] [INFO] [Hart Construction] Connected. Tenant: Hart Construction AppId: f45ddef0-f613-4c3d-92d1-6b80bf00e6cf AuthType: AppOnly
+[2026-04-01 16:34:25] [INFO] [Hart Construction] Resolved role: Global Administrator [159af26f-e91d-477d-a153-a0df4a39f77d]
+[2026-04-01 16:34:25] [INFO] [Hart Construction] Current Global Administrator role member count: 4
+[2026-04-01 16:34:25] [INFO] [Hart Construction] Break-glass group not found: ActaMSP Break Glass
+[2026-04-01 16:34:25] [INFO] [Hart Construction] DRY RUN: would create group 'ActaMSP Break Glass'
+[2026-04-01 16:34:25] [INFO] [Hart Construction] Current break-glass group direct member count: 0
+[2026-04-01 16:34:25] [INFO] [Hart Construction] DRY RUN: would create break-glass user 'actamsp-breakglass@hartconllc.onmicrosoft.com' with display name 'ActaMSP Break Glass Emergency Access'
+[2026-04-01 16:34:25] [INFO] [Hart Construction] DRY RUN: would add 'actamsp-breakglass@hartconllc.onmicrosoft.com' [<dry-run-user>] to break-glass group 'ActaMSP Break Glass' [<dry-run-group>]
+[2026-04-01 16:34:25] [INFO] [Hart Construction] DRY RUN: would assign Global Administrator to 'actamsp-breakglass@hartconllc.onmicrosoft.com' [<dry-run-user>]
+[2026-04-01 16:34:25] [INFO] [Hart Construction] Tenant compliance complete. Action=CreatedGroup+CreatedUser+AddedUserToGroup+AssignedGlobalAdmin
+[2026-04-01 16:34:25] [INFO] [McMurrey Federal Credit Union] Connecting to Microsoft Graph
+[2026-04-01 16:34:26] [WARN] [McMurrey Federal Credit Union] Select-MgProfile not available in this SDK version; using default Graph profile.
+[2026-04-01 16:34:27] [INFO] [McMurrey Federal Credit Union] Connected. Tenant: McMurrey Federal Credit Union AppId: f45ddef0-f613-4c3d-92d1-6b80bf00e6cf AuthType: AppOnly
+[2026-04-01 16:34:27] [INFO] [McMurrey Federal Credit Union] Resolved role: Global Administrator [fcce92fe-121d-45c0-b3f6-85bd007f87d9]
+[2026-04-01 16:34:27] [INFO] [McMurrey Federal Credit Union] Current Global Administrator role member count: 3
+[2026-04-01 16:34:28] [INFO] [McMurrey Federal Credit Union] Break-glass group not found: ActaMSP Break Glass
+[2026-04-01 16:34:28] [INFO] [McMurrey Federal Credit Union] DRY RUN: would create group 'ActaMSP Break Glass'
+[2026-04-01 16:34:28] [INFO] [McMurrey Federal Credit Union] Current break-glass group direct member count: 0
+[2026-04-01 16:34:28] [INFO] [McMurrey Federal Credit Union] DRY RUN: would create break-glass user 'actamsp-breakglass@mcmurreyfcu.onmicrosoft.com' with display name 'ActaMSP Break Glass Emergency Access'
+[2026-04-01 16:34:28] [INFO] [McMurrey Federal Credit Union] DRY RUN: would add 'actamsp-breakglass@mcmurreyfcu.onmicrosoft.com' [<dry-run-user>] to break-glass group 'ActaMSP Break Glass' [<dry-run-group>]
+[2026-04-01 16:34:28] [INFO] [McMurrey Federal Credit Union] DRY RUN: would assign Global Administrator to 'actamsp-breakglass@mcmurreyfcu.onmicrosoft.com' [<dry-run-user>]
+[2026-04-01 16:34:28] [INFO] [McMurrey Federal Credit Union] Tenant compliance complete. Action=CreatedGroup+CreatedUser+AddedUserToGroup+AssignedGlobalAdmin
+[2026-04-01 16:34:28] [INFO] [Roller Funeral Homes] Connecting to Microsoft Graph
+[2026-04-01 16:34:30] [WARN] [Roller Funeral Homes] Select-MgProfile not available in this SDK version; using default Graph profile.
+[2026-04-01 16:34:30] [INFO] [Roller Funeral Home] Connected. Tenant: Roller Funeral Home AppId: f45ddef0-f613-4c3d-92d1-6b80bf00e6cf AuthType: AppOnly
+[2026-04-01 16:34:31] [INFO] [Roller Funeral Home] Resolved role: Global Administrator [bd747bb7-344f-478d-95fe-bce62d0a313d]
+[2026-04-01 16:34:31] [INFO] [Roller Funeral Home] Current Global Administrator role member count: 3
+[2026-04-01 16:34:31] [INFO] [Roller Funeral Home] Break-glass group not found: ActaMSP Break Glass
+[2026-04-01 16:34:31] [INFO] [Roller Funeral Home] DRY RUN: would create group 'ActaMSP Break Glass'
+[2026-04-01 16:34:31] [INFO] [Roller Funeral Home] Current break-glass group direct member count: 0
+[2026-04-01 16:34:31] [INFO] [Roller Funeral Home] DRY RUN: would create break-glass user 'actamsp-breakglass@Rfh1.onmicrosoft.com' with display name 'ActaMSP Break Glass Emergency Access'
+[2026-04-01 16:34:31] [INFO] [Roller Funeral Home] DRY RUN: would add 'actamsp-breakglass@Rfh1.onmicrosoft.com' [<dry-run-user>] to break-glass group 'ActaMSP Break Glass' [<dry-run-group>]
+[2026-04-01 16:34:31] [INFO] [Roller Funeral Home] DRY RUN: would assign Global Administrator to 'actamsp-breakglass@Rfh1.onmicrosoft.com' [<dry-run-user>]
+[2026-04-01 16:34:31] [INFO] [Roller Funeral Home] Tenant compliance complete. Action=CreatedGroup+CreatedUser+AddedUserToGroup+AssignedGlobalAdmin
+[2026-04-01 16:34:31] [INFO] [zLab] Connecting to Microsoft Graph
+[2026-04-01 16:34:33] [WARN] [zLab] Select-MgProfile not available in this SDK version; using default Graph profile.
+[2026-04-01 16:34:33] [INFO] [zLab] Connected. Tenant: zLab AppId: f45ddef0-f613-4c3d-92d1-6b80bf00e6cf AuthType: AppOnly
+[2026-04-01 16:34:34] [INFO] [zLab] Resolved role: Global Administrator [f784c49d-7e10-4b60-9ea8-c3021a2b9a52]
+[2026-04-01 16:34:34] [INFO] [zLab] Current Global Administrator role member count: 6
+[2026-04-01 16:34:34] [INFO] [zLab] Using existing group 'ActaMSP Break Glass' [d7b68571-9bca-47ae-bc1e-040d5865b84e]
+[2026-04-01 16:34:35] [INFO] [zLab] Current break-glass group direct member count: 1
+[2026-04-01 16:34:35] [INFO] [zLab] Tenant compliance complete. Action=AlreadyCompliant
+[2026-04-01 16:34:35] [INFO] [Jeff Buie Used Card] Connecting to Microsoft Graph
+[2026-04-01 16:34:36] [WARN] [Jeff Buie Used Card] Select-MgProfile not available in this SDK version; using default Graph profile.
+[2026-04-01 16:34:36] [INFO] [Jeff Buie Used Cars] Connected. Tenant: Jeff Buie Used Cars AppId: f45ddef0-f613-4c3d-92d1-6b80bf00e6cf AuthType: AppOnly
+[2026-04-01 16:34:37] [INFO] [Jeff Buie Used Cars] Resolved role: Global Administrator [438d98d6-7e2a-46f6-9bfc-7b0376669442]
+[2026-04-01 16:34:37] [INFO] [Jeff Buie Used Cars] Current Global Administrator role member count: 2
+[2026-04-01 16:34:37] [INFO] [Jeff Buie Used Cars] Break-glass group not found: ActaMSP Break Glass
+[2026-04-01 16:34:37] [INFO] [Jeff Buie Used Cars] DRY RUN: would create group 'ActaMSP Break Glass'
+[2026-04-01 16:34:37] [INFO] [Jeff Buie Used Cars] Current break-glass group direct member count: 0
+[2026-04-01 16:34:37] [INFO] [Jeff Buie Used Cars] DRY RUN: would create break-glass user 'actamsp-breakglass@jeffbuiecars.onmicrosoft.com' with display name 'ActaMSP Break Glass Emergency Access'
+[2026-04-01 16:34:37] [INFO] [Jeff Buie Used Cars] DRY RUN: would add 'actamsp-breakglass@jeffbuiecars.onmicrosoft.com' [<dry-run-user>] to break-glass group 'ActaMSP Break Glass' [<dry-run-group>]
+[2026-04-01 16:34:37] [INFO] [Jeff Buie Used Cars] DRY RUN: would assign Global Administrator to 'actamsp-breakglass@jeffbuiecars.onmicrosoft.com' [<dry-run-user>]
+[2026-04-01 16:34:37] [INFO] [Jeff Buie Used Cars] Tenant compliance complete. Action=CreatedGroup+CreatedUser+AddedUserToGroup+AssignedGlobalAdmin
+[2026-04-01 16:34:37] [INFO] [BBM, Inc.] Connecting to Microsoft Graph
+[2026-04-01 16:34:39] [WARN] [BBM, Inc.] Select-MgProfile not available in this SDK version; using default Graph profile.
+[2026-04-01 16:34:39] [INFO] [BBM, Inc] Connected. Tenant: BBM, Inc AppId: f45ddef0-f613-4c3d-92d1-6b80bf00e6cf AuthType: AppOnly
+[2026-04-01 16:34:40] [INFO] [BBM, Inc] Resolved role: Global Administrator [b20fe4e4-8441-4bc4-92f8-658631bd0889]
+[2026-04-01 16:34:40] [INFO] [BBM, Inc] Current Global Administrator role member count: 2
+[2026-04-01 16:34:40] [INFO] [BBM, Inc] Break-glass group not found: ActaMSP Break Glass
+[2026-04-01 16:34:40] [INFO] [BBM, Inc] DRY RUN: would create group 'ActaMSP Break Glass'
+[2026-04-01 16:34:40] [INFO] [BBM, Inc] Current break-glass group direct member count: 0
+[2026-04-01 16:34:41] [INFO] [BBM, Inc] DRY RUN: would create break-glass user 'actamsp-breakglass@bbminc.onmicrosoft.com' with display name 'ActaMSP Break Glass Emergency Access'
+[2026-04-01 16:34:41] [INFO] [BBM, Inc] DRY RUN: would add 'actamsp-breakglass@bbminc.onmicrosoft.com' [<dry-run-user>] to break-glass group 'ActaMSP Break Glass' [<dry-run-group>]
+[2026-04-01 16:34:41] [INFO] [BBM, Inc] DRY RUN: would assign Global Administrator to 'actamsp-breakglass@bbminc.onmicrosoft.com' [<dry-run-user>]
+[2026-04-01 16:34:41] [INFO] [BBM, Inc] Tenant compliance complete. Action=CreatedGroup+CreatedUser+AddedUserToGroup+AssignedGlobalAdmin
+[2026-04-01 16:34:41] [INFO] [Craft Manufacturing and Tooling] Connecting to Microsoft Graph
+[2026-04-01 16:34:42] [WARN] [Craft Manufacturing and Tooling] Select-MgProfile not available in this SDK version; using default Graph profile.
+[2026-04-01 16:34:43] [INFO] [Craft Manufacturing and Tooling] Connected. Tenant: Craft Manufacturing and Tooling AppId: f45ddef0-f613-4c3d-92d1-6b80bf00e6cf AuthType: AppOnly
+[2026-04-01 16:34:44] [INFO] [Craft Manufacturing and Tooling] Resolved role: Global Administrator [c74dac7c-7569-481b-987c-c0da49514fa0]
+[2026-04-01 16:34:44] [INFO] [Craft Manufacturing and Tooling] Current Global Administrator role member count: 4
+[2026-04-01 16:34:44] [INFO] [Craft Manufacturing and Tooling] Break-glass group not found: ActaMSP Break Glass
+[2026-04-01 16:34:44] [INFO] [Craft Manufacturing and Tooling] DRY RUN: would create group 'ActaMSP Break Glass'
+[2026-04-01 16:34:44] [INFO] [Craft Manufacturing and Tooling] Current break-glass group direct member count: 0
+[2026-04-01 16:34:44] [INFO] [Craft Manufacturing and Tooling] DRY RUN: would create break-glass user 'actamsp-breakglass@appriver3651013462.onmicrosoft.com' with display name 'ActaMSP Break Glass Emergency Access'
+[2026-04-01 16:34:44] [INFO] [Craft Manufacturing and Tooling] DRY RUN: would add 'actamsp-breakglass@appriver3651013462.onmicrosoft.com' [<dry-run-user>] to break-glass group 'ActaMSP Break Glass' [<dry-run-group>]
+[2026-04-01 16:34:44] [INFO] [Craft Manufacturing and Tooling] DRY RUN: would assign Global Administrator to 'actamsp-breakglass@appriver3651013462.onmicrosoft.com' [<dry-run-user>]
+[2026-04-01 16:34:44] [INFO] [Craft Manufacturing and Tooling] Tenant compliance complete. Action=CreatedGroup+CreatedUser+AddedUserToGroup+AssignedGlobalAdmin
+[2026-04-01 16:34:44] [INFO] [Alliance Rubber Company] Connecting to Microsoft Graph
+[2026-04-01 16:34:46] [WARN] [Alliance Rubber Company] Select-MgProfile not available in this SDK version; using default Graph profile.
+[2026-04-01 16:34:46] [INFO] [Alliance Rubber] Connected. Tenant: Alliance Rubber AppId: f45ddef0-f613-4c3d-92d1-6b80bf00e6cf AuthType: AppOnly
+[2026-04-01 16:34:47] [INFO] [Alliance Rubber] Resolved role: Global Administrator [0d0f7f56-66ad-417d-80c7-bacc14be71d3]
+[2026-04-01 16:34:47] [INFO] [Alliance Rubber] Current Global Administrator role member count: 6
+[2026-04-01 16:34:47] [INFO] [Alliance Rubber] Break-glass group not found: ActaMSP Break Glass
+[2026-04-01 16:34:47] [INFO] [Alliance Rubber] DRY RUN: would create group 'ActaMSP Break Glass'
+[2026-04-01 16:34:47] [INFO] [Alliance Rubber] Current break-glass group direct member count: 0
+[2026-04-01 16:34:48] [INFO] [Alliance Rubber] DRY RUN: would create break-glass user 'actamsp-breakglass@alliancerubber.onmicrosoft.com' with display name 'ActaMSP Break Glass Emergency Access'
+[2026-04-01 16:34:48] [INFO] [Alliance Rubber] DRY RUN: would add 'actamsp-breakglass@alliancerubber.onmicrosoft.com' [<dry-run-user>] to break-glass group 'ActaMSP Break Glass' [<dry-run-group>]
+[2026-04-01 16:34:48] [INFO] [Alliance Rubber] DRY RUN: would assign Global Administrator to 'actamsp-breakglass@alliancerubber.onmicrosoft.com' [<dry-run-user>]
+[2026-04-01 16:34:48] [INFO] [Alliance Rubber] Tenant compliance complete. Action=CreatedGroup+CreatedUser+AddedUserToGroup+AssignedGlobalAdmin
+[2026-04-01 16:34:48] [INFO] [RNT Calls] Connecting to Microsoft Graph
+[2026-04-01 16:34:49] [WARN] [RNT Calls] Select-MgProfile not available in this SDK version; using default Graph profile.
+[2026-04-01 16:34:49] [INFO] [RNT Calls, Inc.] Connected. Tenant: RNT Calls, Inc. AppId: f45ddef0-f613-4c3d-92d1-6b80bf00e6cf AuthType: AppOnly
+[2026-04-01 16:34:50] [INFO] [RNT Calls, Inc.] Resolved role: Global Administrator [665d1f49-2dc4-4f97-a53c-efec4b02cf4f]
+[2026-04-01 16:34:50] [INFO] [RNT Calls, Inc.] Current Global Administrator role member count: 2
+[2026-04-01 16:34:50] [INFO] [RNT Calls, Inc.] Break-glass group not found: ActaMSP Break Glass
+[2026-04-01 16:34:50] [INFO] [RNT Calls, Inc.] DRY RUN: would create group 'ActaMSP Break Glass'
+[2026-04-01 16:34:50] [INFO] [RNT Calls, Inc.] Current break-glass group direct member count: 0
+[2026-04-01 16:34:50] [INFO] [RNT Calls, Inc.] DRY RUN: would create break-glass user 'actamsp-breakglass@RNTcalls1.onmicrosoft.com' with display name 'ActaMSP Break Glass Emergency Access'
+[2026-04-01 16:34:50] [INFO] [RNT Calls, Inc.] DRY RUN: would add 'actamsp-breakglass@RNTcalls1.onmicrosoft.com' [<dry-run-user>] to break-glass group 'ActaMSP Break Glass' [<dry-run-group>]
+[2026-04-01 16:34:50] [INFO] [RNT Calls, Inc.] DRY RUN: would assign Global Administrator to 'actamsp-breakglass@RNTcalls1.onmicrosoft.com' [<dry-run-user>]
+[2026-04-01 16:34:50] [INFO] [RNT Calls, Inc.] Tenant compliance complete. Action=CreatedGroup+CreatedUser+AddedUserToGroup+AssignedGlobalAdmin
+[2026-04-01 16:34:50] [INFO] [APEX Insurance Consultants] Connecting to Microsoft Graph
+[2026-04-01 16:34:52] [WARN] [APEX Insurance Consultants] Select-MgProfile not available in this SDK version; using default Graph profile.
+[2026-04-01 16:34:52] [INFO] [Apex Financial Services, Inc.] Connected. Tenant: Apex Financial Services, Inc. AppId: f45ddef0-f613-4c3d-92d1-6b80bf00e6cf AuthType: AppOnly
+[2026-04-01 16:34:53] [INFO] [Apex Financial Services, Inc.] Resolved role: Global Administrator [7591c230-7f81-4c72-a54a-607fa2392b82]
+[2026-04-01 16:34:54] [INFO] [Apex Financial Services, Inc.] Current Global Administrator role member count: 2
+[2026-04-01 16:34:54] [INFO] [Apex Financial Services, Inc.] Break-glass group not found: ActaMSP Break Glass
+[2026-04-01 16:34:54] [INFO] [Apex Financial Services, Inc.] DRY RUN: would create group 'ActaMSP Break Glass'
+[2026-04-01 16:34:54] [INFO] [Apex Financial Services, Inc.] Current break-glass group direct member count: 0
+[2026-04-01 16:34:54] [INFO] [Apex Financial Services, Inc.] DRY RUN: would create break-glass user 'actamsp-breakglass@apexinsuranceconsultants.onmicrosoft.com' with display name 'ActaMSP Break Glass Emergency Access'
+[2026-04-01 16:34:54] [INFO] [Apex Financial Services, Inc.] DRY RUN: would add 'actamsp-breakglass@apexinsuranceconsultants.onmicrosoft.com' [<dry-run-user>] to break-glass group 'ActaMSP Break Glass' [<dry-run-group>]
+[2026-04-01 16:34:54] [INFO] [Apex Financial Services, Inc.] DRY RUN: would assign Global Administrator to 'actamsp-breakglass@apexinsuranceconsultants.onmicrosoft.com' [<dry-run-user>]
+[2026-04-01 16:34:54] [INFO] [Apex Financial Services, Inc.] Tenant compliance complete. Action=CreatedGroup+CreatedUser+AddedUserToGroup+AssignedGlobalAdmin
+[2026-04-01 16:34:54] [INFO] [Michael Thompson CPA Firm] Connecting to Microsoft Graph
+[2026-04-01 16:34:56] [WARN] [Michael Thompson CPA Firm] Select-MgProfile not available in this SDK version; using default Graph profile.
+[2026-04-01 16:34:56] [INFO] [Michael Thompson CPA] Connected. Tenant: Michael Thompson CPA AppId: f45ddef0-f613-4c3d-92d1-6b80bf00e6cf AuthType: AppOnly
+[2026-04-01 16:34:57] [INFO] [Michael Thompson CPA] Resolved role: Global Administrator [471f20e3-b157-45b4-8ee3-fdc308ce44e4]
+[2026-04-01 16:34:57] [INFO] [Michael Thompson CPA] Current Global Administrator role member count: 4
+[2026-04-01 16:34:57] [INFO] [Michael Thompson CPA] Break-glass group not found: ActaMSP Break Glass
+[2026-04-01 16:34:57] [INFO] [Michael Thompson CPA] DRY RUN: would create group 'ActaMSP Break Glass'
+[2026-04-01 16:34:57] [INFO] [Michael Thompson CPA] Current break-glass group direct member count: 0
+[2026-04-01 16:34:58] [INFO] [Michael Thompson CPA] DRY RUN: would create break-glass user 'actamsp-breakglass@mthompsoncpa1.onmicrosoft.com' with display name 'ActaMSP Break Glass Emergency Access'
+[2026-04-01 16:34:58] [INFO] [Michael Thompson CPA] DRY RUN: would add 'actamsp-breakglass@mthompsoncpa1.onmicrosoft.com' [<dry-run-user>] to break-glass group 'ActaMSP Break Glass' [<dry-run-group>]
+[2026-04-01 16:34:58] [INFO] [Michael Thompson CPA] DRY RUN: would assign Global Administrator to 'actamsp-breakglass@mthompsoncpa1.onmicrosoft.com' [<dry-run-user>]
+[2026-04-01 16:34:58] [INFO] [Michael Thompson CPA] Tenant compliance complete. Action=CreatedGroup+CreatedUser+AddedUserToGroup+AssignedGlobalAdmin
+[2026-04-01 16:34:58] [INFO] [St. Mark Catholic Church] Connecting to Microsoft Graph
+[2026-04-01 16:35:00] [WARN] [St. Mark Catholic Church] Select-MgProfile not available in this SDK version; using default Graph profile.
+[2026-04-01 16:35:00] [INFO] [St. Mark Catholic Church] Connected. Tenant: St. Mark Catholic Church AppId: f45ddef0-f613-4c3d-92d1-6b80bf00e6cf AuthType: AppOnly
+[2026-04-01 16:35:01] [INFO] [St. Mark Catholic Church] Resolved role: Global Administrator [30f6f009-1454-4500-810c-ff1de4970263]
+[2026-04-01 16:35:01] [INFO] [St. Mark Catholic Church] Current Global Administrator role member count: 2
+[2026-04-01 16:35:01] [INFO] [St. Mark Catholic Church] Break-glass group not found: ActaMSP Break Glass
+[2026-04-01 16:35:01] [INFO] [St. Mark Catholic Church] DRY RUN: would create group 'ActaMSP Break Glass'
+[2026-04-01 16:35:01] [INFO] [St. Mark Catholic Church] Current break-glass group direct member count: 0
+[2026-04-01 16:35:01] [INFO] [St. Mark Catholic Church] DRY RUN: would create break-glass user 'actamsp-breakglass@stmarkdenton.onmicrosoft.com' with display name 'ActaMSP Break Glass Emergency Access'
+[2026-04-01 16:35:01] [INFO] [St. Mark Catholic Church] DRY RUN: would add 'actamsp-breakglass@stmarkdenton.onmicrosoft.com' [<dry-run-user>] to break-glass group 'ActaMSP Break Glass' [<dry-run-group>]
+[2026-04-01 16:35:01] [INFO] [St. Mark Catholic Church] DRY RUN: would assign Global Administrator to 'actamsp-breakglass@stmarkdenton.onmicrosoft.com' [<dry-run-user>]
+[2026-04-01 16:35:01] [INFO] [St. Mark Catholic Church] Tenant compliance complete. Action=CreatedGroup+CreatedUser+AddedUserToGroup+AssignedGlobalAdmin
+[2026-04-01 16:35:01] [INFO] [City of Palmer] Connecting to Microsoft Graph
+[2026-04-01 16:35:03] [WARN] [City of Palmer] Select-MgProfile not available in this SDK version; using default Graph profile.
+[2026-04-01 16:35:03] [INFO] [City of Palmer] Connected. Tenant: City of Palmer AppId: f45ddef0-f613-4c3d-92d1-6b80bf00e6cf AuthType: AppOnly
+[2026-04-01 16:35:04] [INFO] [City of Palmer] Resolved role: Global Administrator [796ab9c3-9c31-44cb-8de8-17e965f2b23c]
+[2026-04-01 16:35:04] [INFO] [City of Palmer] Current Global Administrator role member count: 2
+[2026-04-01 16:35:04] [INFO] [City of Palmer] Break-glass group not found: ActaMSP Break Glass
+[2026-04-01 16:35:04] [INFO] [City of Palmer] DRY RUN: would create group 'ActaMSP Break Glass'
+[2026-04-01 16:35:04] [INFO] [City of Palmer] Current break-glass group direct member count: 0
+[2026-04-01 16:35:05] [INFO] [City of Palmer] DRY RUN: would create break-glass user 'actamsp-breakglass@Palmertx.onmicrosoft.com' with display name 'ActaMSP Break Glass Emergency Access'
+[2026-04-01 16:35:05] [INFO] [City of Palmer] DRY RUN: would add 'actamsp-breakglass@Palmertx.onmicrosoft.com' [<dry-run-user>] to break-glass group 'ActaMSP Break Glass' [<dry-run-group>]
+[2026-04-01 16:35:05] [INFO] [City of Palmer] DRY RUN: would assign Global Administrator to 'actamsp-breakglass@Palmertx.onmicrosoft.com' [<dry-run-user>]
+[2026-04-01 16:35:05] [INFO] [City of Palmer] Tenant compliance complete. Action=CreatedGroup+CreatedUser+AddedUserToGroup+AssignedGlobalAdmin
+[2026-04-01 16:35:05] [INFO] [Sumitomo Precision USA] Connecting to Microsoft Graph
+[2026-04-01 16:35:06] [WARN] [Sumitomo Precision USA] Select-MgProfile not available in this SDK version; using default Graph profile.
+[2026-04-01 16:35:06] [INFO] [Sumitomo Precision] Connected. Tenant: Sumitomo Precision AppId: f45ddef0-f613-4c3d-92d1-6b80bf00e6cf AuthType: AppOnly
+[2026-04-01 16:35:07] [INFO] [Sumitomo Precision] Resolved role: Global Administrator [42b6083c-47bd-4f8f-8cad-f28bbd37f63f]
+[2026-04-01 16:35:07] [INFO] [Sumitomo Precision] Current Global Administrator role member count: 3
+[2026-04-01 16:35:07] [INFO] [Sumitomo Precision] Break-glass group not found: ActaMSP Break Glass
+[2026-04-01 16:35:07] [INFO] [Sumitomo Precision] DRY RUN: would create group 'ActaMSP Break Glass'
+[2026-04-01 16:35:07] [INFO] [Sumitomo Precision] Current break-glass group direct member count: 0
+[2026-04-01 16:35:08] [INFO] [Sumitomo Precision] DRY RUN: would create break-glass user 'actamsp-breakglass@sumitomousa.onmicrosoft.com' with display name 'ActaMSP Break Glass Emergency Access'
+[2026-04-01 16:35:08] [INFO] [Sumitomo Precision] DRY RUN: would add 'actamsp-breakglass@sumitomousa.onmicrosoft.com' [<dry-run-user>] to break-glass group 'ActaMSP Break Glass' [<dry-run-group>]
+[2026-04-01 16:35:08] [INFO] [Sumitomo Precision] DRY RUN: would assign Global Administrator to 'actamsp-breakglass@sumitomousa.onmicrosoft.com' [<dry-run-user>]
+[2026-04-01 16:35:08] [INFO] [Sumitomo Precision] Tenant compliance complete. Action=CreatedGroup+CreatedUser+AddedUserToGroup+AssignedGlobalAdmin
+[2026-04-01 16:35:08] [INFO] [Mid_Arkansas Utilities] Connecting to Microsoft Graph
+[2026-04-01 16:35:10] [WARN] [Mid_Arkansas Utilities] Select-MgProfile not available in this SDK version; using default Graph profile.
+[2026-04-01 16:35:10] [INFO] [Mid-Ark Utilities] Connected. Tenant: Mid-Ark Utilities AppId: f45ddef0-f613-4c3d-92d1-6b80bf00e6cf AuthType: AppOnly
+[2026-04-01 16:35:11] [INFO] [Mid-Ark Utilities] Resolved role: Global Administrator [6bc8ba90-49fa-4327-8722-39452aca77e3]
+[2026-04-01 16:35:11] [INFO] [Mid-Ark Utilities] Current Global Administrator role member count: 2
+[2026-04-01 16:35:11] [INFO] [Mid-Ark Utilities] Break-glass group not found: ActaMSP Break Glass
+[2026-04-01 16:35:11] [INFO] [Mid-Ark Utilities] DRY RUN: would create group 'ActaMSP Break Glass'
+[2026-04-01 16:35:11] [INFO] [Mid-Ark Utilities] Current break-glass group direct member count: 0
+[2026-04-01 16:35:11] [INFO] [Mid-Ark Utilities] DRY RUN: would create break-glass user 'actamsp-breakglass@mauwater.onmicrosoft.com' with display name 'ActaMSP Break Glass Emergency Access'
+[2026-04-01 16:35:11] [INFO] [Mid-Ark Utilities] DRY RUN: would add 'actamsp-breakglass@mauwater.onmicrosoft.com' [<dry-run-user>] to break-glass group 'ActaMSP Break Glass' [<dry-run-group>]
+[2026-04-01 16:35:11] [INFO] [Mid-Ark Utilities] DRY RUN: would assign Global Administrator to 'actamsp-breakglass@mauwater.onmicrosoft.com' [<dry-run-user>]
+[2026-04-01 16:35:11] [INFO] [Mid-Ark Utilities] Tenant compliance complete. Action=CreatedGroup+CreatedUser+AddedUserToGroup+AssignedGlobalAdmin
+[2026-04-01 16:35:11] [INFO] [Fort Smith Animal Haven] Connecting to Microsoft Graph
+[2026-04-01 16:35:13] [WARN] [Fort Smith Animal Haven] Select-MgProfile not available in this SDK version; using default Graph profile.
+[2026-04-01 16:35:13] [INFO] [Fort Smith Animal Haven] Connected. Tenant: Fort Smith Animal Haven AppId: f45ddef0-f613-4c3d-92d1-6b80bf00e6cf AuthType: AppOnly
+[2026-04-01 16:35:14] [INFO] [Fort Smith Animal Haven] Resolved role: Global Administrator [0df1057a-e170-4f3f-b7de-dbe27c54dc7e]
+[2026-04-01 16:35:15] [INFO] [Fort Smith Animal Haven] Current Global Administrator role member count: 2
+[2026-04-01 16:35:15] [INFO] [Fort Smith Animal Haven] Break-glass group not found: ActaMSP Break Glass
+[2026-04-01 16:35:15] [INFO] [Fort Smith Animal Haven] DRY RUN: would create group 'ActaMSP Break Glass'
+[2026-04-01 16:35:15] [INFO] [Fort Smith Animal Haven] Current break-glass group direct member count: 0
+[2026-04-01 16:35:15] [INFO] [Fort Smith Animal Haven] DRY RUN: would create break-glass user 'actamsp-breakglass@FtSmithAH1.onmicrosoft.com' with display name 'ActaMSP Break Glass Emergency Access'
+[2026-04-01 16:35:15] [INFO] [Fort Smith Animal Haven] DRY RUN: would add 'actamsp-breakglass@FtSmithAH1.onmicrosoft.com' [<dry-run-user>] to break-glass group 'ActaMSP Break Glass' [<dry-run-group>]
+[2026-04-01 16:35:15] [INFO] [Fort Smith Animal Haven] DRY RUN: would assign Global Administrator to 'actamsp-breakglass@FtSmithAH1.onmicrosoft.com' [<dry-run-user>]
+[2026-04-01 16:35:15] [INFO] [Fort Smith Animal Haven] Tenant compliance complete. Action=CreatedGroup+CreatedUser+AddedUserToGroup+AssignedGlobalAdmin
+[2026-04-01 16:35:15] [INFO] [Ronald McDonald House Charities of Arkansas] Connecting to Microsoft Graph
+[2026-04-01 16:35:17] [WARN] [Ronald McDonald House Charities of Arkansas] Select-MgProfile not available in this SDK version; using default Graph profile.
+[2026-04-01 16:35:17] [INFO] [Ronald McDonald House Arkansas & North Louisiana] Connected. Tenant: Ronald McDonald House Arkansas & North Louisiana AppId: f45ddef0-f613-4c3d-92d1-6b80bf00e6cf AuthType: AppOnly
+[2026-04-01 16:35:17] [INFO] [Ronald McDonald House Arkansas & North Louisiana] Resolved role: Global Administrator [7400da90-9a75-408f-9674-e9b895d4d87d]
+[2026-04-01 16:35:18] [INFO] [Ronald McDonald House Arkansas & North Louisiana] Current Global Administrator role member count: 2
+[2026-04-01 16:35:18] [INFO] [Ronald McDonald House Arkansas & North Louisiana] Break-glass group not found: ActaMSP Break Glass
+[2026-04-01 16:35:18] [INFO] [Ronald McDonald House Arkansas & North Louisiana] DRY RUN: would create group 'ActaMSP Break Glass'
+[2026-04-01 16:35:18] [INFO] [Ronald McDonald House Arkansas & North Louisiana] Current break-glass group direct member count: 0
+[2026-04-01 16:35:18] [INFO] [Ronald McDonald House Arkansas & North Louisiana] DRY RUN: would create break-glass user 'actamsp-breakglass@rmhclittlerock.onmicrosoft.com' with display name 'ActaMSP Break Glass Emergency Access'
+[2026-04-01 16:35:18] [INFO] [Ronald McDonald House Arkansas & North Louisiana] DRY RUN: would add 'actamsp-breakglass@rmhclittlerock.onmicrosoft.com' [<dry-run-user>] to break-glass group 'ActaMSP Break Glass' [<dry-run-group>]
+[2026-04-01 16:35:18] [INFO] [Ronald McDonald House Arkansas & North Louisiana] DRY RUN: would assign Global Administrator to 'actamsp-breakglass@rmhclittlerock.onmicrosoft.com' [<dry-run-user>]
+[2026-04-01 16:35:18] [INFO] [Ronald McDonald House Arkansas & North Louisiana] Tenant compliance complete. Action=CreatedGroup+CreatedUser+AddedUserToGroup+AssignedGlobalAdmin
+[2026-04-01 16:35:18] [INFO] [Business Insurance Consultants] Connecting to Microsoft Graph
+[2026-04-01 16:35:20] [WARN] [Business Insurance Consultants] Select-MgProfile not available in this SDK version; using default Graph profile.
+[2026-04-01 16:35:20] [INFO] [Business Insurance Consultants, Inc] Connected. Tenant: Business Insurance Consultants, Inc AppId: f45ddef0-f613-4c3d-92d1-6b80bf00e6cf AuthType: AppOnly
+[2026-04-01 16:35:21] [INFO] [Business Insurance Consultants, Inc] Resolved role: Global Administrator [3e88d969-a504-4972-8a19-b44f5e442949]
+[2026-04-01 16:35:21] [INFO] [Business Insurance Consultants, Inc] Current Global Administrator role member count: 2
+[2026-04-01 16:35:21] [INFO] [Business Insurance Consultants, Inc] Break-glass group not found: ActaMSP Break Glass
+[2026-04-01 16:35:21] [INFO] [Business Insurance Consultants, Inc] DRY RUN: would create group 'ActaMSP Break Glass'
+[2026-04-01 16:35:21] [INFO] [Business Insurance Consultants, Inc] Current break-glass group direct member count: 0
+[2026-04-01 16:35:21] [INFO] [Business Insurance Consultants, Inc] DRY RUN: would create break-glass user 'actamsp-breakglass@bicinsurance.onmicrosoft.com' with display name 'ActaMSP Break Glass Emergency Access'
+[2026-04-01 16:35:21] [INFO] [Business Insurance Consultants, Inc] DRY RUN: would add 'actamsp-breakglass@bicinsurance.onmicrosoft.com' [<dry-run-user>] to break-glass group 'ActaMSP Break Glass' [<dry-run-group>]
+[2026-04-01 16:35:21] [INFO] [Business Insurance Consultants, Inc] DRY RUN: would assign Global Administrator to 'actamsp-breakglass@bicinsurance.onmicrosoft.com' [<dry-run-user>]
+[2026-04-01 16:35:21] [INFO] [Business Insurance Consultants, Inc] Tenant compliance complete. Action=CreatedGroup+CreatedUser+AddedUserToGroup+AssignedGlobalAdmin
+[2026-04-01 16:35:21] [INFO] [Town of Bartonville] Connecting to Microsoft Graph
+[2026-04-01 16:35:23] [WARN] [Town of Bartonville] Select-MgProfile not available in this SDK version; using default Graph profile.
+[2026-04-01 16:35:24] [INFO] [Town of Bartonville] Connected. Tenant: Town of Bartonville AppId: f45ddef0-f613-4c3d-92d1-6b80bf00e6cf AuthType: AppOnly
+[2026-04-01 16:35:25] [INFO] [Town of Bartonville] Resolved role: Global Administrator [52f4a4eb-daa6-4983-a0aa-51121ab38548]
+[2026-04-01 16:35:25] [INFO] [Town of Bartonville] Current Global Administrator role member count: 2
+[2026-04-01 16:35:25] [INFO] [Town of Bartonville] Break-glass group not found: ActaMSP Break Glass
+[2026-04-01 16:35:25] [INFO] [Town of Bartonville] DRY RUN: would create group 'ActaMSP Break Glass'
+[2026-04-01 16:35:25] [INFO] [Town of Bartonville] Current break-glass group direct member count: 0
+[2026-04-01 16:35:25] [INFO] [Town of Bartonville] DRY RUN: would create break-glass user 'actamsp-breakglass@townofbartonville.onmicrosoft.com' with display name 'ActaMSP Break Glass Emergency Access'
+[2026-04-01 16:35:25] [INFO] [Town of Bartonville] DRY RUN: would add 'actamsp-breakglass@townofbartonville.onmicrosoft.com' [<dry-run-user>] to break-glass group 'ActaMSP Break Glass' [<dry-run-group>]
+[2026-04-01 16:35:25] [INFO] [Town of Bartonville] DRY RUN: would assign Global Administrator to 'actamsp-breakglass@townofbartonville.onmicrosoft.com' [<dry-run-user>]
+[2026-04-01 16:35:25] [INFO] [Town of Bartonville] Tenant compliance complete. Action=CreatedGroup+CreatedUser+AddedUserToGroup+AssignedGlobalAdmin
+[2026-04-01 16:35:25] [INFO] [Cathedral of Hope UCC] Connecting to Microsoft Graph
+[2026-04-01 16:35:27] [WARN] [Cathedral of Hope UCC] Select-MgProfile not available in this SDK version; using default Graph profile.
+[2026-04-01 16:35:28] [INFO] [Cathedral of Hope, Inc.] Connected. Tenant: Cathedral of Hope, Inc. AppId: f45ddef0-f613-4c3d-92d1-6b80bf00e6cf AuthType: AppOnly
+[2026-04-01 16:35:29] [INFO] [Cathedral of Hope, Inc.] Resolved role: Global Administrator [4b25ed47-d689-420e-9cf8-47f357c3d73a]
+[2026-04-01 16:35:29] [INFO] [Cathedral of Hope, Inc.] Current Global Administrator role member count: 3
+[2026-04-01 16:35:29] [INFO] [Cathedral of Hope, Inc.] Break-glass group not found: ActaMSP Break Glass
+[2026-04-01 16:35:29] [INFO] [Cathedral of Hope, Inc.] DRY RUN: would create group 'ActaMSP Break Glass'
+[2026-04-01 16:35:29] [INFO] [Cathedral of Hope, Inc.] Current break-glass group direct member count: 0
+[2026-04-01 16:35:29] [INFO] [Cathedral of Hope, Inc.] DRY RUN: would create break-glass user 'actamsp-breakglass@CathedralOfHope.onmicrosoft.com' with display name 'ActaMSP Break Glass Emergency Access'
+[2026-04-01 16:35:29] [INFO] [Cathedral of Hope, Inc.] DRY RUN: would add 'actamsp-breakglass@CathedralOfHope.onmicrosoft.com' [<dry-run-user>] to break-glass group 'ActaMSP Break Glass' [<dry-run-group>]
+[2026-04-01 16:35:29] [INFO] [Cathedral of Hope, Inc.] DRY RUN: would assign Global Administrator to 'actamsp-breakglass@CathedralOfHope.onmicrosoft.com' [<dry-run-user>]
+[2026-04-01 16:35:29] [INFO] [Cathedral of Hope, Inc.] Tenant compliance complete. Action=CreatedGroup+CreatedUser+AddedUserToGroup+AssignedGlobalAdmin
+[2026-04-01 16:35:29] [INFO] [Athens Municipal Water Authority] Connecting to Microsoft Graph
+[2026-04-01 16:35:31] [WARN] [Athens Municipal Water Authority] Select-MgProfile not available in this SDK version; using default Graph profile.
+[2026-04-01 16:35:31] [INFO] [Athens Municipal Water Authority] Connected. Tenant: Athens Municipal Water Authority AppId: f45ddef0-f613-4c3d-92d1-6b80bf00e6cf AuthType: AppOnly
+[2026-04-01 16:35:32] [INFO] [Athens Municipal Water Authority] Resolved role: Global Administrator [b1b90e1d-86ed-4d24-af7b-008051312319]
+[2026-04-01 16:35:32] [INFO] [Athens Municipal Water Authority] Current Global Administrator role member count: 3
+[2026-04-01 16:35:32] [INFO] [Athens Municipal Water Authority] Break-glass group not found: ActaMSP Break Glass
+[2026-04-01 16:35:32] [INFO] [Athens Municipal Water Authority] DRY RUN: would create group 'ActaMSP Break Glass'
+[2026-04-01 16:35:32] [INFO] [Athens Municipal Water Authority] Current break-glass group direct member count: 0
+[2026-04-01 16:35:32] [INFO] [Athens Municipal Water Authority] DRY RUN: would create break-glass user 'actamsp-breakglass@athenstxwater.onmicrosoft.com' with display name 'ActaMSP Break Glass Emergency Access'
+[2026-04-01 16:35:32] [INFO] [Athens Municipal Water Authority] DRY RUN: would add 'actamsp-breakglass@athenstxwater.onmicrosoft.com' [<dry-run-user>] to break-glass group 'ActaMSP Break Glass' [<dry-run-group>]
+[2026-04-01 16:35:32] [INFO] [Athens Municipal Water Authority] DRY RUN: would assign Global Administrator to 'actamsp-breakglass@athenstxwater.onmicrosoft.com' [<dry-run-user>]
+[2026-04-01 16:35:32] [INFO] [Athens Municipal Water Authority] Tenant compliance complete. Action=CreatedGroup+CreatedUser+AddedUserToGroup+AssignedGlobalAdmin
+[2026-04-01 16:35:32] [INFO] [Serve Denton] Connecting to Microsoft Graph
+[2026-04-01 16:35:34] [WARN] [Serve Denton] Select-MgProfile not available in this SDK version; using default Graph profile.
+[2026-04-01 16:35:35] [INFO] [Serve Denton] Connected. Tenant: Serve Denton AppId: f45ddef0-f613-4c3d-92d1-6b80bf00e6cf AuthType: AppOnly
+[2026-04-01 16:35:36] [INFO] [Serve Denton] Resolved role: Global Administrator [6705f211-290c-49b4-9488-1bccacd3004d]
+[2026-04-01 16:35:36] [INFO] [Serve Denton] Current Global Administrator role member count: 4
+[2026-04-01 16:35:36] [INFO] [Serve Denton] Break-glass group not found: ActaMSP Break Glass
+[2026-04-01 16:35:36] [INFO] [Serve Denton] DRY RUN: would create group 'ActaMSP Break Glass'
+[2026-04-01 16:35:36] [INFO] [Serve Denton] Current break-glass group direct member count: 0
+[2026-04-01 16:35:36] [INFO] [Serve Denton] DRY RUN: would create break-glass user 'actamsp-breakglass@ServeDenton01.onmicrosoft.com' with display name 'ActaMSP Break Glass Emergency Access'
+[2026-04-01 16:35:36] [INFO] [Serve Denton] DRY RUN: would add 'actamsp-breakglass@ServeDenton01.onmicrosoft.com' [<dry-run-user>] to break-glass group 'ActaMSP Break Glass' [<dry-run-group>]
+[2026-04-01 16:35:36] [INFO] [Serve Denton] DRY RUN: would assign Global Administrator to 'actamsp-breakglass@ServeDenton01.onmicrosoft.com' [<dry-run-user>]
+[2026-04-01 16:35:36] [INFO] [Serve Denton] Tenant compliance complete. Action=CreatedGroup+CreatedUser+AddedUserToGroup+AssignedGlobalAdmin
+[2026-04-01 16:35:36] [INFO] [Pacific Coast Mgmt (ADC) (PP)] Connecting to Microsoft Graph
+[2026-04-01 16:35:37] [ERROR] [Pacific Coast Mgmt (ADC) (PP)] Tenant compliance failed: AADSTS7000229: Audit app is not onboarded in this tenant (enterprise app/service principal missing). Run enterprise-app-onboard-all-partners.ps1 for this tenant. [Code=AADSTS7000229]
+[2026-04-01 16:35:37] [INFO] [City of Haslet] Connecting to Microsoft Graph
+[2026-04-01 16:35:38] [WARN] [City of Haslet] Select-MgProfile not available in this SDK version; using default Graph profile.
+[2026-04-01 16:35:39] [INFO] [City of Haslet] Connected. Tenant: City of Haslet AppId: f45ddef0-f613-4c3d-92d1-6b80bf00e6cf AuthType: AppOnly
+[2026-04-01 16:35:40] [INFO] [City of Haslet] Resolved role: Global Administrator [ff038a9a-0ff1-4e43-9c9b-ab5b6c62c531]
+[2026-04-01 16:35:40] [INFO] [City of Haslet] Current Global Administrator role member count: 2
+[2026-04-01 16:35:40] [INFO] [City of Haslet] Break-glass group not found: ActaMSP Break Glass
+[2026-04-01 16:35:40] [INFO] [City of Haslet] DRY RUN: would create group 'ActaMSP Break Glass'
+[2026-04-01 16:35:40] [INFO] [City of Haslet] Current break-glass group direct member count: 0
+[2026-04-01 16:35:40] [INFO] [City of Haslet] DRY RUN: would create break-glass user 'actamsp-breakglass@haslet.onmicrosoft.com' with display name 'ActaMSP Break Glass Emergency Access'
+[2026-04-01 16:35:40] [INFO] [City of Haslet] DRY RUN: would add 'actamsp-breakglass@haslet.onmicrosoft.com' [<dry-run-user>] to break-glass group 'ActaMSP Break Glass' [<dry-run-group>]
+[2026-04-01 16:35:40] [INFO] [City of Haslet] DRY RUN: would assign Global Administrator to 'actamsp-breakglass@haslet.onmicrosoft.com' [<dry-run-user>]
+[2026-04-01 16:35:40] [INFO] [City of Haslet] Tenant compliance complete. Action=CreatedGroup+CreatedUser+AddedUserToGroup+AssignedGlobalAdmin
+[2026-04-01 16:35:40] [INFO] [Hot Spring County 9-1-1] Connecting to Microsoft Graph
+[2026-04-01 16:35:42] [WARN] [Hot Spring County 9-1-1] Select-MgProfile not available in this SDK version; using default Graph profile.
+[2026-04-01 16:35:42] [INFO] [Hot Spring County 911] Connected. Tenant: Hot Spring County 911 AppId: f45ddef0-f613-4c3d-92d1-6b80bf00e6cf AuthType: AppOnly
+[2026-04-01 16:35:43] [INFO] [Hot Spring County 911] Resolved role: Global Administrator [6df65723-7126-43df-b1f3-82770a8d1033]
+[2026-04-01 16:35:43] [INFO] [Hot Spring County 911] Current Global Administrator role member count: 5
+[2026-04-01 16:35:44] [INFO] [Hot Spring County 911] Break-glass group not found: ActaMSP Break Glass
+[2026-04-01 16:35:44] [INFO] [Hot Spring County 911] DRY RUN: would create group 'ActaMSP Break Glass'
+[2026-04-01 16:35:44] [INFO] [Hot Spring County 911] Current break-glass group direct member count: 0
+[2026-04-01 16:35:44] [INFO] [Hot Spring County 911] DRY RUN: would create break-glass user 'actamsp-breakglass@hsc911.onmicrosoft.com' with display name 'ActaMSP Break Glass Emergency Access'
+[2026-04-01 16:35:44] [INFO] [Hot Spring County 911] DRY RUN: would add 'actamsp-breakglass@hsc911.onmicrosoft.com' [<dry-run-user>] to break-glass group 'ActaMSP Break Glass' [<dry-run-group>]
+[2026-04-01 16:35:44] [INFO] [Hot Spring County 911] DRY RUN: would assign Global Administrator to 'actamsp-breakglass@hsc911.onmicrosoft.com' [<dry-run-user>]
+[2026-04-01 16:35:44] [INFO] [Hot Spring County 911] Tenant compliance complete. Action=CreatedGroup+CreatedUser+AddedUserToGroup+AssignedGlobalAdmin
+[2026-04-01 16:35:44] [INFO] [MCE] Connecting to Microsoft Graph
+[2026-04-01 16:35:46] [WARN] [MCE] Select-MgProfile not available in this SDK version; using default Graph profile.
+[2026-04-01 16:35:46] [INFO] [McClelland Consulting Engineers] Connected. Tenant: McClelland Consulting Engineers AppId: f45ddef0-f613-4c3d-92d1-6b80bf00e6cf AuthType: AppOnly
+[2026-04-01 16:35:47] [INFO] [McClelland Consulting Engineers] Resolved role: Global Administrator [6a9d9cd8-fedb-4053-89a1-4a02ad3164e6]
+[2026-04-01 16:35:47] [INFO] [McClelland Consulting Engineers] Current Global Administrator role member count: 3
+[2026-04-01 16:35:47] [INFO] [McClelland Consulting Engineers] Break-glass group not found: ActaMSP Break Glass
+[2026-04-01 16:35:47] [INFO] [McClelland Consulting Engineers] DRY RUN: would create group 'ActaMSP Break Glass'
+[2026-04-01 16:35:47] [INFO] [McClelland Consulting Engineers] Current break-glass group direct member count: 0
+[2026-04-01 16:35:48] [INFO] [McClelland Consulting Engineers] DRY RUN: would create break-glass user 'actamsp-breakglass@mcclellandengineers.onmicrosoft.com' with display name 'ActaMSP Break Glass Emergency Access'
+[2026-04-01 16:35:48] [INFO] [McClelland Consulting Engineers] DRY RUN: would add 'actamsp-breakglass@mcclellandengineers.onmicrosoft.com' [<dry-run-user>] to break-glass group 'ActaMSP Break Glass' [<dry-run-group>]
+[2026-04-01 16:35:48] [INFO] [McClelland Consulting Engineers] DRY RUN: would assign Global Administrator to 'actamsp-breakglass@mcclellandengineers.onmicrosoft.com' [<dry-run-user>]
+[2026-04-01 16:35:48] [INFO] [McClelland Consulting Engineers] Tenant compliance complete. Action=CreatedGroup+CreatedUser+AddedUserToGroup+AssignedGlobalAdmin
+[2026-04-01 16:35:48] [INFO] [ROCKWALL CENTRAL APPRAISAL DISTRICT] Connecting to Microsoft Graph
+[2026-04-01 16:35:50] [WARN] [ROCKWALL CENTRAL APPRAISAL DISTRICT] Select-MgProfile not available in this SDK version; using default Graph profile.
+[2026-04-01 16:35:50] [INFO] [Rockwall CAD] Connected. Tenant: Rockwall CAD AppId: f45ddef0-f613-4c3d-92d1-6b80bf00e6cf AuthType: AppOnly
+[2026-04-01 16:35:51] [INFO] [Rockwall CAD] Resolved role: Global Administrator [b8f09cba-907e-4489-a563-65b7486ab870]
+[2026-04-01 16:35:52] [INFO] [Rockwall CAD] Current Global Administrator role member count: 3
+[2026-04-01 16:35:52] [INFO] [Rockwall CAD] Break-glass group not found: ActaMSP Break Glass
+[2026-04-01 16:35:52] [INFO] [Rockwall CAD] DRY RUN: would create group 'ActaMSP Break Glass'
+[2026-04-01 16:35:52] [INFO] [Rockwall CAD] Current break-glass group direct member count: 0
+[2026-04-01 16:35:52] [INFO] [Rockwall CAD] DRY RUN: would create break-glass user 'actamsp-breakglass@rockwallcad.onmicrosoft.com' with display name 'ActaMSP Break Glass Emergency Access'
+[2026-04-01 16:35:52] [INFO] [Rockwall CAD] DRY RUN: would add 'actamsp-breakglass@rockwallcad.onmicrosoft.com' [<dry-run-user>] to break-glass group 'ActaMSP Break Glass' [<dry-run-group>]
+[2026-04-01 16:35:52] [INFO] [Rockwall CAD] DRY RUN: would assign Global Administrator to 'actamsp-breakglass@rockwallcad.onmicrosoft.com' [<dry-run-user>]
+[2026-04-01 16:35:52] [INFO] [Rockwall CAD] Tenant compliance complete. Action=CreatedGroup+CreatedUser+AddedUserToGroup+AssignedGlobalAdmin
+[2026-04-01 16:35:52] [INFO] [Town of Double Oak] Connecting to Microsoft Graph
+[2026-04-01 16:35:53] [WARN] [Town of Double Oak] Select-MgProfile not available in this SDK version; using default Graph profile.
+[2026-04-01 16:35:53] [INFO] [Town of Double Oak] Connected. Tenant: Town of Double Oak AppId: f45ddef0-f613-4c3d-92d1-6b80bf00e6cf AuthType: AppOnly
+[2026-04-01 16:35:54] [INFO] [Town of Double Oak] Resolved role: Global Administrator [ab0223bb-34cc-4670-a769-2e054239794a]
+[2026-04-01 16:35:54] [INFO] [Town of Double Oak] Current Global Administrator role member count: 2
+[2026-04-01 16:35:54] [INFO] [Town of Double Oak] Break-glass group not found: ActaMSP Break Glass
+[2026-04-01 16:35:54] [INFO] [Town of Double Oak] DRY RUN: would create group 'ActaMSP Break Glass'
+[2026-04-01 16:35:54] [INFO] [Town of Double Oak] Current break-glass group direct member count: 0
+[2026-04-01 16:35:54] [INFO] [Town of Double Oak] DRY RUN: would create break-glass user 'actamsp-breakglass@doubleoak.onmicrosoft.com' with display name 'ActaMSP Break Glass Emergency Access'
+[2026-04-01 16:35:54] [INFO] [Town of Double Oak] DRY RUN: would add 'actamsp-breakglass@doubleoak.onmicrosoft.com' [<dry-run-user>] to break-glass group 'ActaMSP Break Glass' [<dry-run-group>]
+[2026-04-01 16:35:54] [INFO] [Town of Double Oak] DRY RUN: would assign Global Administrator to 'actamsp-breakglass@doubleoak.onmicrosoft.com' [<dry-run-user>]
+[2026-04-01 16:35:54] [INFO] [Town of Double Oak] Tenant compliance complete. Action=CreatedGroup+CreatedUser+AddedUserToGroup+AssignedGlobalAdmin
+[2026-04-01 16:35:54] [INFO] [Long Sales Agency] Connecting to Microsoft Graph
+[2026-04-01 16:35:56] [WARN] [Long Sales Agency] Select-MgProfile not available in this SDK version; using default Graph profile.
+[2026-04-01 16:35:56] [INFO] [Long Sales Agency] Connected. Tenant: Long Sales Agency AppId: f45ddef0-f613-4c3d-92d1-6b80bf00e6cf AuthType: AppOnly
+[2026-04-01 16:35:57] [INFO] [Long Sales Agency] Resolved role: Global Administrator [d0616294-4d13-4bfa-9394-0cd62b91760f]
+[2026-04-01 16:35:58] [INFO] [Long Sales Agency] Current Global Administrator role member count: 2
+[2026-04-01 16:35:58] [INFO] [Long Sales Agency] Break-glass group not found: ActaMSP Break Glass
+[2026-04-01 16:35:58] [INFO] [Long Sales Agency] DRY RUN: would create group 'ActaMSP Break Glass'
+[2026-04-01 16:35:58] [INFO] [Long Sales Agency] Current break-glass group direct member count: 0
+[2026-04-01 16:35:58] [INFO] [Long Sales Agency] DRY RUN: would create break-glass user 'actamsp-breakglass@longsalesagency.onmicrosoft.com' with display name 'ActaMSP Break Glass Emergency Access'
+[2026-04-01 16:35:58] [INFO] [Long Sales Agency] DRY RUN: would add 'actamsp-breakglass@longsalesagency.onmicrosoft.com' [<dry-run-user>] to break-glass group 'ActaMSP Break Glass' [<dry-run-group>]
+[2026-04-01 16:35:58] [INFO] [Long Sales Agency] DRY RUN: would assign Global Administrator to 'actamsp-breakglass@longsalesagency.onmicrosoft.com' [<dry-run-user>]
+[2026-04-01 16:35:58] [INFO] [Long Sales Agency] Tenant compliance complete. Action=CreatedGroup+CreatedUser+AddedUserToGroup+AssignedGlobalAdmin
+[2026-04-01 16:35:58] [INFO] [Robinson Diagnostics Inc.] Connecting to Microsoft Graph
+[2026-04-01 16:36:00] [WARN] [Robinson Diagnostics Inc.] Select-MgProfile not available in this SDK version; using default Graph profile.
+[2026-04-01 16:36:00] [INFO] [Robinson Diagnostics Inc.] Connected. Tenant: Robinson Diagnostics Inc. AppId: f45ddef0-f613-4c3d-92d1-6b80bf00e6cf AuthType: AppOnly
+[2026-04-01 16:36:01] [INFO] [Robinson Diagnostics Inc.] Resolved role: Global Administrator [ba1a1caf-9407-467c-be2f-45e0c2c8a83b]
+[2026-04-01 16:36:01] [INFO] [Robinson Diagnostics Inc.] Current Global Administrator role member count: 2
+[2026-04-01 16:36:01] [INFO] [Robinson Diagnostics Inc.] Break-glass group not found: ActaMSP Break Glass
+[2026-04-01 16:36:01] [INFO] [Robinson Diagnostics Inc.] DRY RUN: would create group 'ActaMSP Break Glass'
+[2026-04-01 16:36:01] [INFO] [Robinson Diagnostics Inc.] Current break-glass group direct member count: 0
+[2026-04-01 16:36:01] [INFO] [Robinson Diagnostics Inc.] DRY RUN: would create break-glass user 'actamsp-breakglass@rdilab1.onmicrosoft.com' with display name 'ActaMSP Break Glass Emergency Access'
+[2026-04-01 16:36:01] [INFO] [Robinson Diagnostics Inc.] DRY RUN: would add 'actamsp-breakglass@rdilab1.onmicrosoft.com' [<dry-run-user>] to break-glass group 'ActaMSP Break Glass' [<dry-run-group>]
+[2026-04-01 16:36:01] [INFO] [Robinson Diagnostics Inc.] DRY RUN: would assign Global Administrator to 'actamsp-breakglass@rdilab1.onmicrosoft.com' [<dry-run-user>]
+[2026-04-01 16:36:01] [INFO] [Robinson Diagnostics Inc.] Tenant compliance complete. Action=CreatedGroup+CreatedUser+AddedUserToGroup+AssignedGlobalAdmin
+[2026-04-01 16:36:01] [INFO] [Shults Law Firm] Connecting to Microsoft Graph
+[2026-04-01 16:36:03] [WARN] [Shults Law Firm] Select-MgProfile not available in this SDK version; using default Graph profile.
+[2026-04-01 16:36:03] [INFO] [Shults Law Firm] Connected. Tenant: Shults Law Firm AppId: f45ddef0-f613-4c3d-92d1-6b80bf00e6cf AuthType: AppOnly
+[2026-04-01 16:36:04] [INFO] [Shults Law Firm] Resolved role: Global Administrator [c84628c2-c6fe-4bcb-a274-8f20f8eee44e]
+[2026-04-01 16:36:04] [INFO] [Shults Law Firm] Current Global Administrator role member count: 2
+[2026-04-01 16:36:04] [INFO] [Shults Law Firm] Break-glass group not found: ActaMSP Break Glass
+[2026-04-01 16:36:04] [INFO] [Shults Law Firm] DRY RUN: would create group 'ActaMSP Break Glass'
+[2026-04-01 16:36:04] [INFO] [Shults Law Firm] Current break-glass group direct member count: 0
+[2026-04-01 16:36:04] [INFO] [Shults Law Firm] DRY RUN: would create break-glass user 'actamsp-breakglass@shultslaw1.onmicrosoft.com' with display name 'ActaMSP Break Glass Emergency Access'
+[2026-04-01 16:36:04] [INFO] [Shults Law Firm] DRY RUN: would add 'actamsp-breakglass@shultslaw1.onmicrosoft.com' [<dry-run-user>] to break-glass group 'ActaMSP Break Glass' [<dry-run-group>]
+[2026-04-01 16:36:04] [INFO] [Shults Law Firm] DRY RUN: would assign Global Administrator to 'actamsp-breakglass@shultslaw1.onmicrosoft.com' [<dry-run-user>]
+[2026-04-01 16:36:04] [INFO] [Shults Law Firm] Tenant compliance complete. Action=CreatedGroup+CreatedUser+AddedUserToGroup+AssignedGlobalAdmin
+[2026-04-01 16:36:04] [INFO] [Sinco Inc] Connecting to Microsoft Graph
+[2026-04-01 16:36:06] [WARN] [Sinco Inc] Select-MgProfile not available in this SDK version; using default Graph profile.
+[2026-04-01 16:36:07] [INFO] [SINCO Inc.] Connected. Tenant: SINCO Inc. AppId: f45ddef0-f613-4c3d-92d1-6b80bf00e6cf AuthType: AppOnly
+[2026-04-01 16:36:08] [INFO] [SINCO Inc.] Resolved role: Global Administrator [d9c330dc-5cd4-414e-b1ec-bbd8749c4a08]
+[2026-04-01 16:36:08] [INFO] [SINCO Inc.] Current Global Administrator role member count: 2
+[2026-04-01 16:36:08] [INFO] [SINCO Inc.] Break-glass group not found: ActaMSP Break Glass
+[2026-04-01 16:36:08] [INFO] [SINCO Inc.] DRY RUN: would create group 'ActaMSP Break Glass'
+[2026-04-01 16:36:08] [INFO] [SINCO Inc.] Current break-glass group direct member count: 0
+[2026-04-01 16:36:08] [INFO] [SINCO Inc.] DRY RUN: would create break-glass user 'actamsp-breakglass@SincoIncInc.onmicrosoft.com' with display name 'ActaMSP Break Glass Emergency Access'
+[2026-04-01 16:36:08] [INFO] [SINCO Inc.] DRY RUN: would add 'actamsp-breakglass@SincoIncInc.onmicrosoft.com' [<dry-run-user>] to break-glass group 'ActaMSP Break Glass' [<dry-run-group>]
+[2026-04-01 16:36:08] [INFO] [SINCO Inc.] DRY RUN: would assign Global Administrator to 'actamsp-breakglass@SincoIncInc.onmicrosoft.com' [<dry-run-user>]
+[2026-04-01 16:36:08] [INFO] [SINCO Inc.] Tenant compliance complete. Action=CreatedGroup+CreatedUser+AddedUserToGroup+AssignedGlobalAdmin
+[2026-04-01 16:36:08] [INFO] [Preston Road Church of Christ] Connecting to Microsoft Graph
+[2026-04-01 16:36:10] [WARN] [Preston Road Church of Christ] Select-MgProfile not available in this SDK version; using default Graph profile.
+[2026-04-01 16:36:10] [INFO] [Preston Road Church of Christ] Connected. Tenant: Preston Road Church of Christ AppId: f45ddef0-f613-4c3d-92d1-6b80bf00e6cf AuthType: AppOnly
+[2026-04-01 16:36:11] [INFO] [Preston Road Church of Christ] Resolved role: Global Administrator [d9a45338-7b11-4aaf-b907-2dc6714960df]
+[2026-04-01 16:36:11] [INFO] [Preston Road Church of Christ] Current Global Administrator role member count: 2
+[2026-04-01 16:36:11] [INFO] [Preston Road Church of Christ] Break-glass group not found: ActaMSP Break Glass
+[2026-04-01 16:36:11] [INFO] [Preston Road Church of Christ] DRY RUN: would create group 'ActaMSP Break Glass'
+[2026-04-01 16:36:11] [INFO] [Preston Road Church of Christ] Current break-glass group direct member count: 0
+[2026-04-01 16:36:12] [INFO] [Preston Road Church of Christ] DRY RUN: would create break-glass user 'actamsp-breakglass@PrestonRoadOrg.onmicrosoft.com' with display name 'ActaMSP Break Glass Emergency Access'
+[2026-04-01 16:36:12] [INFO] [Preston Road Church of Christ] DRY RUN: would add 'actamsp-breakglass@PrestonRoadOrg.onmicrosoft.com' [<dry-run-user>] to break-glass group 'ActaMSP Break Glass' [<dry-run-group>]
+[2026-04-01 16:36:12] [INFO] [Preston Road Church of Christ] DRY RUN: would assign Global Administrator to 'actamsp-breakglass@PrestonRoadOrg.onmicrosoft.com' [<dry-run-user>]
+[2026-04-01 16:36:12] [INFO] [Preston Road Church of Christ] Tenant compliance complete. Action=CreatedGroup+CreatedUser+AddedUserToGroup+AssignedGlobalAdmin
+[2026-04-01 16:36:12] [INFO] [JACKSONVILLE STEEL] Connecting to Microsoft Graph
+[2026-04-01 16:36:13] [WARN] [JACKSONVILLE STEEL] Select-MgProfile not available in this SDK version; using default Graph profile.
+[2026-04-01 16:36:14] [INFO] [Jacksonville Steel, Inc.] Connected. Tenant: Jacksonville Steel, Inc. AppId: f45ddef0-f613-4c3d-92d1-6b80bf00e6cf AuthType: AppOnly
+[2026-04-01 16:36:15] [INFO] [Jacksonville Steel, Inc.] Resolved role: Global Administrator [4a6d6227-d7c5-437d-9ad8-266edc5e1836]
+[2026-04-01 16:36:15] [INFO] [Jacksonville Steel, Inc.] Current Global Administrator role member count: 3
+[2026-04-01 16:36:15] [INFO] [Jacksonville Steel, Inc.] Break-glass group not found: ActaMSP Break Glass
+[2026-04-01 16:36:15] [INFO] [Jacksonville Steel, Inc.] DRY RUN: would create group 'ActaMSP Break Glass'
+[2026-04-01 16:36:15] [INFO] [Jacksonville Steel, Inc.] Current break-glass group direct member count: 0
+[2026-04-01 16:36:15] [INFO] [Jacksonville Steel, Inc.] DRY RUN: would create break-glass user 'actamsp-breakglass@JaxSteel.onmicrosoft.com' with display name 'ActaMSP Break Glass Emergency Access'
+[2026-04-01 16:36:15] [INFO] [Jacksonville Steel, Inc.] DRY RUN: would add 'actamsp-breakglass@JaxSteel.onmicrosoft.com' [<dry-run-user>] to break-glass group 'ActaMSP Break Glass' [<dry-run-group>]
+[2026-04-01 16:36:15] [INFO] [Jacksonville Steel, Inc.] DRY RUN: would assign Global Administrator to 'actamsp-breakglass@JaxSteel.onmicrosoft.com' [<dry-run-user>]
+[2026-04-01 16:36:15] [INFO] [Jacksonville Steel, Inc.] Tenant compliance complete. Action=CreatedGroup+CreatedUser+AddedUserToGroup+AssignedGlobalAdmin
+[2026-04-01 16:36:15] [INFO] [Jackson Brown Palculict Architects] Connecting to Microsoft Graph
+[2026-04-01 16:36:17] [WARN] [Jackson Brown Palculict Architects] Select-MgProfile not available in this SDK version; using default Graph profile.
+[2026-04-01 16:36:18] [INFO] [Jackson, Brown, Palculict Architects] Connected. Tenant: Jackson, Brown, Palculict Architects AppId: f45ddef0-f613-4c3d-92d1-6b80bf00e6cf AuthType: AppOnly
+[2026-04-01 16:36:19] [INFO] [Jackson, Brown, Palculict Architects] Resolved role: Global Administrator [98b42668-42f7-46fa-b032-eba441b0a625]
+[2026-04-01 16:36:19] [INFO] [Jackson, Brown, Palculict Architects] Current Global Administrator role member count: 3
+[2026-04-01 16:36:19] [INFO] [Jackson, Brown, Palculict Architects] Break-glass group not found: ActaMSP Break Glass
+[2026-04-01 16:36:19] [INFO] [Jackson, Brown, Palculict Architects] DRY RUN: would create group 'ActaMSP Break Glass'
+[2026-04-01 16:36:19] [INFO] [Jackson, Brown, Palculict Architects] Current break-glass group direct member count: 0
+[2026-04-01 16:36:19] [INFO] [Jackson, Brown, Palculict Architects] DRY RUN: would create break-glass user 'actamsp-breakglass@jbparchitects.onmicrosoft.com' with display name 'ActaMSP Break Glass Emergency Access'
+[2026-04-01 16:36:19] [INFO] [Jackson, Brown, Palculict Architects] DRY RUN: would add 'actamsp-breakglass@jbparchitects.onmicrosoft.com' [<dry-run-user>] to break-glass group 'ActaMSP Break Glass' [<dry-run-group>]
+[2026-04-01 16:36:19] [INFO] [Jackson, Brown, Palculict Architects] DRY RUN: would assign Global Administrator to 'actamsp-breakglass@jbparchitects.onmicrosoft.com' [<dry-run-user>]
+[2026-04-01 16:36:19] [INFO] [Jackson, Brown, Palculict Architects] Tenant compliance complete. Action=CreatedGroup+CreatedUser+AddedUserToGroup+AssignedGlobalAdmin
+[2026-04-01 16:36:19] [INFO] [Building Bridges Developmental and Community Services Inc.] Connecting to Microsoft Graph
+[2026-04-01 16:36:21] [WARN] [Building Bridges Developmental and Community Services Inc.] Select-MgProfile not available in this SDK version; using default Graph profile.
+[2026-04-01 16:36:21] [INFO] [Building Bridges Developmental Services] Connected. Tenant: Building Bridges Developmental Services AppId: f45ddef0-f613-4c3d-92d1-6b80bf00e6cf AuthType: AppOnly
+[2026-04-01 16:36:22] [INFO] [Building Bridges Developmental Services] Resolved role: Global Administrator [c6c15623-a1c6-4344-826f-00359b59a500]
+[2026-04-01 16:36:22] [INFO] [Building Bridges Developmental Services] Current Global Administrator role member count: 3
+[2026-04-01 16:36:22] [INFO] [Building Bridges Developmental Services] Break-glass group not found: ActaMSP Break Glass
+[2026-04-01 16:36:22] [INFO] [Building Bridges Developmental Services] DRY RUN: would create group 'ActaMSP Break Glass'
+[2026-04-01 16:36:22] [INFO] [Building Bridges Developmental Services] Current break-glass group direct member count: 0
+[2026-04-01 16:36:23] [INFO] [Building Bridges Developmental Services] DRY RUN: would create break-glass user 'actamsp-breakglass@Buildingbridgesar.onmicrosoft.com' with display name 'ActaMSP Break Glass Emergency Access'
+[2026-04-01 16:36:23] [INFO] [Building Bridges Developmental Services] DRY RUN: would add 'actamsp-breakglass@Buildingbridgesar.onmicrosoft.com' [<dry-run-user>] to break-glass group 'ActaMSP Break Glass' [<dry-run-group>]
+[2026-04-01 16:36:23] [INFO] [Building Bridges Developmental Services] DRY RUN: would assign Global Administrator to 'actamsp-breakglass@Buildingbridgesar.onmicrosoft.com' [<dry-run-user>]
+[2026-04-01 16:36:23] [INFO] [Building Bridges Developmental Services] Tenant compliance complete. Action=CreatedGroup+CreatedUser+AddedUserToGroup+AssignedGlobalAdmin
+[2026-04-01 16:36:23] [INFO] Run summary:
+
+TenantName                                       Status  GroupName           MemberCount SoleMemberUserPrincipalName   
+----------                                       ------  ---------           ----------- ---------------------------   
+Access2Mobility                                  Success ActaMSP Break Glass           1 actamsp-breakglass@Access2M...
+Advanced Tree & Shrub Care                       Success ActaMSP Break Glass           1 actamsp-breakglass@Advanced...
+Alliance Rubber                                  Success ActaMSP Break Glass           1 actamsp-breakglass@alliance...
+Apex Financial Services, Inc.                    Success ActaMSP Break Glass           1 actamsp-breakglass@apexinsu...
+Athens Municipal Water Authority                 Success ActaMSP Break Glass           1 actamsp-breakglass@athenstx...
+AVCOR Construction                               Success ActaMSP Break Glass           1 actamsp-breakglass@avcor.on...
+Baim Law Firm                                    Success ActaMSP Break Glass           1 actamsp-breakglass@BaimLawP...
+Barham Architects, LLC                           Success ActaMSP Break Glass           1 actamsp-breakglass@barhamar...
+BBM, Inc                                         Success ActaMSP Break Glass           1 actamsp-breakglass@bbminc.o...
+Building Bridges Developmental Services          Success ActaMSP Break Glass           1 actamsp-breakglass@Building...
+Business Insurance Consultants, Inc              Success ActaMSP Break Glass           1 actamsp-breakglass@bicinsur...
+Cathedral of Hope, Inc.                          Success ActaMSP Break Glass           1 actamsp-breakglass@Cathedra...
+City of Haslet                                   Success ActaMSP Break Glass           1 actamsp-breakglass@haslet.o...
+City of Palmer                                   Success ActaMSP Break Glass           1 actamsp-breakglass@Palmertx...
+Craft Manufacturing and Tooling                  Success ActaMSP Break Glass           1 actamsp-breakglass@appriver...
+Dave Grundfest Company                           Success ActaMSP Break Glass           1 actamsp-breakglass@grundfes...
+Fort Smith Animal Haven                          Success ActaMSP Break Glass           1 actamsp-breakglass@FtSmithA...
+Gibbs Service Company, Inc.                      Success ActaMSP Break Glass           1 actamsp-breakglass@GibbsSer...
+Hart Construction                                Success ActaMSP Break Glass           1 actamsp-breakglass@hartconl...
+Hot Spring County 911                            Success ActaMSP Break Glass           1 actamsp-breakglass@hsc911.o...
+J.E. Allen Company                               Success ActaMSP Break Glass           1 actamsp-breakglass@jeallen1...
+Jackson, Brown, Palculict Architects             Success ActaMSP Break Glass           1 actamsp-breakglass@jbparchi...
+Jacksonville Steel, Inc.                         Success ActaMSP Break Glass           1 actamsp-breakglass@JaxSteel...
+Jeff Buie Used Cars                              Success ActaMSP Break Glass           1 actamsp-breakglass@jeffbuie...
+Long Sales Agency                                Success ActaMSP Break Glass           1 actamsp-breakglass@longsale...
+McClelland Consulting Engineers                  Success ActaMSP Break Glass           1 actamsp-breakglass@mcclella...
+McMurrey Federal Credit Union                    Success ActaMSP Break Glass           1 actamsp-breakglass@mcmurrey...
+Michael Thompson CPA                             Success ActaMSP Break Glass           1 actamsp-breakglass@mthompso...
+Mid-Ark Utilities                                Success ActaMSP Break Glass           1 actamsp-breakglass@mauwater...
+Pacific Coast Mgmt (ADC) (PP)                    Failed                                0                               
+Power Technology                                 Failed                                0                               
+Preston Road Church of Christ                    Success ActaMSP Break Glass           1 actamsp-breakglass@PrestonR...
+Proforma Horizon Total Source                    Success ActaMSP Break Glass           1 actamsp-breakglass@Proforma...
+Riverside Box Supply Co.                         Failed                                0                               
+RNT Calls, Inc.                                  Success ActaMSP Break Glass           1 actamsp-breakglass@RNTcalls...
+Robinson Diagnostics Inc.                        Success ActaMSP Break Glass           1 actamsp-breakglass@rdilab1....
+Rockwall CAD                                     Success ActaMSP Break Glass           1 actamsp-breakglass@rockwall...
+Roller Funeral Home                              Success ActaMSP Break Glass           1 actamsp-breakglass@Rfh1.onm...
+Ronald McDonald House Arkansas & North Louisiana Success ActaMSP Break Glass           1 actamsp-breakglass@rmhclitt...
+Serve Denton                                     Success ActaMSP Break Glass           1 actamsp-breakglass@ServeDen...
+Shults Law Firm                                  Success ActaMSP Break Glass           1 actamsp-breakglass@shultsla...
+SINCO Inc.                                       Success ActaMSP Break Glass           1 actamsp-breakglass@SincoInc...
+SJS and Company                                  Failed                                0                               
+SMA Architects                                   Failed                                0                               
+St. Mark Catholic Church                         Success ActaMSP Break Glass           1 actamsp-breakglass@stmarkde...
+Sumitomo Precision                               Success ActaMSP Break Glass           1 actamsp-breakglass@sumitomo...
+Town of Bartonville                              Success ActaMSP Break Glass           1 actamsp-breakglass@townofba...
+Town of Double Oak                               Success ActaMSP Break Glass           1 actamsp-breakglass@doubleoa...
+zLab                                             Success ActaMSP Break Glass           1 actamsp-breakglass@datamaxt...
+[2026-04-01 16:36:23] [ERROR] 5 tenant(s) failed.

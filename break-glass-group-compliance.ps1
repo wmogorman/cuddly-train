@@ -114,6 +114,7 @@ $script:ManagedGroupProperties = "id,displayName,description,groupTypes,security
 $script:BreakGlassGroupDescription = "Maintained by ActaMSP automation. Intended for a single emergency Global Administrator account."
 $script:BreakGlassUserAlias = "actamsp-breakglass"
 $script:BreakGlassUserDisplayName = "ActaMSP Break Glass Emergency Access"
+$script:BreakGlassInitialPasswordLength = 30
 $autoDiscoverTenantsEnabled = if ($PSBoundParameters.ContainsKey('AutoDiscoverTenants')) { [bool]$AutoDiscoverTenants } else { $true }
 
 function Write-Log {
@@ -998,7 +999,7 @@ function Test-LooksLikeGraphNotFound {
 }
 
 function New-StrongPassword {
-    param([int]$Length = 24)
+    param([int]$Length = 30)
 
     if ($Length -lt 12) {
         throw "Password length must be at least 12 characters."
@@ -1118,7 +1119,7 @@ function Resolve-EmptyGroupBreakGlassUserCandidate {
         }
     }
 
-    $generatedPassword = New-StrongPassword
+    $generatedPassword = New-StrongPassword -Length $script:BreakGlassInitialPasswordLength
     try {
         $newUser = Invoke-WithRetry -Tenant $TenantLabel -Operation "Create break-glass user" -Script {
             New-MgUser `
