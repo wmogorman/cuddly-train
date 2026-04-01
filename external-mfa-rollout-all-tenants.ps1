@@ -10,11 +10,10 @@
   Auto-discovery is only supported in app-only mode. Discovered tenant IDs are filtered to entries present in the JSON config.
 
   Group targeting model:
-  - wrapperGroupName remains the single enforcement target for EAM, CA, and auth-method exclusions.
+  - PilotGlobalAdmins uses wrapperGroupName as the enforcement target for EAM, CA, and auth-method exclusions.
   - existingPilotSourceGroupId / existingPilotSourceGroupName (or the legacy existingPilotGroup* keys) identify the
     maintained pilot source group whose users will be synced directly into the wrapper.
-  - finalSourceGroupIds (or the legacy finalTargetGroupIds key) identify the maintained final source groups whose
-    transitive users will be synced directly into the wrapper.
+  - FinalGroups uses finalSourceGroupIds (or the legacy finalTargetGroupIds key) directly for EAM, CA, and auth-method exclusions.
 #>
 
 [CmdletBinding()]

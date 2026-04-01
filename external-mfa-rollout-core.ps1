@@ -2,12 +2,11 @@
 .SYNOPSIS
   Configure External MFA rollout (Duo) in Entra ID:
    - Complete UCP migration
-   - Create wrapper group DMX-ExternalMFA-Users
-   - Nest "DMX Pilot Group" into wrapper
-   - Create External Authentication Method configuration (Graph beta)
-   - Target External method to wrapper group
-   - (Optional) Bulk-register External method for wrapper-group users
-   - Create Conditional Access policy requiring MFA for wrapper group
+   - PilotGlobalAdmins: maintain a wrapper group fed by a pilot source group
+   - FinalGroups: target the supplied final rollout groups directly
+   - Create or update the External Authentication Method configuration (Graph beta)
+   - (Optional) Bulk-register External method for the currently targeted users
+   - Create or update the Conditional Access policy requiring MFA for the current target groups
 
 .PARAMETER Name
   Display name for the External Authentication Method configuration (e.g. "Cisco Duo - External MFA")
@@ -102,6 +101,8 @@ param(
   [Parameter(Mandatory=$false)]
   [string]$ExistingPilotGroupName,
 
+  # PilotGlobalAdmins only: managed direct-user wrapper targeted by EAM/CA/auth-method exclusions.
+  # FinalGroups uses FinalTargetGroupIds directly instead.
   [Parameter(Mandatory=$false)]
   [string]$WrapperGroupName = "DMX-ExternalMFA-Users",
 
@@ -133,14 +134,14 @@ param(
   [bool]$DisableSystemPreferredMfa = $true
 
   ,
-  # Exclude the wrapper group from common Microsoft MFA methods so Conditional Access
-  # "require MFA" resolves to the external method for pilot users.
+  # Exclude the active enforcement target groups from common Microsoft MFA methods so Conditional Access
+  # "require MFA" resolves to the external method for the targeted users.
   [Parameter(Mandatory=$false)]
   [bool]$RestrictCommonMicrosoftMfaMethodsForWrapperGroup = $true,
 
-  # Authentication method configuration IDs to exclude the wrapper group from.
+  # Authentication method configuration IDs to exclude the active enforcement target groups from.
   # Strict external-only default blocks common Microsoft MFA methods. Override only if you intentionally
-  # want to allow additional Microsoft methods for a pilot.
+  # want to allow additional Microsoft methods for the rollout target users.
   [Parameter(Mandatory=$false)]
   [string[]]$WrapperGroupExcludedMethodIds = @(
     "microsoftAuthenticator",
@@ -150,7 +151,7 @@ param(
     "hardwareOath"
   ),
 
-  # Optional: bulk-register the external auth method for transitive user members of the wrapper group.
+  # Optional: bulk-register the external auth method for transitive user members of the current enforcement target groups.
   # This adds the per-user externalAuthenticationMethod registration (idempotent) but does not remove other registrations.
   [Parameter(Mandatory=$false)]
   [bool]$BulkRegisterExternalAuthMethodForWrapperGroupUsers = $false,
@@ -491,6 +492,31 @@ function Test-ExternalAuthMethodConfigIncludesGroup {
   ).Count -gt 0
 }
 
+function Get-ExternalAuthMethodConfigIncludedGroupIds {
+  param([Parameter(Mandatory=$true)]$Configuration)
+
+  return @(
+    Get-ExternalAuthMethodIncludeTargets -Configuration $Configuration |
+      Where-Object {
+        $targetType = [string](Get-GraphMemberValue -Object $_ -Name "targetType")
+        $idValue = [string](Get-GraphMemberValue -Object $_ -Name "id")
+        ($targetType -eq "group") -and (-not [string]::IsNullOrWhiteSpace($idValue))
+      } |
+      ForEach-Object { [string](Get-GraphMemberValue -Object $_ -Name "id") } |
+      Sort-Object -Unique
+  )
+}
+
+function Test-ExternalAuthMethodConfigTargetsExactGroups {
+  param(
+    [Parameter(Mandatory=$true)]$Configuration,
+    [Parameter(Mandatory=$false)][string[]]$GroupIds
+  )
+
+  $currentGroupIds = @(Get-ExternalAuthMethodConfigIncludedGroupIds -Configuration $Configuration)
+  return (Test-StringArraySetEqual -Expected $GroupIds -Actual $currentGroupIds)
+}
+
 function Test-ExternalAuthMethodConfigIncludesAllUsers {
   param([Parameter(Mandatory=$true)]$Configuration)
 
@@ -586,25 +612,52 @@ function Add-UserExternalAuthMethodRegistration {
   } | Out-Null
 }
 
-function Invoke-BulkRegisterExternalAuthMethodForWrapperGroupUsers {
+function Invoke-BulkRegisterExternalAuthMethodForTargetGroupsUsers {
   param(
-    [Parameter(Mandatory=$true)][string]$WrapperGroupId,
+    [Parameter(Mandatory=$true)][object[]]$TargetGroups,
     [Parameter(Mandatory=$true)][string]$ConfigurationId,
     [Parameter(Mandatory=$true)][string]$ConfigurationDisplayName,
     [Parameter(Mandatory=$true)][bool]$SkipDisabledUsers,
     [Parameter(Mandatory=$true)][bool]$IncludeGuestUsers
   )
 
-  $users = @()
-  try {
-    $users = @(Get-GroupTransitiveUsers -GroupId $WrapperGroupId)
-  }
-  catch {
-    throw "Could not enumerate transitive users in wrapper group '$WrapperGroupId'. Details: $($_.Exception.Message)"
+  $resolvedTargetGroups = @(
+    $TargetGroups |
+      Where-Object { $_ -and -not [string]::IsNullOrWhiteSpace([string](Get-GraphMemberValue -Object $_ -Name "id")) } |
+      Sort-Object { [string](Get-GraphMemberValue -Object $_ -Name "id") } -Unique
+  )
+  if ($resolvedTargetGroups.Count -eq 0) {
+    throw "At least one target group with an id is required for bulk external auth registration."
   }
 
+  $usersById = @{}
+  foreach ($targetGroup in $resolvedTargetGroups) {
+    $targetGroupId = [string](Get-GraphMemberValue -Object $targetGroup -Name "id")
+    $targetGroupLabel = [string](Get-GraphMemberValue -Object $targetGroup -Name "displayName")
+    if ([string]::IsNullOrWhiteSpace($targetGroupLabel)) {
+      $targetGroupLabel = $targetGroupId
+    }
+
+    try {
+      $groupUsers = @(Get-GroupTransitiveUsers -GroupId $targetGroupId)
+      Write-Host "   Target group '$targetGroupLabel' contributes $($groupUsers.Count) transitive user(s)." -ForegroundColor Green
+    }
+    catch {
+      throw "Could not enumerate transitive users in target group '$targetGroupLabel' [$targetGroupId]. Details: $($_.Exception.Message)"
+    }
+
+    foreach ($u in $groupUsers) {
+      if ([string]::IsNullOrWhiteSpace([string]$u.Id)) {
+        continue
+      }
+
+      $usersById[[string]$u.Id] = $u
+    }
+  }
+
+  $users = @($usersById.Values)
   if ($users.Count -eq 0) {
-    Write-Host "   No transitive user members found in wrapper group." -ForegroundColor Yellow
+    Write-Host "   No transitive user members found in the targeted groups." -ForegroundColor Yellow
     return
   }
 
@@ -701,21 +754,26 @@ function Get-AuthenticationMethodConfigurationsCollection {
   throw ("Failed to query authentication method configurations. Attempts: {0}" -f ($errors -join " || "))
 }
 
-# Adds/removes a wrapper-group exclusion on selected auth method policy configs, without deleting user registrations.
-function Set-WrapperGroupExclusionOnAuthMethodConfigs {
+# Adds/removes target-group exclusions on selected auth method policy configs, without deleting user registrations.
+function Set-TargetGroupExclusionsOnAuthMethodConfigs {
   param(
-    [Parameter(Mandatory=$true)][string]$WrapperGroupId,
+    [Parameter(Mandatory=$true)][string[]]$TargetGroupIds,
     [Parameter(Mandatory=$true)][string[]]$MethodIds,
     [Parameter(Mandatory=$true)][ValidateSet("Add","Remove")][string]$Mode
   )
 
-  if ([string]::IsNullOrWhiteSpace($WrapperGroupId)) {
-    throw "WrapperGroupId is required."
+  $requestedGroupIds = @(
+    ConvertTo-StringArray -Value $TargetGroupIds |
+      Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } |
+      Sort-Object -Unique
+  )
+  if ($requestedGroupIds.Count -eq 0) {
+    throw "At least one TargetGroupId is required."
   }
 
   $requestedIds = @($MethodIds | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
   if ($requestedIds.Count -eq 0) {
-    Write-Host "   No authentication method IDs were specified for wrapper-group exclusions." -ForegroundColor Yellow
+    Write-Host "   No authentication method IDs were specified for target-group exclusions." -ForegroundColor Yellow
     return
   }
 
@@ -753,20 +811,24 @@ function Set-WrapperGroupExclusionOnAuthMethodConfigs {
       $currentExcludeTargets = @(Get-GraphMemberValue -Object $config -Name "excludeTargets")
     }
 
-    $groupExcluded = @(
+    $currentlyExcludedGroupIds = @(
       $currentExcludeTargets | Where-Object {
         $targetType = [string](Get-GraphMemberValue -Object $_ -Name "targetType")
         $idVal = [string](Get-GraphMemberValue -Object $_ -Name "id")
-        ($targetType -eq "group") -and ($idVal -eq $WrapperGroupId)
-      }
-    ).Count -gt 0
+        ($targetType -eq "group") -and (-not [string]::IsNullOrWhiteSpace($idVal))
+      } | ForEach-Object {
+        [string](Get-GraphMemberValue -Object $_ -Name "id")
+      } | Sort-Object -Unique
+    )
+    $missingRequestedGroupIds = @($requestedGroupIds | Where-Object { $currentlyExcludedGroupIds -notcontains $_ })
+    $removableRequestedGroupIds = @($requestedGroupIds | Where-Object { $currentlyExcludedGroupIds -contains $_ })
 
-    if ($Mode -eq "Add" -and $groupExcluded) {
-      Write-Host "   Auth method '$configId' already excludes wrapper group." -ForegroundColor Green
+    if ($Mode -eq "Add" -and $missingRequestedGroupIds.Count -eq 0) {
+      Write-Host "   Auth method '$configId' already excludes the requested target groups." -ForegroundColor Green
       continue
     }
-    if ($Mode -eq "Remove" -and -not $groupExcluded) {
-      Write-Host "   Auth method '$configId' does not exclude wrapper group; nothing to remove." -ForegroundColor Green
+    if ($Mode -eq "Remove" -and $removableRequestedGroupIds.Count -eq 0) {
+      Write-Host "   Auth method '$configId' does not exclude the requested target groups; nothing to remove." -ForegroundColor Green
       continue
     }
 
@@ -774,10 +836,10 @@ function Set-WrapperGroupExclusionOnAuthMethodConfigs {
     foreach ($target in $currentExcludeTargets) {
       $targetType = [string](Get-GraphMemberValue -Object $target -Name "targetType")
       $idVal = [string](Get-GraphMemberValue -Object $target -Name "id")
-      $isWrapperTarget =
-        ($targetType -eq "group") -and ($idVal -eq $WrapperGroupId)
+      $isRequestedTarget =
+        ($targetType -eq "group") -and ($removableRequestedGroupIds -contains $idVal)
 
-      if ($Mode -eq "Remove" -and $isWrapperTarget) {
+      if ($Mode -eq "Remove" -and $isRequestedTarget) {
         continue
       }
 
@@ -796,9 +858,11 @@ function Set-WrapperGroupExclusionOnAuthMethodConfigs {
     }
 
     if ($Mode -eq "Add") {
-      $newExcludeTargets += @{
-        targetType = "group"
-        id         = $WrapperGroupId
+      foreach ($groupId in $missingRequestedGroupIds) {
+        $newExcludeTargets += @{
+          targetType = "group"
+          id         = $groupId
+        }
       }
     }
 
@@ -810,13 +874,13 @@ function Set-WrapperGroupExclusionOnAuthMethodConfigs {
       $patchBody["@odata.type"] = $odataTypeValue
     }
 
-    $verb = if ($Mode -eq "Add") { "Add wrapper-group exclusion" } else { "Remove wrapper-group exclusion" }
+    $verb = if ($Mode -eq "Add") { "Add target-group exclusion(s)" } else { "Remove target-group exclusion(s)" }
     $patchUri = ($configCollection.CollectionUri.TrimEnd("/") + "/$configId")
     try {
-      if ($PSCmdlet.ShouldProcess("authenticationMethodConfigurations/$configId", "$verb for wrapper group '$WrapperGroupId'")) {
+      if ($PSCmdlet.ShouldProcess("authenticationMethodConfigurations/$configId", "$verb for target groups '$($requestedGroupIds -join ", ")'")) {
         Invoke-Beta -Method PATCH -Uri $patchUri -Body $patchBody | Out-Null
         $resultWord = if ($Mode -eq "Add") { "Added" } else { "Removed" }
-        Write-Host "   $resultWord wrapper-group exclusion on auth method '$configId'." -ForegroundColor Green
+        Write-Host "   $resultWord target-group exclusion(s) on auth method '$configId'." -ForegroundColor Green
       }
       else {
         Write-Host "   Planned $($verb.ToLowerInvariant()) on auth method '$configId'." -ForegroundColor Yellow
@@ -1018,7 +1082,8 @@ function Get-ExternalAuthMethodConfigById {
 
 function Invoke-EamOnlyPilotReadinessAudit {
   param(
-    [Parameter(Mandatory=$true)][string]$WrapperGroupName,
+    [Parameter(Mandatory=$true)][ValidateSet("PilotGlobalAdmins","FinalGroups")][string]$Stage,
+    [Parameter(Mandatory=$true)][string]$TargetGroupDescription,
     [Parameter(Mandatory=$false)][string]$PilotGroupName
   )
 
@@ -1111,13 +1176,18 @@ function Invoke-EamOnlyPilotReadinessAudit {
 
   Write-Host "   Manual checks still required for loop troubleshooting (Password reset / SSPR portal coverage is inconsistent in supported Graph APIs)." -ForegroundColor Yellow
   Write-Host "   (Use -DisableAdminSspr `$true to script the admin SSPR flag only, or -EnforceStrictExternalOnlyTenantPrereqs `$true for Security Defaults + admin SSPR.)" -ForegroundColor Yellow
-  Write-Host "   For a STRICT external-only pilot, verify these expected values:" -ForegroundColor Yellow
+  Write-Host "   For a STRICT external-only rollout, verify these expected values:" -ForegroundColor Yellow
   Write-Host "     1) Entra -> Protection -> Password reset -> Registration -> 'Require users to register when signing in' = No (during pilot testing)"
   Write-Host "     2) Entra -> Protection -> Password reset -> Properties -> Self service password reset enabled = No (strict external-only requirement)"
   Write-Host "     3) Entra -> Protection -> Password reset -> Authentication methods -> Mobile phone / Office phone disabled; do not require extra recovery methods"
-  Write-Host "     4) Test a pilot user that is a DIRECT member of '$WrapperGroupName' (direct wrapper membership is the authoritative enforcement target)"
-  if (-not [string]::IsNullOrWhiteSpace($PilotGroupName)) {
-    Write-Host "        (Pilot source group '$PilotGroupName' should be synced into '$WrapperGroupName' as direct users; confirm the test user appears directly in the wrapper before troubleshooting sign-in behavior.)"
+  if ($Stage -eq "PilotGlobalAdmins") {
+    Write-Host "     4) Test a pilot user that is a DIRECT member of $TargetGroupDescription (direct wrapper membership is the authoritative enforcement target)"
+    if (-not [string]::IsNullOrWhiteSpace($PilotGroupName)) {
+      Write-Host "        (Pilot source group '$PilotGroupName' should be synced into $TargetGroupDescription as direct users; confirm the test user appears directly in the wrapper before troubleshooting sign-in behavior.)"
+    }
+  }
+  else {
+    Write-Host "     4) Test a user that is a member of one of the directly targeted final rollout groups: $TargetGroupDescription"
   }
 
   if ($warningCount -eq 0) {
@@ -1261,6 +1331,38 @@ function Test-HasCollectionValues {
   param([Parameter(Mandatory=$false)]$Value)
 
   return (@(ConvertTo-StringArray -Value $Value).Count -gt 0)
+}
+
+function Test-StringArraySetEqual {
+  param(
+    [Parameter(Mandatory=$false)][string[]]$Expected,
+    [Parameter(Mandatory=$false)][string[]]$Actual
+  )
+
+  $normalizedExpected = @(
+    ConvertTo-StringArray -Value $Expected |
+      ForEach-Object { ([string]$_).Trim().ToLowerInvariant() } |
+      Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+      Sort-Object -Unique
+  )
+  $normalizedActual = @(
+    ConvertTo-StringArray -Value $Actual |
+      ForEach-Object { ([string]$_).Trim().ToLowerInvariant() } |
+      Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+      Sort-Object -Unique
+  )
+
+  if ($normalizedExpected.Count -ne $normalizedActual.Count) {
+    return $false
+  }
+
+  for ($i = 0; $i -lt $normalizedExpected.Count; $i++) {
+    if ($normalizedExpected[$i] -ne $normalizedActual[$i]) {
+      return $false
+    }
+  }
+
+  return $true
 }
 
 function New-ExternalMfaPreflightFinding {
@@ -1935,7 +2037,7 @@ function Get-DesiredConditionalAccessApplicationsBlock {
 function Add-LegacyConditionalAccessGroupExclusions {
   param(
     [Parameter(Mandatory=$true)]$Policy,
-    [Parameter(Mandatory=$false)][string]$WrapperGroupId,
+    [Parameter(Mandatory=$false)][string[]]$TargetGroupIds,
     [Parameter(Mandatory=$false)][string]$BreakGlassGroupId
   )
 
@@ -1944,7 +2046,7 @@ function Add-LegacyConditionalAccessGroupExclusions {
   $excludeGroups = if ($null -ne $users) { ConvertTo-StringArray -Value (Get-GraphMemberValue -Object $users -Name "excludeGroups") } else { @() }
 
   $requestedExcludeGroups = @(
-    (ConvertTo-StringArray -Value @($WrapperGroupId, $BreakGlassGroupId)) |
+    (ConvertTo-StringArray -Value @($TargetGroupIds, $BreakGlassGroupId)) |
       Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } |
       Sort-Object -Unique
   )
@@ -1985,8 +2087,9 @@ function Add-LegacyConditionalAccessGroupExclusions {
   }
 
   $changeLabels = @()
-  if (-not [string]::IsNullOrWhiteSpace($WrapperGroupId) -and ($missingExcludeGroups -contains $WrapperGroupId)) {
-    $changeLabels += "wrapper group"
+  $requestedTargetGroupIds = @(ConvertTo-StringArray -Value $TargetGroupIds)
+  if (@($requestedTargetGroupIds | Where-Object { $missingExcludeGroups -contains $_ }).Count -gt 0) {
+    $changeLabels += "target group"
   }
   if (-not [string]::IsNullOrWhiteSpace($BreakGlassGroupId) -and ($missingExcludeGroups -contains $BreakGlassGroupId)) {
     $changeLabels += "break-glass group"
@@ -2060,6 +2163,7 @@ function Invoke-ExternalMfaPreflight {
     [Parameter(Mandatory=$false)][string]$ExternalAuthConfigId,
     [Parameter(Mandatory=$true)][ValidateSet("PilotGlobalAdmins","FinalGroups")][string]$Stage,
     [Parameter(Mandatory=$true)][ValidateSet("MirrorLegacy","AllApps","ExplicitApps")][string]$CaScopeMode,
+    [Parameter(Mandatory=$false)][string]$WrapperGroupName,
     [Parameter(Mandatory=$false)][string[]]$LegacyPolicyNames,
     [Parameter(Mandatory=$false)][string[]]$ExplicitAppIds,
     [Parameter(Mandatory=$false)][string[]]$FinalTargetGroupIds,
@@ -2157,7 +2261,16 @@ function Invoke-ExternalMfaPreflight {
       }
 
       if ($existingExternalAuthConfig -and (Test-ExternalAuthMethodConfigIncludesAllUsers -Configuration $existingExternalAuthConfig)) {
-        $manualBlockers.Add((New-ExternalMfaPreflightFinding -Category "ManualBlocker" -Code "ExternalAuthConfigAllUsersTargeted" -Message "External Authentication Method configuration '$Name' currently includes 'All users'. For Stage PilotGlobalAdmins, retarget it to the wrapper group only before live rollout.")) | Out-Null
+        $targetGroupLabel = if ($Stage -eq "FinalGroups") {
+          "the supplied final rollout groups"
+        }
+        elseif ([string]::IsNullOrWhiteSpace($WrapperGroupName)) {
+          "the wrapper group"
+        }
+        else {
+          "'$WrapperGroupName'"
+        }
+        $autoFixable.Add((New-ExternalMfaPreflightFinding -Category "AutoFixable" -Code "ExternalAuthConfigAllUsersTargeted" -Message "External Authentication Method configuration '$Name' currently includes 'All users'. Live rollout will retarget the EAM to $targetGroupLabel.")) | Out-Null
       }
     }
     catch {
@@ -2471,7 +2584,12 @@ else {
     Write-Host "   ClientId/DiscoveryEndpoint/AppId not supplied. The script will try to reuse an existing EAM automatically by name first, then provider identifiers when available. If no matching EAM exists, creation will fail until those values are provided." -ForegroundColor Yellow
   }
 
-  Write-Host "   Target posture (strict external-only): Duo External MFA only for '$WrapperGroupName' (Microsoft Authenticator/SMS/Voice/OATH excluded by default)." -ForegroundColor Yellow
+  if ($Stage -eq "FinalGroups") {
+    Write-Host "   Target posture (strict external-only): Duo External MFA only for the supplied FinalTargetGroups (Microsoft Authenticator/SMS/Voice/OATH excluded by default for those groups)." -ForegroundColor Yellow
+  }
+  else {
+    Write-Host "   Target posture (strict external-only): Duo External MFA only for '$WrapperGroupName' (Microsoft Authenticator/SMS/Voice/OATH excluded by default)." -ForegroundColor Yellow
+  }
   Write-Host "   SSPR/combined registration can still cause loops unless Password reset settings are disabled manually (see audit output)." -ForegroundColor Yellow
 }
 
@@ -2483,6 +2601,7 @@ if (-not $isOffboarding) {
     -ExternalAuthConfigId $ExternalAuthConfigId `
     -Stage $Stage `
     -CaScopeMode $CaScopeMode `
+    -WrapperGroupName $WrapperGroupName `
     -LegacyPolicyNames $LegacyPolicyNames `
     -ExplicitAppIds $ExplicitAppIds `
     -FinalTargetGroupIds $FinalTargetGroupIds `
@@ -2577,21 +2696,23 @@ else {
   Write-Host "==> Skipping UCP migration state change in offboarding mode." -ForegroundColor Cyan
 }
 
-# --- 2) Ensure wrapper group exists ---
+$wrapper = $null
+$enforcementTargetGroups = New-Object System.Collections.Generic.List[object]
+
+# --- 2) Resolve enforcement target groups ---
 if (-not $isOffboarding) {
-  Write-Step "Ensuring wrapper group '$WrapperGroupName' exists..."
-  $wrapper = Ensure-SecurityGroup -DisplayName $WrapperGroupName -Description "Maintained by automation. Targeting wrapper for Duo External MFA rollout."
-  if ($wrapper -and $wrapper.Id) {
-    Write-Host "   Wrapper group id: $($wrapper.Id)" -ForegroundColor Green
-  }
-  else {
-    Write-Host "   Wrapper group creation is planned only (-WhatIf)." -ForegroundColor Yellow
-  }
-
-  $desiredWrapperSourceGroups = New-Object System.Collections.Generic.List[object]
-  $pilot = $null
-
   if ($Stage -eq "PilotGlobalAdmins") {
+    Write-Step "Ensuring wrapper group '$WrapperGroupName' exists..."
+    $wrapper = Ensure-SecurityGroup -DisplayName $WrapperGroupName -Description "Maintained by automation. Targeting wrapper for Duo External MFA rollout."
+    if ($wrapper -and $wrapper.Id) {
+      Write-Host "   Wrapper group id: $($wrapper.Id)" -ForegroundColor Green
+    }
+    else {
+      Write-Host "   Wrapper group creation is planned only (-WhatIf)." -ForegroundColor Yellow
+    }
+
+    $desiredWrapperSourceGroups = New-Object System.Collections.Generic.List[object]
+    $pilot = $null
     $hasExistingPilotGroupOverride = (
       -not [string]::IsNullOrWhiteSpace($ExistingPilotGroupId) -or
       -not [string]::IsNullOrWhiteSpace($ExistingPilotGroupName)
@@ -2604,7 +2725,7 @@ if (-not $isOffboarding) {
         throw "The requested existing pilot group could not be resolved."
       }
 
-      if ($pilot.Id -eq $wrapper.Id) {
+      if ($wrapper -and $wrapper.Id -and $pilot.Id -eq $wrapper.Id) {
         throw "Existing pilot group '$($pilot.DisplayName)' cannot be the same group as the wrapper group '$WrapperGroupName'."
       }
 
@@ -2619,37 +2740,94 @@ if (-not $isOffboarding) {
         $desiredWrapperSourceGroups.Add($pilot) | Out-Null
       }
     }
+
+    Write-Step "Reconciling direct wrapper-user membership from source groups..."
+    try {
+      if (-not $wrapper.Id -or @($desiredWrapperSourceGroups | Where-Object { $_ -and $_.Id }).Count -eq 0) {
+        Write-Host "   Skipping direct wrapper-user sync because the wrapper group or desired source groups are planned only." -ForegroundColor Yellow
+      }
+      else {
+        Sync-WrapperGroupDirectUserMembers `
+          -WrapperGroupId $wrapper.Id `
+          -SourceGroups @($desiredWrapperSourceGroups.ToArray())
+      }
+    }
+    catch {
+      Write-Warning "Could not reconcile direct wrapper-user membership from source groups. Details: $($_.Exception.Message)"
+    }
+
+    if ($wrapper) {
+      $enforcementTargetGroups.Add($wrapper) | Out-Null
+    }
   }
   else {
-    Write-Step "Resolving final rollout source groups..."
+    Write-Step "Resolving final rollout target groups..."
     foreach ($groupId in @(ConvertTo-StringArray -Value $FinalTargetGroupIds | Sort-Object -Unique)) {
       $sourceGroup = Resolve-GroupById -GroupId $groupId
       if (-not $sourceGroup) {
         throw "Final target group '$groupId' could not be resolved."
       }
 
-      $desiredWrapperSourceGroups.Add($sourceGroup) | Out-Null
-      Write-Host "   Final source group: $($sourceGroup.DisplayName) [$($sourceGroup.Id)]" -ForegroundColor Green
+      $enforcementTargetGroups.Add($sourceGroup) | Out-Null
+      Write-Host "   Final target group: $($sourceGroup.DisplayName) [$($sourceGroup.Id)]" -ForegroundColor Green
     }
-  }
 
-  Write-Step "Reconciling direct wrapper-user membership from source groups..."
-  try {
-    if (-not $wrapper.Id -or @($desiredWrapperSourceGroups | Where-Object { $_ -and $_.Id }).Count -eq 0) {
-      Write-Host "   Skipping direct wrapper-user sync because the wrapper group or desired source groups are planned only." -ForegroundColor Yellow
-    }
-    else {
-      Sync-WrapperGroupDirectUserMembers `
-        -WrapperGroupId $wrapper.Id `
-        -SourceGroups @($desiredWrapperSourceGroups.ToArray())
-    }
-  }
-  catch {
-    Write-Warning "Could not reconcile direct wrapper-user membership from source groups. Details: $($_.Exception.Message)"
+    Write-Host "   FinalGroups stage uses the resolved final target groups directly for EAM, Conditional Access, and auth-method exclusions." -ForegroundColor Yellow
   }
 }
 else {
-  Write-Host "==> Skipping wrapper/source-group reconciliation in offboarding mode." -ForegroundColor Cyan
+  if ($Stage -eq "PilotGlobalAdmins") {
+    try {
+      $wrapper = Get-GroupByDisplayNameUnique -DisplayName $WrapperGroupName
+      if ($wrapper) {
+        $enforcementTargetGroups.Add($wrapper) | Out-Null
+      }
+    }
+    catch {
+      Write-Warning "Could not resolve wrapper group '$WrapperGroupName' during offboarding cleanup. Details: $($_.Exception.Message)"
+    }
+  }
+  else {
+    foreach ($groupId in @(ConvertTo-StringArray -Value $FinalTargetGroupIds | Sort-Object -Unique)) {
+      $sourceGroup = Resolve-GroupById -GroupId $groupId
+      if ($sourceGroup) {
+        $enforcementTargetGroups.Add($sourceGroup) | Out-Null
+      }
+    }
+  }
+
+  Write-Host "==> Skipping pilot/final target-group reconciliation in offboarding mode." -ForegroundColor Cyan
+}
+
+$enforcementTargetGroupIds = @(
+  $enforcementTargetGroups |
+    Where-Object { $_ -and -not [string]::IsNullOrWhiteSpace([string](Get-GraphMemberValue -Object $_ -Name "id")) } |
+    ForEach-Object { [string](Get-GraphMemberValue -Object $_ -Name "id") } |
+    Sort-Object -Unique
+)
+$enforcementTargetGroupDisplayNames = @(
+  $enforcementTargetGroups |
+    Where-Object { $_ } |
+    ForEach-Object {
+      $displayName = [string](Get-GraphMemberValue -Object $_ -Name "displayName")
+      if ([string]::IsNullOrWhiteSpace($displayName)) {
+        [string](Get-GraphMemberValue -Object $_ -Name "id")
+      }
+      else {
+        $displayName
+      }
+    } |
+    Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+    Sort-Object -Unique
+)
+$enforcementTargetDisplayLabel = if ($enforcementTargetGroupDisplayNames.Count -gt 0) {
+  ($enforcementTargetGroupDisplayNames | ForEach-Object { "'$_'" }) -join ", "
+}
+elseif ($Stage -eq "PilotGlobalAdmins") {
+  "'$WrapperGroupName'"
+}
+else {
+  "the supplied final rollout groups"
 }
 
 # --- 4) Create/Update External Authentication Method configuration ---
@@ -2800,18 +2978,23 @@ elseif (-not $extConfig) {
   if (-not $hasAllProviderConfigInputs) {
     throw "Existing External Authentication Method configuration '$Name' was not found, and ClientId/DiscoveryEndpoint/AppId were not fully supplied. Provide all three values (or -ExternalAuthConfigId) to create a new EAM configuration."
   }
-  $wrapperGroupIdForExternalAuth = if ($wrapper -and $wrapper.Id) { [string]$wrapper.Id } else { $null }
-  if ([string]::IsNullOrWhiteSpace($wrapperGroupIdForExternalAuth)) {
+  if (@($enforcementTargetGroupIds).Count -eq 0) {
     if ($WhatIfPreference) {
       $extConfig = [pscustomobject]@{ id = $null; displayName = $Name; IsPlanned = $true }
-      Write-Host "   Wrapper group target is planned only (-WhatIf); skipping concrete EAM create payload construction." -ForegroundColor Yellow
-      Write-Host "   Planned external auth method config creation after wrapper group creation." -ForegroundColor Yellow
+      Write-Host "   Enforcement target groups are planned only (-WhatIf); skipping concrete EAM create payload construction." -ForegroundColor Yellow
+      Write-Host "   Planned external auth method config creation after enforcement target resolution." -ForegroundColor Yellow
     }
     else {
-      throw "Wrapper group '$WrapperGroupName' is unavailable; cannot create External Authentication Method configuration without a target group id."
+      throw "No resolved enforcement target group ids are available; cannot create External Authentication Method configuration."
     }
   }
   else {
+    $desiredIncludeTargets = @(
+      foreach ($groupId in $enforcementTargetGroupIds) {
+        New-ExternalAuthMethodIncludeTarget -GroupId $groupId
+      }
+    )
+
     # Prefer current Graph schema; keep a legacy preview payload as a fallback for older tenants.
     $body = @{
       "@odata.type" = "#microsoft.graph.externalAuthenticationMethodConfiguration"
@@ -2822,9 +3005,7 @@ elseif (-not $extConfig) {
         clientId     = $ClientId
         discoveryUrl = $DiscoveryEndpoint
       }
-      includeTargets = @(
-        (New-ExternalAuthMethodIncludeTarget -GroupId $wrapperGroupIdForExternalAuth)
-      )
+      includeTargets = @($desiredIncludeTargets)
     }
 
     # Legacy preview payload shape used in some older tenants/rollouts.
@@ -2835,8 +3016,13 @@ elseif (-not $extConfig) {
       clientId          = $ClientId
       discoveryEndpoint = $DiscoveryEndpoint
       appId             = $AppId
-      # includeTarget is common for auth method configurations
-      includeTarget     = (New-ExternalAuthMethodIncludeTarget -GroupId $wrapperGroupIdForExternalAuth)
+    }
+    if ($desiredIncludeTargets.Count -eq 1) {
+      # includeTarget is common for older auth method configuration previews.
+      $legacyBody["includeTarget"] = $desiredIncludeTargets[0]
+    }
+    else {
+      $legacyBody["includeTargets"] = @($desiredIncludeTargets)
     }
 
     try {
@@ -2906,21 +3092,24 @@ Details: $(Get-ExceptionMessageText -ErrorObject $_)
 }
 else {
   Write-Step "Updating External Authentication Method configuration targeting + enablement (best-effort)..."
-  $wrapperGroupIdForExternalAuth = if ($wrapper -and $wrapper.Id) { [string]$wrapper.Id } else { $null }
-  if ([string]::IsNullOrWhiteSpace($wrapperGroupIdForExternalAuth)) {
+  if (@($enforcementTargetGroupIds).Count -eq 0) {
     if ($WhatIfPreference) {
-      Write-Host "   Wrapper group target is planned only (-WhatIf); skipping concrete EAM target reconciliation." -ForegroundColor Yellow
-      Write-Host "   Planned external auth method config update after wrapper group creation." -ForegroundColor Yellow
+      Write-Host "   Enforcement target groups are planned only (-WhatIf); skipping concrete EAM target reconciliation." -ForegroundColor Yellow
+      Write-Host "   Planned external auth method config update after enforcement target resolution." -ForegroundColor Yellow
     }
     else {
-      $warningText = "Wrapper group '$WrapperGroupName' is unavailable; skipping external auth method config update."
+      $warningText = "No resolved enforcement target groups are available; skipping external auth method config update."
       $rolloutWarnings.Add($warningText) | Out-Null
       Write-Warning $warningText
     }
   }
   else {
     $extConfigPatchUri = ($extConfigCollectionUri.TrimEnd("/") + "/$($extConfig.id)")
-    $desiredIncludeTargets = @((New-ExternalAuthMethodIncludeTarget -GroupId $wrapperGroupIdForExternalAuth))
+    $desiredIncludeTargets = @(
+      foreach ($groupId in $enforcementTargetGroupIds) {
+        New-ExternalAuthMethodIncludeTarget -GroupId $groupId
+      }
+    )
     $currentState = [string](Get-GraphMemberValue -Object $extConfig -Name "state")
     $currentDisplayName = [string](Get-GraphMemberValue -Object $extConfig -Name "displayName")
     if ([string]::IsNullOrWhiteSpace($currentDisplayName)) {
@@ -2941,14 +3130,15 @@ else {
     $resolvedPatchClientId = if ($hasAllProviderConfigInputs) { $ClientId } else { $currentClientId }
     $resolvedPatchDiscoveryEndpoint = if ($hasAllProviderConfigInputs) { $DiscoveryEndpoint } else { $currentDiscoveryEndpoint }
     $resolvedPatchAppId = if ($hasAllProviderConfigInputs) { $AppId } else { $currentAppId }
-    $canPatchProviderFields = (
+    $shouldPatchProviderFields = (
+      $hasAllProviderConfigInputs -and
       -not [string]::IsNullOrWhiteSpace($resolvedPatchClientId) -and
       -not [string]::IsNullOrWhiteSpace($resolvedPatchDiscoveryEndpoint) -and
       -not [string]::IsNullOrWhiteSpace($resolvedPatchAppId)
     )
 
     $stateMatches = ($currentState -eq "enabled")
-    $targetMatches = Test-ExternalAuthMethodConfigIncludesGroup -Configuration $extConfig -GroupId $wrapperGroupIdForExternalAuth
+    $targetMatches = Test-ExternalAuthMethodConfigTargetsExactGroups -Configuration $extConfig -GroupIds $enforcementTargetGroupIds
     $providerMatches = $true
     if ($hasAllProviderConfigInputs) {
       $providerMatches = (
@@ -2959,14 +3149,13 @@ else {
     }
 
     if ($stateMatches -and $targetMatches -and $providerMatches) {
-      Write-Host "   External auth method config is already enabled and targeted to the wrapper group." -ForegroundColor Green
+      Write-Host "   External auth method config is already enabled and targeted to $enforcementTargetDisplayLabel." -ForegroundColor Green
     }
     else {
-      # Current schema patch payload (preferred). Preserve provider fields from the existing config when they were not supplied
-      # so the PATCH uses a complete external auth shape instead of an underspecified delta.
+      # Current schema patch payload (preferred). Keep the update payload minimal unless the caller explicitly
+      # supplied provider fields to change; some tenants reject broader PATCH bodies for existing EAM configs.
       $patchBody = @{
         state = "enabled"
-        displayName = $currentDisplayName
         includeTargets = @($desiredIncludeTargets)
       }
       $odataTypeValue = [string](Get-GraphMemberValue -Object $extConfig -Name "@odata.type")
@@ -2974,12 +3163,7 @@ else {
         $patchBody["@odata.type"] = $odataTypeValue
       }
 
-      $currentExcludeTargets = Get-GraphMemberValue -Object $extConfig -Name "excludeTargets"
-      if ($null -ne $currentExcludeTargets) {
-        $patchBody["excludeTargets"] = @(Convert-GraphObjectToPlainValue -Value $currentExcludeTargets)
-      }
-
-      if ($canPatchProviderFields) {
+      if ($shouldPatchProviderFields) {
         $patchBody["openIdConnectSetting"] = @{
           clientId     = $resolvedPatchClientId
           discoveryUrl = $resolvedPatchDiscoveryEndpoint
@@ -2990,16 +3174,17 @@ else {
       # Legacy preview schema patch payload fallback.
       $legacyPatchBody = @{
         state = "enabled"
-        displayName = $currentDisplayName
-        includeTarget = $desiredIncludeTargets[0]
+      }
+      if ($desiredIncludeTargets.Count -eq 1) {
+        $legacyPatchBody["includeTarget"] = $desiredIncludeTargets[0]
+      }
+      else {
+        $legacyPatchBody["includeTargets"] = @($desiredIncludeTargets)
       }
       if (-not [string]::IsNullOrWhiteSpace($odataTypeValue)) {
         $legacyPatchBody["@odata.type"] = $odataTypeValue
       }
-      if ($null -ne $currentExcludeTargets) {
-        $legacyPatchBody["excludeTargets"] = @(Convert-GraphObjectToPlainValue -Value $currentExcludeTargets)
-      }
-      if ($canPatchProviderFields) {
+      if ($shouldPatchProviderFields) {
         $legacyPatchBody["clientId"] = $resolvedPatchClientId
         $legacyPatchBody["discoveryEndpoint"] = $resolvedPatchDiscoveryEndpoint
         $legacyPatchBody["appId"] = $resolvedPatchAppId
@@ -3008,7 +3193,7 @@ else {
     try {
       if ($PSCmdlet.ShouldProcess($Name, "Update External Authentication Method configuration '$($extConfig.id)'")) {
         if (-not $hasAllProviderConfigInputs) {
-          Write-Host "   Provider config fields were not supplied; reusing the existing provider identifiers from the resolved config." -ForegroundColor Yellow
+          Write-Host "   Provider config fields were not supplied; sending a minimal PATCH for state + target-group targeting only." -ForegroundColor Yellow
         }
           try {
             Invoke-Beta -Method PATCH -Uri $extConfigPatchUri -Body $patchBody | Out-Null
@@ -3033,41 +3218,24 @@ else {
 }
 }
 
-# --- 4b) Exclude wrapper group from common Microsoft MFA methods (best-effort) ---
+# --- 4b) Exclude enforcement target groups from common Microsoft MFA methods (best-effort) ---
 if ($RestrictCommonMicrosoftMfaMethodsForWrapperGroup) {
   $restrictionMode = if ($isOffboarding) { "Remove" } else { "Add" }
   $restrictionVerb = if ($isOffboarding) { "Removing" } else { "Applying" }
-  Write-Step "$restrictionVerb wrapper-group exclusions on common Microsoft MFA methods (best-effort)..."
+  Write-Step "$restrictionVerb enforcement-group exclusions on common Microsoft MFA methods (best-effort)..."
 
-  $wrapperForMethodRestrictions = $null
-  if (Get-Variable -Name "wrapper" -ErrorAction SilentlyContinue) {
-    $wrapperForMethodRestrictions = $wrapper
-  }
-
-  if (-not $wrapperForMethodRestrictions -or -not $wrapperForMethodRestrictions.Id) {
-    try {
-      $wrapperForMethodRestrictions = Get-GroupByDisplayNameUnique -DisplayName $WrapperGroupName
-    }
-    catch {
-      Write-Warning "Could not resolve wrapper group '$WrapperGroupName' for auth method exclusions. Continuing. Details: $($_.Exception.Message)"
-    }
-  }
-
-  if (-not $wrapperForMethodRestrictions) {
+  if (@($enforcementTargetGroupIds).Count -eq 0) {
     if ($isOffboarding) {
-      Write-Host "   Wrapper group '$WrapperGroupName' not found; skipping auth method exclusion cleanup." -ForegroundColor Yellow
+      Write-Host "   No resolved enforcement target groups were available for auth method exclusion cleanup." -ForegroundColor Yellow
     }
     else {
-      Write-Warning "Wrapper group '$WrapperGroupName' not found; skipping common Microsoft MFA method restrictions."
+      Write-Warning "No resolved enforcement target groups were available; skipping common Microsoft MFA method restrictions."
     }
-  }
-  elseif (-not $wrapperForMethodRestrictions.Id) {
-    Write-Host "   Skipping auth method exclusion updates because wrapper group is planned only (-WhatIf)." -ForegroundColor Yellow
   }
   else {
     try {
-      Set-WrapperGroupExclusionOnAuthMethodConfigs `
-        -WrapperGroupId $wrapperForMethodRestrictions.Id `
+      Set-TargetGroupExclusionsOnAuthMethodConfigs `
+        -TargetGroupIds $enforcementTargetGroupIds `
         -MethodIds $WrapperGroupExcludedMethodIds `
         -Mode $restrictionMode
     }
@@ -3076,13 +3244,34 @@ if ($RestrictCommonMicrosoftMfaMethodsForWrapperGroup) {
         Write-Warning "Could not query/update auth method exclusions during -WhatIf. Continuing dry-run. Details: $($_.Exception.Message)"
       }
       else {
-        Write-Warning "Could not apply wrapper-group auth method exclusions. Continuing. Details: $($_.Exception.Message)"
+        Write-Warning "Could not apply enforcement-group auth method exclusions. Continuing. Details: $($_.Exception.Message)"
+      }
+    }
+
+    if (-not $isOffboarding -and $Stage -eq "FinalGroups") {
+      try {
+        $existingWrapperGroup = Get-GroupByDisplayNameUnique -DisplayName $WrapperGroupName
+        if ($existingWrapperGroup -and $existingWrapperGroup.Id -and ($enforcementTargetGroupIds -notcontains [string]$existingWrapperGroup.Id)) {
+          Set-TargetGroupExclusionsOnAuthMethodConfigs `
+            -TargetGroupIds @([string]$existingWrapperGroup.Id) `
+            -MethodIds $WrapperGroupExcludedMethodIds `
+            -Mode "Remove"
+          if ($WhatIfPreference) {
+            Write-Host "   Planned removal of legacy wrapper-group auth method exclusions from '$WrapperGroupName' because FinalGroups now targets the final groups directly." -ForegroundColor Yellow
+          }
+          else {
+            Write-Host "   Removed legacy wrapper-group auth method exclusions from '$WrapperGroupName' because FinalGroups now targets the final groups directly." -ForegroundColor Green
+          }
+        }
+      }
+      catch {
+        Write-Warning "Could not clean up legacy wrapper-group auth method exclusions during FinalGroups rollout. Details: $($_.Exception.Message)"
       }
     }
   }
 }
 else {
-  Write-Host "==> Skipping wrapper-group exclusions on common Microsoft MFA methods by parameter." -ForegroundColor Cyan
+  Write-Host "==> Skipping enforcement-group exclusions on common Microsoft MFA methods by parameter." -ForegroundColor Cyan
 }
 
 # --- 4c) Optional bulk per-user registration of the external auth method (best-effort) ---
@@ -3091,31 +3280,14 @@ if ($BulkRegisterExternalAuthMethodForWrapperGroupUsers) {
     Write-Host "==> Skipping bulk external auth registration in offboarding mode." -ForegroundColor Cyan
   }
   else {
-    Write-Step "Bulk-registering external auth method for eligible wrapper-group users (best-effort, idempotent)..."
+    Write-Step "Bulk-registering external auth method for eligible targeted users (best-effort, idempotent)..."
 
-    $wrapperForBulkRegistration = $null
-    if (Get-Variable -Name "wrapper" -ErrorAction SilentlyContinue) {
-      $wrapperForBulkRegistration = $wrapper
-    }
-
-    if (-not $wrapperForBulkRegistration -or -not $wrapperForBulkRegistration.Id) {
-      try {
-        $wrapperForBulkRegistration = Get-GroupByDisplayNameUnique -DisplayName $WrapperGroupName
-      }
-      catch {
-        Write-Warning "Could not resolve wrapper group '$WrapperGroupName' for bulk registration. Continuing. Details: $($_.Exception.Message)"
-      }
-    }
-
-    if (-not $wrapperForBulkRegistration) {
-      Write-Warning "Wrapper group '$WrapperGroupName' not found; skipping bulk external auth registration."
-    }
-    elseif (-not $wrapperForBulkRegistration.Id) {
-      Write-Host "   Skipping bulk registration because wrapper group is planned only (-WhatIf)." -ForegroundColor Yellow
+    if (@($enforcementTargetGroupIds).Count -eq 0) {
+      Write-Warning "No resolved enforcement target groups were available; skipping bulk external auth registration."
     }
     elseif (-not $extConfig -or -not $extConfig.id) {
       if ($WhatIfPreference) {
-        Write-Host "   Planned bulk external auth registration for wrapper-group users (external config is planned only in -WhatIf)." -ForegroundColor Yellow
+        Write-Host "   Planned bulk external auth registration for targeted users (external config is planned only in -WhatIf)." -ForegroundColor Yellow
       }
       else {
         Write-Warning "External auth method configuration ID is unavailable; skipping bulk user registration."
@@ -3126,8 +3298,8 @@ if ($BulkRegisterExternalAuthMethodForWrapperGroupUsers) {
         $configDisplayName = [string](Get-GraphMemberValue -Object $extConfig -Name "displayName")
         if ([string]::IsNullOrWhiteSpace($configDisplayName)) { $configDisplayName = $Name }
 
-        Invoke-BulkRegisterExternalAuthMethodForWrapperGroupUsers `
-          -WrapperGroupId $wrapperForBulkRegistration.Id `
+        Invoke-BulkRegisterExternalAuthMethodForTargetGroupsUsers `
+          -TargetGroups @($enforcementTargetGroups.ToArray()) `
           -ConfigurationId ([string]$extConfig.id) `
           -ConfigurationDisplayName $configDisplayName `
           -SkipDisabledUsers $BulkRegisterSkipDisabledUsers `
@@ -3138,14 +3310,14 @@ if ($BulkRegisterExternalAuthMethodForWrapperGroupUsers) {
           Write-Warning "Could not bulk-register external auth method during -WhatIf. Continuing dry-run. Details: $($_.Exception.Message)"
         }
         else {
-          Write-Warning "Could not bulk-register external auth method for wrapper-group users. Continuing. Details: $($_.Exception.Message)"
+          Write-Warning "Could not bulk-register external auth method for the targeted users. Continuing. Details: $($_.Exception.Message)"
         }
       }
     }
   }
 }
 else {
-  Write-Host "==> Skipping bulk external auth registration for wrapper-group users by parameter." -ForegroundColor Cyan
+  Write-Host "==> Skipping bulk external auth registration for targeted users by parameter." -ForegroundColor Cyan
 }
 
 # --- 5) Create/Remove Conditional Access policy for Duo rollout ---
@@ -3190,7 +3362,7 @@ if (-not $isOffboarding) {
     state = "enabled"
     conditions = @{
       users = @{
-        includeGroups = @($wrapper.Id)
+        includeGroups = @($enforcementTargetGroupIds)
         excludeGroups = $desiredExcludeGroups
         excludeUsers = $existingExcludeUsers
       }
@@ -3235,7 +3407,7 @@ elseif ($isOffboarding) {
   }
 }
 elseif (-not $existingCa) {
-  Write-Step "Creating Conditional Access policy (Require MFA) targeting '$WrapperGroupName'..."
+  Write-Step "Creating Conditional Access policy (Require MFA) targeting $enforcementTargetDisplayLabel..."
   try {
     if ($PSCmdlet.ShouldProcess($CaPolicyName, "Create Conditional Access policy")) {
       $newCa = Invoke-Beta -Method POST -Uri "/beta/identity/conditionalAccess/policies" -Body $caBody
@@ -3266,14 +3438,14 @@ else {
 }
 
 if (-not $isOffboarding -and $CaScopeMode -eq "MirrorLegacy" -and $preflightSummary -and @($preflightSummary.LegacyPolicies).Count -gt 0) {
-  if (-not $wrapper -or -not $wrapper.Id) {
-    Write-Warning "Wrapper group '$WrapperGroupName' is unavailable; skipping legacy Conditional Access policy exclusions."
+  if (@($enforcementTargetGroupIds).Count -eq 0) {
+    Write-Warning "No resolved enforcement target groups were available; skipping legacy Conditional Access policy exclusions."
   }
   else {
-    Write-Step "Ensuring matched legacy Duo Conditional Access policies exclude the wrapper and break-glass groups..."
+    Write-Step "Ensuring matched legacy Duo Conditional Access policies exclude the enforcement target groups and break-glass group..."
     foreach ($legacyPolicy in $preflightSummary.LegacyPolicies) {
       try {
-        Add-LegacyConditionalAccessGroupExclusions -Policy $legacyPolicy -WrapperGroupId $wrapper.Id -BreakGlassGroupId $BreakGlassGroupId
+        Add-LegacyConditionalAccessGroupExclusions -Policy $legacyPolicy -TargetGroupIds $enforcementTargetGroupIds -BreakGlassGroupId $BreakGlassGroupId
       }
       catch {
         $warningText = "Could not update legacy CA policy '$($legacyPolicy.displayName)'. Details: $($_.Exception.Message)"
@@ -3421,7 +3593,7 @@ if ($AuditEamOnlyPilotReadiness) {
   }
   else {
     try {
-      Invoke-EamOnlyPilotReadinessAudit -WrapperGroupName $WrapperGroupName -PilotGroupName $PilotGroupName
+      Invoke-EamOnlyPilotReadinessAudit -Stage $Stage -TargetGroupDescription $enforcementTargetDisplayLabel -PilotGroupName $PilotGroupName
     }
     catch {
       Write-Warning "Could not complete EAM-only pilot readiness audit. Continuing. Details: $($_.Exception.Message)"
@@ -3443,24 +3615,39 @@ if ($isOffboarding) {
   Write-Host "  3) Entra -> Authentication methods -> Policies -> Microsoft Authenticator: confirm enabled"
   Write-Host "  4) Entra -> Authentication methods -> Registration campaign: confirm enabled (if you left defaults)"
   Write-Host "  5) Entra -> Authentication methods -> System-preferred MFA: confirm enabled"
-  Write-Host "  6) Entra -> Authentication methods -> Policies: confirm wrapper-group exclusions were removed from common Microsoft MFA methods (if enabled)"
+  if ($Stage -eq "FinalGroups") {
+    Write-Host "  6) Entra -> Authentication methods -> Policies: confirm direct-target-group exclusions were removed from common Microsoft MFA methods (if enabled)"
+  }
+  else {
+    Write-Host "  6) Entra -> Authentication methods -> Policies: confirm wrapper-group exclusions were removed from common Microsoft MFA methods (if enabled)"
+  }
 }
 else {
   # Rollout checklist: confirm Duo is active and Microsoft prompts are no longer preferred.
-  Write-Host "  1) Entra -> Authentication methods -> External authentication methods: confirm '$Name' enabled + targeted to '$WrapperGroupName'"
-  Write-Host "  2) Entra -> Groups -> '$WrapperGroupName': confirm expected source-group users are DIRECT members and stale nested groups are absent"
+  Write-Host "  1) Entra -> Authentication methods -> External authentication methods: confirm '$Name' enabled + targeted to $enforcementTargetDisplayLabel"
+  if ($Stage -eq "FinalGroups") {
+    Write-Host "  2) Entra -> Groups: confirm the directly targeted final rollout groups are the intended production groups and contain the expected users"
+  }
+  else {
+    Write-Host "  2) Entra -> Groups -> '$WrapperGroupName': confirm expected source-group users are DIRECT members and stale nested groups are absent"
+  }
   Write-Host "  3) Entra -> Conditional Access: confirm '$CaPolicyName' enabled and scoped correctly"
   Write-Host "  4) Entra -> Conditional Access: confirm break-glass group '$BreakGlassGroupId' is excluded from '$CaPolicyName'"
   Write-Host "  5) Entra -> Conditional Access: confirm any matched legacy Duo custom-control CA policies also exclude '$BreakGlassGroupId' during coexistence"
   Write-Host "  6) Entra -> Authentication methods -> Policies -> Microsoft Authenticator: confirm the policy state matches your chosen script parameters"
-  Write-Host "  7) Entra -> Authentication methods -> Policies: confirm common Microsoft MFA methods exclude '$WrapperGroupName' (Authenticator/SMS/Voice/OATH, if enabled)"
+  if ($Stage -eq "FinalGroups") {
+    Write-Host "  7) Entra -> Authentication methods -> Policies: confirm common Microsoft MFA methods exclude the directly targeted final rollout groups (Authenticator/SMS/Voice/OATH, if enabled)"
+  }
+  else {
+    Write-Host "  7) Entra -> Authentication methods -> Policies: confirm common Microsoft MFA methods exclude '$WrapperGroupName' (Authenticator/SMS/Voice/OATH, if enabled)"
+  }
   Write-Host "  8) Entra -> Authentication methods -> Registration campaign / System-preferred MFA: confirm the policy states match your chosen script parameters"
-  Write-Host "  9) If bulk registration was enabled: Entra/myaccount -> Security info: confirm wrapper-group users have '$Name' registered"
+  Write-Host "  9) If bulk registration was enabled: Entra/myaccount -> Security info: confirm targeted users have '$Name' registered"
   Write-Host "  10) Review the EAM-only pilot readiness audit output (expected values for Security Defaults / SSPR / Password reset registration)"
   Write-Host "  11) myaccount.microsoft.com -> Security info / sign-in: confirm target users use External MFA and are not offered unintended Microsoft MFA methods"
 }
 Write-Host ""
-Write-Host "Note: This script changes tenant auth method policy settings (best-effort). It only adds per-user External Authentication Method registrations when -BulkRegisterExternalAuthMethodForWrapperGroupUsers is enabled; it does not remove other per-user MFA registrations. If user prompts still look wrong, review the user's registered methods and tenant authentication method policies." -ForegroundColor Yellow
+Write-Host "Note: This script changes tenant auth method policy settings (best-effort). It only adds per-user External Authentication Method registrations when -BulkRegisterExternalAuthMethodForWrapperGroupUsers is enabled; it does not remove other per-user MFA registrations. The registration pass follows the active enforcement target groups for the selected stage. If user prompts still look wrong, review the user's registered methods and tenant authentication method policies." -ForegroundColor Yellow
 Write-Host "Note: Bulk per-user registration requires delegated Graph scope 'UserAuthMethod-External.ReadWrite.All' (requested automatically when that option is enabled)." -ForegroundColor Yellow
 Write-Host "Note: Use -EnforceStrictExternalOnlyTenantPrereqs `$true to automatically disable Security Defaults and the admin SSPR authorizationPolicy flag (best-effort, tenant-wide)." -ForegroundColor Yellow
 Write-Host "Note: Use -DisableAdminSspr `$true to disable only the admin SSPR authorizationPolicy flag without touching Security Defaults." -ForegroundColor Yellow

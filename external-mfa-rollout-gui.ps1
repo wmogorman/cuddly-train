@@ -230,8 +230,8 @@ Recommended workflow:
 3. If the EAM already exists in Entra, leave ExternalAuthConfigId blank first; the script should find it automatically by name. Only use ExternalAuthConfigId if lookup fails and you need an override.
 4. Provide BreakGlassGroupId for the emergency admin exclusion before running a rollout.
 5. PilotGroupName identifies the managed pilot SOURCE group when you let the script mirror Global Administrators automatically.
-6. WrapperGroupName is the direct-user enforcement group that EAM, CA, and auth-method exclusions target.
-7. The rollout syncs transitive users from maintained source groups into the wrapper as DIRECT members; it does not rely on nested groups inside the wrapper.
+6. WrapperGroupName is the pilot-stage enforcement group. FinalGroups targets the supplied final rollout groups directly for EAM, CA, and auth-method exclusions.
+7. PilotGlobalAdmins syncs transitive users from the maintained pilot source group into the wrapper as DIRECT members; it does not rely on nested groups inside the wrapper.
 8. Leave Microsoft Authenticator enabled unless you intentionally want the script to disable it.
 9. Use Run In Console so teammates can complete Microsoft Graph interactive sign-in.
 
