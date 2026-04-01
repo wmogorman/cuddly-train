@@ -11,13 +11,14 @@ What this script does per tenant
 1) Connects to Microsoft Graph using app-only certificate auth.
 2) Resolves the built-in Global Administrator role.
 3) Finds or creates the managed break-glass group (default: "ActaMSP Break Glass").
-4) Audits the group's direct membership.
-5) If the group has exactly one eligible cloud user, enables the account if needed and
+4) If the group is empty, resolves the tenant's initial .onmicrosoft.com domain and converges
+   on a deterministic emergency account.
+5) Audits the group's direct membership.
+6) If the group has exactly one eligible cloud user, enables the account if needed and
    assigns Global Administrator if missing.
 
 What this script does not do
-- It does not create the break-glass user.
-- It does not auto-add a user to an empty group.
+- It does not create arbitrary user names; it only manages the deterministic emergency account name.
 - It does not auto-remove extra members from the group.
 - It does not audit or modify Conditional Access.
 
@@ -111,6 +112,8 @@ $globalAdminTemplateId = "62e90394-69f5-4237-9190-012177145e10"
 $script:TenantDisplayNameById = @{}
 $script:ManagedGroupProperties = "id,displayName,description,groupTypes,securityEnabled,mailEnabled,mailNickname"
 $script:BreakGlassGroupDescription = "Maintained by ActaMSP automation. Intended for a single emergency Global Administrator account."
+$script:BreakGlassUserAlias = "actamsp-breakglass"
+$script:BreakGlassUserDisplayName = "ActaMSP Break Glass Emergency Access"
 $autoDiscoverTenantsEnabled = if ($PSBoundParameters.ContainsKey('AutoDiscoverTenants')) { [bool]$AutoDiscoverTenants } else { $true }
 
 function Write-Log {
@@ -593,6 +596,7 @@ function Assert-RequiredGraphCmdlets {
         "Connect-MgGraph",
         "Disconnect-MgGraph",
         "Get-MgContext",
+        "Get-MgDomain",
         "Get-MgOrganization",
         "Get-MgDirectoryRole",
         "Get-MgDirectoryRoleMember",
@@ -600,7 +604,9 @@ function Assert-RequiredGraphCmdlets {
         "New-MgGroup",
         "Get-MgGroupMember",
         "Get-MgUser",
+        "New-MgUser",
         "Update-MgUser",
+        "New-MgGroupMemberByRef",
         "New-MgDirectoryRoleMemberByRef"
     ) | ForEach-Object { $requiredCmdlets.Add($_) | Out-Null }
 
@@ -984,6 +990,305 @@ function Get-SoleMemberUserPosture {
     }
 }
 
+function Test-LooksLikeGraphNotFound {
+    param([object]$ErrorObject)
+
+    $message = (Get-ExceptionMessageParts -ErrorObject $ErrorObject) -join " | "
+    return ($message -match "(?i)request_resourcenotfound|resource .* does not exist|could not find|not found")
+}
+
+function New-StrongPassword {
+    param([int]$Length = 24)
+
+    if ($Length -lt 12) {
+        throw "Password length must be at least 12 characters."
+    }
+
+    $upper = "ABCDEFGHJKLMNPQRSTUVWXYZ"
+    $lower = "abcdefghijkmnopqrstuvwxyz"
+    $digit = "23456789"
+    $special = "!@$%*+-_=?."
+    $all = "$upper$lower$digit$special"
+
+    $chars = [System.Collections.Generic.List[char]]::new()
+    foreach ($set in @($upper, $lower, $digit, $special)) {
+        $chars.Add($set[[System.Security.Cryptography.RandomNumberGenerator]::GetInt32($set.Length)]) | Out-Null
+    }
+
+    while ($chars.Count -lt $Length) {
+        $chars.Add($all[[System.Security.Cryptography.RandomNumberGenerator]::GetInt32($all.Length)]) | Out-Null
+    }
+
+    for ($i = $chars.Count - 1; $i -gt 0; $i--) {
+        $swapIndex = [System.Security.Cryptography.RandomNumberGenerator]::GetInt32($i + 1)
+        $temp = $chars[$i]
+        $chars[$i] = $chars[$swapIndex]
+        $chars[$swapIndex] = $temp
+    }
+
+    return (-join $chars)
+}
+
+function Get-InitialOnMicrosoftDomain {
+    param([Parameter(Mandatory = $true)][string]$TenantLabel)
+
+    $domains = @(Invoke-WithRetry -Tenant $TenantLabel -Operation "Get domains" -Script {
+            Get-MgDomain -All -Property "id,isInitial,isVerified" -ErrorAction Stop
+        })
+
+    $initialDomains = @(
+        $domains |
+        Where-Object {
+            $domainId = [string](Get-GraphMemberValue -Object $_ -Name "Id")
+            $isInitial = if (Test-GraphMemberExists -Object $_ -Name "IsInitial") { [bool](Get-GraphMemberValue -Object $_ -Name "IsInitial") } else { $false }
+            $isVerified = if (Test-GraphMemberExists -Object $_ -Name "IsVerified") { [bool](Get-GraphMemberValue -Object $_ -Name "IsVerified") } else { $true }
+            $isInitial -and $isVerified -and ($domainId -match "(?i)\.onmicrosoft\.com$")
+        }
+    )
+
+    if ($initialDomains.Count -eq 0) {
+        $initialDomains = @(
+            $domains |
+            Where-Object {
+                $domainId = [string](Get-GraphMemberValue -Object $_ -Name "Id")
+                $isVerified = if (Test-GraphMemberExists -Object $_ -Name "IsVerified") { [bool](Get-GraphMemberValue -Object $_ -Name "IsVerified") } else { $true }
+                $isVerified -and ($domainId -match "(?i)\.onmicrosoft\.com$")
+            }
+        )
+    }
+
+    if ($initialDomains.Count -eq 0) {
+        throw "Manual review required: could not resolve the tenant's initial .onmicrosoft.com domain."
+    }
+
+    if ($initialDomains.Count -gt 1) {
+        $preview = $initialDomains | ForEach-Object { [string](Get-GraphMemberValue -Object $_ -Name "Id") }
+        Write-Log -Level "WARN" -Tenant $TenantLabel -Message "Multiple candidate .onmicrosoft.com domains were returned; using '$($preview[0])'. Candidates: $($preview -join ', ')"
+    }
+
+    return [string](Get-GraphMemberValue -Object $initialDomains[0] -Name "Id")
+}
+
+function Get-UserPostureIfExists {
+    param(
+        [Parameter(Mandatory = $true)][string]$UserId,
+        [Parameter(Mandatory = $true)][string]$TenantLabel
+    )
+
+    try {
+        return Get-SoleMemberUserPosture -UserId $UserId -TenantLabel $TenantLabel
+    }
+    catch {
+        if (Test-LooksLikeGraphNotFound -ErrorObject $_) {
+            return $null
+        }
+
+        throw
+    }
+}
+
+function Resolve-EmptyGroupBreakGlassUserCandidate {
+    param([Parameter(Mandatory = $true)][string]$TenantLabel)
+
+    $initialDomain = Get-InitialOnMicrosoftDomain -TenantLabel $TenantLabel
+    $desiredUpn = "$($script:BreakGlassUserAlias)@$initialDomain"
+    $existingUser = Get-UserPostureIfExists -UserId $desiredUpn -TenantLabel $TenantLabel
+    if ($existingUser) {
+        Write-Log -Tenant $TenantLabel -Message "Using existing deterministic break-glass user '$desiredUpn' [$($existingUser.Id)]"
+        return [pscustomobject]@{
+            User              = $existingUser
+            GeneratedPassword = $null
+            WasCreated        = $false
+        }
+    }
+
+    if ($DryRun) {
+        Write-Log -Tenant $TenantLabel -Message "DRY RUN: would create break-glass user '$desiredUpn' with display name '$($script:BreakGlassUserDisplayName)'"
+        return [pscustomobject]@{
+            User = [pscustomobject]@{
+                Id                    = "<dry-run-user>"
+                DisplayName           = $script:BreakGlassUserDisplayName
+                UserPrincipalName     = $desiredUpn
+                AccountEnabled        = $true
+                UserType              = "Member"
+                OnPremisesSyncEnabled = $false
+            }
+            GeneratedPassword = $null
+            WasCreated        = $true
+        }
+    }
+
+    $generatedPassword = New-StrongPassword
+    try {
+        $newUser = Invoke-WithRetry -Tenant $TenantLabel -Operation "Create break-glass user" -Script {
+            New-MgUser `
+                -AccountEnabled:$true `
+                -DisplayName $script:BreakGlassUserDisplayName `
+                -MailNickname $script:BreakGlassUserAlias `
+                -UserPrincipalName $desiredUpn `
+                -PasswordPolicies "DisablePasswordExpiration" `
+                -PasswordProfile @{
+                    ForceChangePasswordNextSignIn = $false
+                    Password = $generatedPassword
+                } `
+                -ErrorAction Stop
+        }
+    }
+    catch {
+        if ($_.Exception.Message -match "(?i)already exists|objectconflict|another object with the same value") {
+            $existingUser = Get-UserPostureIfExists -UserId $desiredUpn -TenantLabel $TenantLabel
+            if ($existingUser) {
+                Write-Log -Level "WARN" -Tenant $TenantLabel -Message "Break-glass user creation conflicted, but the deterministic user '$desiredUpn' already exists. Using the existing account."
+                return [pscustomobject]@{
+                    User              = $existingUser
+                    GeneratedPassword = $null
+                    WasCreated        = $false
+                }
+            }
+        }
+
+        throw
+    }
+
+    $newUserId = [string](Get-GraphMemberValue -Object $newUser -Name "Id")
+    if ([string]::IsNullOrWhiteSpace($newUserId)) {
+        throw "Break-glass user creation did not return a directory object ID."
+    }
+
+    Write-Log -Tenant $TenantLabel -Message "Created break-glass user '$desiredUpn' [$newUserId]"
+    return [pscustomobject]@{
+        User = [pscustomobject]@{
+            Id                    = $newUserId
+            DisplayName           = $script:BreakGlassUserDisplayName
+            UserPrincipalName     = $desiredUpn
+            AccountEnabled        = $true
+            UserType              = "Member"
+            OnPremisesSyncEnabled = $false
+        }
+        GeneratedPassword = $generatedPassword
+        WasCreated        = $true
+    }
+}
+
+function Ensure-BreakGlassUserCompliance {
+    param(
+        [Parameter(Mandatory = $true)]$User,
+        [Parameter(Mandatory = $true)]$Group,
+        [Parameter(Mandatory = $true)]$Role,
+        [Parameter(Mandatory = $true)][hashtable]$GlobalAdminIds,
+        [Parameter(Mandatory = $true)][System.Collections.IList]$Actions,
+        [Parameter(Mandatory = $true)][System.Collections.IDictionary]$Summary,
+        [Parameter(Mandatory = $true)][string]$TenantLabel,
+        [switch]$NeedsGroupMembership,
+        [switch]$GroupJustCreated
+    )
+
+    $Summary["SoleMemberUserPrincipalName"] = [string]$User.UserPrincipalName
+    $Summary["AccountEnabled"] = [bool]$User.AccountEnabled
+    $Summary["IsGlobalAdmin"] = $GlobalAdminIds.ContainsKey([string]$User.Id)
+
+    $isGuest = ([string]$User.UserType -match "^(?i)guest$")
+    $isHybridSynced = ($User.OnPremisesSyncEnabled -eq $true)
+    if ($isGuest -or $isHybridSynced) {
+        Add-UniqueAction -Actions $Actions -Action "ManualReviewRequired"
+        $Summary["WarningCount"] = [int]$Summary["WarningCount"] + 1
+
+        $reasonParts = [System.Collections.Generic.List[string]]::new()
+        if ($isGuest) {
+            $reasonParts.Add("userType=Guest") | Out-Null
+        }
+        if ($isHybridSynced) {
+            $reasonParts.Add("onPremisesSyncEnabled=true") | Out-Null
+        }
+
+        Write-Log -Level "WARN" -Tenant $TenantLabel -Message "Break-glass user '$($User.UserPrincipalName)' is not an eligible self-heal target ($($reasonParts -join '; ')). Manual review required; skipping account and role changes."
+        return
+    }
+
+    if ([string]$User.DisplayName -ne $script:BreakGlassUserDisplayName) {
+        if ($DryRun) {
+            Write-Log -Tenant $TenantLabel -Message "DRY RUN: would set break-glass user display name to '$($script:BreakGlassUserDisplayName)' for '$($User.UserPrincipalName)'"
+        }
+        else {
+            Invoke-WithRetry -Tenant $TenantLabel -Operation "Update break-glass user display name" -Script {
+                Update-MgUser -UserId $User.Id -DisplayName $script:BreakGlassUserDisplayName -ErrorAction Stop
+            } | Out-Null
+            Write-Log -Tenant $TenantLabel -Message "Set display name for '$($User.UserPrincipalName)' to '$($script:BreakGlassUserDisplayName)'"
+        }
+
+        Add-UniqueAction -Actions $Actions -Action "UpdatedUserProfile"
+        $User.DisplayName = $script:BreakGlassUserDisplayName
+    }
+
+    if ($NeedsGroupMembership) {
+        if ($DryRun) {
+            Write-Log -Tenant $TenantLabel -Message "DRY RUN: would add '$($User.UserPrincipalName)' [$($User.Id)] to break-glass group '$($Group.DisplayName)' [$($Group.Id)]"
+        }
+        else {
+            try {
+                Invoke-WithRetry -Tenant $TenantLabel -Operation "Add break-glass user to group" -RetryOnNotFound:$GroupJustCreated -Script {
+                    New-MgGroupMemberByRef -GroupId $Group.Id -BodyParameter @{
+                        "@odata.id" = "https://graph.microsoft.com/v1.0/directoryObjects/$($User.Id)"
+                    } -ErrorAction Stop
+                } | Out-Null
+                Write-Log -Tenant $TenantLabel -Message "Added '$($User.UserPrincipalName)' [$($User.Id)] to break-glass group"
+            }
+            catch {
+                if ($_.Exception.Message -match "(?i)added object references already exist|already exist") {
+                    Write-Log -Tenant $TenantLabel -Message "Break-glass user '$($User.UserPrincipalName)' [$($User.Id)] is already a direct member of the break-glass group."
+                }
+                else {
+                    throw
+                }
+            }
+        }
+
+        Add-UniqueAction -Actions $Actions -Action "AddedUserToGroup"
+        $Summary["MemberCount"] = 1
+    }
+
+    if ($User.AccountEnabled -ne $true) {
+        if ($DryRun) {
+            Write-Log -Tenant $TenantLabel -Message "DRY RUN: would enable break-glass user '$($User.UserPrincipalName)' [$($User.Id)]"
+        }
+        else {
+            Invoke-WithRetry -Tenant $TenantLabel -Operation "Enable break-glass user" -Script {
+                Update-MgUser -UserId $User.Id -AccountEnabled:$true -ErrorAction Stop
+            } | Out-Null
+            Write-Log -Tenant $TenantLabel -Message "Enabled break-glass user '$($User.UserPrincipalName)' [$($User.Id)]"
+        }
+
+        Add-UniqueAction -Actions $Actions -Action "EnabledUser"
+        $Summary["AccountEnabled"] = $true
+        $User.AccountEnabled = $true
+    }
+
+    if (-not $Summary["IsGlobalAdmin"]) {
+        if ($DryRun) {
+            Write-Log -Tenant $TenantLabel -Message "DRY RUN: would assign Global Administrator to '$($User.UserPrincipalName)' [$($User.Id)]"
+        }
+        else {
+            try {
+                Invoke-WithRetry -Tenant $TenantLabel -Operation "Assign Global Administrator role" -Script {
+                    New-MgDirectoryRoleMemberByRef -DirectoryRoleId $Role.Id -OdataId "https://graph.microsoft.com/v1.0/directoryObjects/$($User.Id)" -ErrorAction Stop
+                } | Out-Null
+                Write-Log -Tenant $TenantLabel -Message "Assigned Global Administrator to '$($User.UserPrincipalName)' [$($User.Id)]"
+            }
+            catch {
+                if ($_.Exception.Message -match "(?i)added object references already exist|already exist") {
+                    Write-Log -Tenant $TenantLabel -Message "User '$($User.UserPrincipalName)' [$($User.Id)] is already a Global Administrator."
+                }
+                else {
+                    throw
+                }
+            }
+        }
+
+        Add-UniqueAction -Actions $Actions -Action "AssignedGlobalAdmin"
+        $Summary["IsGlobalAdmin"] = $true
+    }
+}
+
 function Invoke-TenantBreakGlassCompliance {
     param([string]$TargetTenantId)
 
@@ -997,6 +1302,7 @@ function Invoke-TenantBreakGlassCompliance {
         SoleMemberUserPrincipalName = $null
         AccountEnabled              = $null
         IsGlobalAdmin               = $null
+        GeneratedPassword           = $null
         Action                      = $null
         WarningCount                = 0
         Error                       = $null
@@ -1187,9 +1493,25 @@ function Invoke-TenantBreakGlassCompliance {
         Write-Log -Tenant $tenantLogLabel -Message "Current break-glass group direct member count: $($summary.MemberCount)"
 
         if ($summary.MemberCount -eq 0) {
-            Add-UniqueAction -Actions $actions -Action "GroupEmpty"
-            $summary.WarningCount++
-            Write-Log -Level "WARN" -Tenant $tenantLogLabel -Message "Break-glass group '$GroupDisplayName' is empty. Assign one user manually."
+            $breakGlassCandidate = Resolve-EmptyGroupBreakGlassUserCandidate -TenantLabel $tenantLogLabel
+            if ($breakGlassCandidate.WasCreated) {
+                Add-UniqueAction -Actions $actions -Action "CreatedUser"
+            }
+
+            if (-not [string]::IsNullOrWhiteSpace([string]$breakGlassCandidate.GeneratedPassword)) {
+                $summary.GeneratedPassword = [string]$breakGlassCandidate.GeneratedPassword
+            }
+
+            Ensure-BreakGlassUserCompliance `
+                -User $breakGlassCandidate.User `
+                -Group $group `
+                -Role $role `
+                -GlobalAdminIds $globalAdminIds `
+                -Actions $actions `
+                -Summary $summary `
+                -TenantLabel $tenantLogLabel `
+                -NeedsGroupMembership `
+                -GroupJustCreated:$groupJustCreated
         }
         elseif ($summary.MemberCount -gt 1) {
             Add-UniqueAction -Actions $actions -Action "ManualReviewRequired"
@@ -1213,67 +1535,14 @@ function Invoke-TenantBreakGlassCompliance {
             }
             else {
                 $user = Get-SoleMemberUserPosture -UserId $soleMemberId -TenantLabel $tenantLogLabel
-                $summary.SoleMemberUserPrincipalName = $user.UserPrincipalName
-                $summary.AccountEnabled = $user.AccountEnabled
-                $summary.IsGlobalAdmin = $globalAdminIds.ContainsKey($user.Id)
-
-                $isGuest = ($user.UserType -match "^(?i)guest$")
-                $isHybridSynced = ($user.OnPremisesSyncEnabled -eq $true)
-                if ($isGuest -or $isHybridSynced) {
-                    Add-UniqueAction -Actions $actions -Action "ManualReviewRequired"
-                    $summary.WarningCount++
-
-                    $reasonParts = [System.Collections.Generic.List[string]]::new()
-                    if ($isGuest) {
-                        $reasonParts.Add("userType=Guest") | Out-Null
-                    }
-                    if ($isHybridSynced) {
-                        $reasonParts.Add("onPremisesSyncEnabled=true") | Out-Null
-                    }
-
-                    Write-Log -Level "WARN" -Tenant $tenantLogLabel -Message "Sole member '$($user.UserPrincipalName)' is not an eligible self-heal target ($($reasonParts -join '; ')). Manual review required; skipping account and role changes."
-                }
-                else {
-                    if ($user.AccountEnabled -ne $true) {
-                        if ($DryRun) {
-                            Write-Log -Tenant $tenantLogLabel -Message "DRY RUN: would enable break-glass user '$($user.UserPrincipalName)' [$($user.Id)]"
-                        }
-                        else {
-                            Invoke-WithRetry -Tenant $tenantLogLabel -Operation "Enable break-glass user" -Script {
-                                Update-MgUser -UserId $user.Id -AccountEnabled:$true -ErrorAction Stop
-                            } | Out-Null
-                            Write-Log -Tenant $tenantLogLabel -Message "Enabled break-glass user '$($user.UserPrincipalName)' [$($user.Id)]"
-                        }
-
-                        Add-UniqueAction -Actions $actions -Action "EnabledUser"
-                        $summary.AccountEnabled = $true
-                    }
-
-                    if (-not $summary.IsGlobalAdmin) {
-                        if ($DryRun) {
-                            Write-Log -Tenant $tenantLogLabel -Message "DRY RUN: would assign Global Administrator to '$($user.UserPrincipalName)' [$($user.Id)]"
-                        }
-                        else {
-                            try {
-                                Invoke-WithRetry -Tenant $tenantLogLabel -Operation "Assign Global Administrator role" -Script {
-                                    New-MgDirectoryRoleMemberByRef -DirectoryRoleId $role.Id -OdataId "https://graph.microsoft.com/v1.0/directoryObjects/$($user.Id)" -ErrorAction Stop
-                                } | Out-Null
-                                Write-Log -Tenant $tenantLogLabel -Message "Assigned Global Administrator to '$($user.UserPrincipalName)' [$($user.Id)]"
-                            }
-                            catch {
-                                if ($_.Exception.Message -match "(?i)added object references already exist|already exist") {
-                                    Write-Log -Tenant $tenantLogLabel -Message "User '$($user.UserPrincipalName)' [$($user.Id)] is already a Global Administrator."
-                                }
-                                else {
-                                    throw
-                                }
-                            }
-                        }
-
-                        Add-UniqueAction -Actions $actions -Action "AssignedGlobalAdmin"
-                        $summary.IsGlobalAdmin = $true
-                    }
-                }
+                Ensure-BreakGlassUserCompliance `
+                    -User $user `
+                    -Group $group `
+                    -Role $role `
+                    -GlobalAdminIds $globalAdminIds `
+                    -Actions $actions `
+                    -Summary $summary `
+                    -TenantLabel $tenantLogLabel
             }
         }
 
