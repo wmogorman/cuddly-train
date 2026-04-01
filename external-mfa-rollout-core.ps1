@@ -203,6 +203,13 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
+$script:DefaultManagedBreakGlassGroupName = "ActaMSP Break Glass"
+$script:DefaultManagedPilotSourceGroupName = "ActaMSP Global Administrators Audit"
+$script:DefaultManagedFinalTargetGroupNames = @(
+  "ActaMSP Global Administrators Audit",
+  "ActaMSP Integration Group"
+)
+
 # Consistent high-visibility console output for major stages.
 function Write-Step($msg) {
   Write-Host "==> $msg" -ForegroundColor Cyan
@@ -308,12 +315,19 @@ function New-SafeMailNickname {
   return ("{0}{1}" -f $base, ([guid]::NewGuid().ToString("N").Substring(0, 8)))
 }
 
+# Returns exact displayName matches so callers can decide whether to throw or prompt.
+function Get-GroupsByDisplayNameExact {
+  param([Parameter(Mandatory=$true)][string]$DisplayName)
+
+  $escapedName = Escape-ODataStringLiteral -Value $DisplayName
+  return @(Get-MgGroup -Filter "displayName eq '$escapedName'" -ConsistencyLevel eventual -All)
+}
+
 # Returns exactly one group by displayName, or throws on duplicates to avoid targeting the wrong object.
 function Get-GroupByDisplayNameUnique {
   param([Parameter(Mandatory=$true)][string]$DisplayName)
 
-  $escapedName = Escape-ODataStringLiteral -Value $DisplayName
-  $matches = @(Get-MgGroup -Filter "displayName eq '$escapedName'" -ConsistencyLevel eventual -All)
+  $matches = @(Get-GroupsByDisplayNameExact -DisplayName $DisplayName)
 
   if ($matches.Count -gt 1) {
     $ids = ($matches | ForEach-Object { $_.Id }) -join ", "
@@ -325,6 +339,67 @@ function Get-GroupByDisplayNameUnique {
   }
 
   return $null
+}
+
+function Test-CanPromptForGroupId {
+  try {
+    return ([Environment]::UserInteractive -and (-not [Console]::IsInputRedirected))
+  }
+  catch {
+    return [Environment]::UserInteractive
+  }
+}
+
+function Prompt-ForExistingGroupId {
+  param(
+    [Parameter(Mandatory=$true)][string]$PurposeLabel,
+    [Parameter(Mandatory=$true)][string]$DisplayName,
+    [Parameter(Mandatory=$false)][object[]]$Matches = @(),
+    [Parameter(Mandatory=$true)][string]$ParameterHint
+  )
+
+  if (@($Matches).Count -gt 0) {
+    Write-Warning "Multiple groups matched '$DisplayName' for $PurposeLabel. Provide the correct object id."
+    foreach ($match in @($Matches)) {
+      Write-Host "   Candidate: $($match.DisplayName) [$($match.Id)]" -ForegroundColor Yellow
+    }
+  }
+  else {
+    Write-Warning "Could not find a unique group named '$DisplayName' for $PurposeLabel."
+  }
+
+  if (-not (Test-CanPromptForGroupId)) {
+    throw "Could not resolve $PurposeLabel by name '$DisplayName' and cannot prompt in this session. Provide $ParameterHint explicitly."
+  }
+
+  while ($true) {
+    $enteredId = Read-Host "Enter object id for $PurposeLabel ('$DisplayName')"
+    if ([string]::IsNullOrWhiteSpace($enteredId)) {
+      throw "No object id was provided for $PurposeLabel ('$DisplayName')."
+    }
+
+    $resolved = Resolve-GroupById -GroupId $enteredId.Trim()
+    if ($resolved) {
+      return $resolved
+    }
+
+    Write-Warning "Group id '$enteredId' was not found. Try again."
+  }
+}
+
+function Resolve-GroupByDisplayNameOrPrompt {
+  param(
+    [Parameter(Mandatory=$true)][string]$DisplayName,
+    [Parameter(Mandatory=$true)][string]$PurposeLabel,
+    [Parameter(Mandatory=$true)][string]$ParameterHint
+  )
+
+  $matches = @(Get-GroupsByDisplayNameExact -DisplayName $DisplayName)
+  if ($matches.Count -eq 1) {
+    return $matches[0]
+  }
+
+  return Prompt-ForExistingGroupId -PurposeLabel $PurposeLabel -DisplayName $DisplayName -Matches $matches -ParameterHint $ParameterHint
 }
 
 function Invoke-Beta {
@@ -1626,12 +1701,70 @@ function Resolve-ExistingPilotGroup {
     return $resolvedById
   }
 
-  $resolvedByName = Get-GroupByDisplayNameUnique -DisplayName $ExistingPilotGroupName
+  $resolvedByName = Resolve-GroupByDisplayNameOrPrompt `
+    -DisplayName $ExistingPilotGroupName `
+    -PurposeLabel "pilot source group" `
+    -ParameterHint "-ExistingPilotGroupId"
   if (-not $resolvedByName) {
     throw "Existing pilot group '$ExistingPilotGroupName' was not found."
   }
 
   return $resolvedByName
+}
+
+function Resolve-ManagedDefaultGroupInputs {
+  param(
+    [Parameter(Mandatory=$true)][ValidateSet("PilotGlobalAdmins","FinalGroups")][string]$Stage,
+    [Parameter(Mandatory=$false)][string]$BreakGlassGroupId,
+    [Parameter(Mandatory=$false)][string]$ExistingPilotGroupId,
+    [Parameter(Mandatory=$false)][string]$ExistingPilotGroupName,
+    [Parameter(Mandatory=$false)][string[]]$FinalTargetGroupIds,
+    [Parameter(Mandatory=$false)][bool]$Offboarding = $false
+  )
+
+  $resolvedBreakGlassGroupId = $BreakGlassGroupId
+  $resolvedExistingPilotGroupId = $ExistingPilotGroupId
+  $resolvedExistingPilotGroupName = $ExistingPilotGroupName
+  $resolvedFinalTargetGroupIds = @(ConvertTo-StringArray -Value $FinalTargetGroupIds | Sort-Object -Unique)
+
+  if (-not $Offboarding -and [string]::IsNullOrWhiteSpace($resolvedBreakGlassGroupId)) {
+    $breakGlassGroup = Resolve-GroupByDisplayNameOrPrompt `
+      -DisplayName $script:DefaultManagedBreakGlassGroupName `
+      -PurposeLabel "break-glass group" `
+      -ParameterHint "-BreakGlassGroupId"
+    $resolvedBreakGlassGroupId = [string]$breakGlassGroup.Id
+    Write-Host "   Using default managed break-glass group '$($breakGlassGroup.DisplayName)' [$resolvedBreakGlassGroupId]." -ForegroundColor Green
+  }
+
+  if ((-not $Offboarding) -and $Stage -eq "PilotGlobalAdmins" -and [string]::IsNullOrWhiteSpace($resolvedExistingPilotGroupId) -and [string]::IsNullOrWhiteSpace($resolvedExistingPilotGroupName)) {
+    $pilotSourceGroup = Resolve-GroupByDisplayNameOrPrompt `
+      -DisplayName $script:DefaultManagedPilotSourceGroupName `
+      -PurposeLabel "pilot source group" `
+      -ParameterHint "-ExistingPilotGroupId"
+    $resolvedExistingPilotGroupId = [string]$pilotSourceGroup.Id
+    Write-Host "   Using default managed pilot source group '$($pilotSourceGroup.DisplayName)' [$resolvedExistingPilotGroupId]." -ForegroundColor Green
+  }
+
+  if ($Stage -eq "FinalGroups" -and @($resolvedFinalTargetGroupIds).Count -eq 0) {
+    $resolvedFinalTargetGroupIds = @()
+    foreach ($displayName in @($script:DefaultManagedFinalTargetGroupNames)) {
+      $targetGroup = Resolve-GroupByDisplayNameOrPrompt `
+        -DisplayName $displayName `
+        -PurposeLabel "final rollout target group" `
+        -ParameterHint "-FinalTargetGroupIds"
+      $resolvedFinalTargetGroupIds += [string]$targetGroup.Id
+      Write-Host "   Using default managed final target group '$($targetGroup.DisplayName)' [$($targetGroup.Id)]." -ForegroundColor Green
+    }
+
+    $resolvedFinalTargetGroupIds = @($resolvedFinalTargetGroupIds | Sort-Object -Unique)
+  }
+
+  return [pscustomobject]@{
+    BreakGlassGroupId = $resolvedBreakGlassGroupId
+    ExistingPilotGroupId = $resolvedExistingPilotGroupId
+    ExistingPilotGroupName = $resolvedExistingPilotGroupName
+    FinalTargetGroupIds = @($resolvedFinalTargetGroupIds)
+  }
 }
 
 function Ensure-SecurityGroup {
@@ -2559,6 +2692,9 @@ $ClientId = $effectiveClientId
 # - Rollout (default): create/update Duo EAM + CA + hardening
 # - Offboarding: disable Duo EAM, remove CA, restore Microsoft-preferred settings
 $isOffboarding = [bool]$OffboardToMicrosoftPreferred
+if (-not $isOffboarding) {
+  Write-Host "   Connected tenant: $tenantLabel" -ForegroundColor Green
+}
 if ($isOffboarding) {
   Write-Step "Offboarding mode enabled: removing Duo CA and restoring Microsoft-preferred MFA settings (best-effort)."
 }
@@ -2593,9 +2729,20 @@ else {
   Write-Host "   SSPR/combined registration can still cause loops unless Password reset settings are disabled manually (see audit output)." -ForegroundColor Yellow
 }
 
-if (-not $isOffboarding) {
-  Write-Host "   Connected tenant: $tenantLabel" -ForegroundColor Green
+$resolvedManagedGroupInputs = Resolve-ManagedDefaultGroupInputs `
+  -Stage $Stage `
+  -BreakGlassGroupId $BreakGlassGroupId `
+  -ExistingPilotGroupId $ExistingPilotGroupId `
+  -ExistingPilotGroupName $ExistingPilotGroupName `
+  -FinalTargetGroupIds $FinalTargetGroupIds `
+  -Offboarding $isOffboarding
 
+$BreakGlassGroupId = [string]$resolvedManagedGroupInputs.BreakGlassGroupId
+$ExistingPilotGroupId = [string]$resolvedManagedGroupInputs.ExistingPilotGroupId
+$ExistingPilotGroupName = [string]$resolvedManagedGroupInputs.ExistingPilotGroupName
+$FinalTargetGroupIds = @($resolvedManagedGroupInputs.FinalTargetGroupIds)
+
+if (-not $isOffboarding) {
   $preflightSummary = Invoke-ExternalMfaPreflight `
     -Name $Name `
     -ExternalAuthConfigId $ExternalAuthConfigId `

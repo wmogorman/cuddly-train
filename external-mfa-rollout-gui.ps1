@@ -151,7 +151,7 @@ $txtCaPolicy = New-TextBoxControl -X 240 -Y ($y - 2) -Width 660 -Text "DMX - Req
 $tabBasics.Controls.Add($txtCaPolicy)
 $y += 34
 
-$tabBasics.Controls.Add((New-LabelControl -Text "BreakGlassGroupId (required for rollout)" -X 16 -Y $y))
+$tabBasics.Controls.Add((New-LabelControl -Text "BreakGlassGroupId (optional override)" -X 16 -Y $y))
 $txtBreakGlassGroupId = New-TextBoxControl -X 240 -Y ($y - 2) -Width 660
 $tabBasics.Controls.Add($txtBreakGlassGroupId)
 $y += 42
@@ -228,9 +228,9 @@ Recommended workflow:
 1. Fill required rollout value: Name.
 2. If creating a NEW EAM, also provide ClientId, DiscoveryEndpoint, and AppId.
 3. If the EAM already exists in Entra, leave ExternalAuthConfigId blank first; the script should find it automatically by name. Only use ExternalAuthConfigId if lookup fails and you need an override.
-4. Provide BreakGlassGroupId for the emergency admin exclusion before running a rollout.
-5. PilotGroupName identifies the managed pilot SOURCE group when you let the script mirror Global Administrators automatically.
-6. WrapperGroupName is the pilot-stage enforcement group. FinalGroups targets the supplied final rollout groups directly for EAM, CA, and auth-method exclusions.
+4. BreakGlassGroupId is optional when the tenant contains the standard managed group 'ActaMSP Break Glass'; use the field only as an override.
+5. PilotGroupName identifies the managed pilot SOURCE group when you let the script mirror Global Administrators automatically. If no pilot source override is supplied, the rollout will try to use 'ActaMSP Global Administrators Audit' by default.
+6. WrapperGroupName is the pilot-stage enforcement group. FinalGroups targets the supplied final rollout groups directly for EAM, CA, and auth-method exclusions, defaulting to 'ActaMSP Global Administrators Audit' and 'ActaMSP Integration Group' when no explicit FinalTargetGroupIds are supplied.
 7. PilotGlobalAdmins syncs transitive users from the maintained pilot source group into the wrapper as DIRECT members; it does not rely on nested groups inside the wrapper.
 8. Leave Microsoft Authenticator enabled unless you intentionally want the script to disable it.
 9. Use Run In Console so teammates can complete Microsoft Graph interactive sign-in.
@@ -338,10 +338,6 @@ function Test-UiState {
 
   if ([string]::IsNullOrWhiteSpace($State.Name)) {
     $errors.Add("EAM Name is required.") | Out-Null
-  }
-
-  if (-not $State.Offboard -and [string]::IsNullOrWhiteSpace($State.BreakGlassGroupId)) {
-    $errors.Add("BreakGlassGroupId is required for rollout mode.") | Out-Null
   }
 
   if (-not $State.Offboard) {

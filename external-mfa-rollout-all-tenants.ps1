@@ -10,10 +10,14 @@
   Auto-discovery is only supported in app-only mode. Discovered tenant IDs are filtered to entries present in the JSON config.
 
   Group targeting model:
+  - If breakGlassGroupId is omitted, the rollout will try to resolve 'ActaMSP Break Glass' by exact displayName.
   - PilotGlobalAdmins uses wrapperGroupName as the enforcement target for EAM, CA, and auth-method exclusions.
   - existingPilotSourceGroupId / existingPilotSourceGroupName (or the legacy existingPilotGroup* keys) identify the
-    maintained pilot source group whose users will be synced directly into the wrapper.
+    maintained pilot source group whose users will be synced directly into the wrapper. If omitted, the rollout will
+    try to resolve 'ActaMSP Global Administrators Audit' by exact displayName.
   - FinalGroups uses finalSourceGroupIds (or the legacy finalTargetGroupIds key) directly for EAM, CA, and auth-method exclusions.
+    If omitted, the rollout will try to resolve 'ActaMSP Global Administrators Audit' and 'ActaMSP Integration Group'
+    by exact displayName.
 #>
 
 [CmdletBinding()]
