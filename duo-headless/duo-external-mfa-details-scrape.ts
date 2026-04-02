@@ -541,6 +541,27 @@ async function searchForIntegration(page: Page, searchText: string): Promise<voi
   await page.waitForTimeout(750);
 }
 
+async function waitForIntegrationDetailsReady(page: Page): Promise<void> {
+  const timeoutMs = 45_000;
+  const started = Date.now();
+
+  while (Date.now() - started < timeoutMs) {
+    const detailsVisible = await page.getByText(/^Details$/i).first().isVisible().catch(() => false);
+    const eamContainerVisible = await page.locator("#integration_eam_info_container input").first().isVisible().catch(() => false);
+    const bodyText = await page.locator("body").innerText().catch(() => "");
+    const hasTenantId = /Tenant ID:\s*[0-9a-fA-F-]{36}/i.test(bodyText);
+
+    if (detailsVisible || eamContainerVisible || hasTenantId) {
+      return;
+    }
+
+    await page.waitForLoadState("domcontentloaded").catch(() => {});
+    await page.waitForTimeout(1_000);
+  }
+
+  throw new Error(`Timed out waiting for integration details to render on ${page.url()}.`);
+}
+
 async function openIntegrationDetails(page: Page, integrationName: string, integrationKey: string): Promise<void> {
   if (integrationKey) {
     await searchForIntegration(page, integrationKey);
@@ -574,7 +595,12 @@ async function openIntegrationDetails(page: Page, integrationName: string, integ
   }
 
   await page.waitForLoadState("domcontentloaded");
-  await page.getByText(/^Details$/i).first().waitFor({ state: "visible", timeout: 30_000 });
+  try {
+    await waitForIntegrationDetailsReady(page);
+  } catch (error) {
+    await page.reload({ waitUntil: "domcontentloaded" }).catch(() => {});
+    await waitForIntegrationDetailsReady(page);
+  }
 }
 
 async function readFieldValue(page: Page, label: string): Promise<string> {
