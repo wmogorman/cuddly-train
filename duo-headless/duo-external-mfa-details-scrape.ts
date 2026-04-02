@@ -5,6 +5,7 @@ import dotenv from "dotenv";
 
 dotenv.config();
 dotenv.config({ path: path.resolve("./duo-headless/duo-headless.env") });
+dotenv.config({ path: path.resolve("./duo-accounts-api.env") });
 
 type CliArgs = {
   inputPath: string;
@@ -34,6 +35,7 @@ const DEFAULT_OUTPUT = path.resolve("./duo-external-mfa-ui-details.csv");
 const DEFAULT_ADMIN_URL = "https://admin.duosecurity.com";
 const STORAGE = path.resolve("./duo-headless/storage_state.json");
 const ARTIFACTS_DIR = path.resolve("./duo-headless/artifacts");
+const AUTH_WAIT_TIMEOUT_MS = process.env.HEADED ? 600_000 : 180_000;
 
 function printHelp(): void {
   console.log(`Usage: tsx duo-headless/duo-external-mfa-details-scrape.ts [options]
@@ -49,7 +51,7 @@ Options:
 
 Environment:
   DUO_ADMIN_URL      Duo admin panel base URL
-                     Default: ${DEFAULT_ADMIN_URL}
+                     Default: derived from DUO_PARENT_API_HOST when available, otherwise ${DEFAULT_ADMIN_URL}
   DUO_ADMIN_EMAIL    Optional username for direct Duo admin login
   DUO_ADMIN_PASSWORD Optional password for direct Duo admin login
   HEADED=1           Show the browser for manual SSO/MFA and session capture
@@ -123,15 +125,52 @@ function env(key: string): string {
   return process.env[key]?.trim() ?? "";
 }
 
+function deriveAdminUrlFromParentApiHost(): string {
+  const parentApiHost = env("DUO_PARENT_API_HOST");
+  if (!parentApiHost) {
+    return DEFAULT_ADMIN_URL;
+  }
+
+  const withoutScheme = parentApiHost
+    .replace(/^[a-zA-Z][a-zA-Z0-9+\-.]*:\/\//, "")
+    .replace(/\/+$/, "");
+
+  if (/^api-/i.test(withoutScheme)) {
+    return `https://${withoutScheme.replace(/^api-/i, "admin-")}`;
+  }
+
+  return DEFAULT_ADMIN_URL;
+}
+
 function normalizeAdminUrl(input: string): string {
   const value = input.trim();
   if (!value) {
-    return DEFAULT_ADMIN_URL;
+    return deriveAdminUrlFromParentApiHost();
   }
   if (/^[a-zA-Z][a-zA-Z0-9+\-.]*:\/\//.test(value)) {
     return value.replace(/\/+$/, "");
   }
   return `https://${value.replace(/\/+$/, "")}`;
+}
+
+function deriveAdminUrlFromApiHost(apiHost: string): string {
+  const value = apiHost.trim();
+  if (!value) {
+    return "";
+  }
+
+  const withoutScheme = value
+    .replace(/^[a-zA-Z][a-zA-Z0-9+\-.]*:\/\//, "")
+    .replace(/\/+$/, "");
+
+  if (/^api-/i.test(withoutScheme)) {
+    return `https://${withoutScheme.replace(/^api-/i, "admin-")}`;
+  }
+  if (/^admin-/i.test(withoutScheme)) {
+    return `https://${withoutScheme}`;
+  }
+
+  return normalizeAdminUrl(withoutScheme);
 }
 
 function escapeRegex(value: string): string {
@@ -197,13 +236,13 @@ function readCsvObjects(filePath: string): CsvRow[] {
     throw new Error(`Input CSV not found: ${filePath}`);
   }
 
-  const raw = fs.readFileSync(filePath, "utf8");
+  const raw = fs.readFileSync(filePath, "utf8").replace(/^\uFEFF/, "");
   const rows = parseCsv(raw);
   if (rows.length === 0) {
     return [];
   }
 
-  const headers = rows[0] ?? [];
+  const headers = (rows[0] ?? []).map((header) => header.replace(/^\uFEFF/, ""));
   return rows.slice(1).map((values) => {
     const record: CsvRow = {};
     headers.forEach((header, index) => {
@@ -260,18 +299,24 @@ async function firstVisibleOf(...candidates: Locator[]): Promise<Locator | null>
 }
 
 async function isAuthenticated(page: Page): Promise<boolean> {
+  if (/\/login(?:[/?#]|$)/i.test(page.url())) {
+    return false;
+  }
+
   const match = await firstVisibleOf(
     page.getByRole("link", { name: /^Applications$/i }),
-    page.getByRole("button", { name: /^Applications$/i }),
     page.getByRole("link", { name: /^Home$/i }),
-    page.getByRole("button", { name: /Account/i }),
-    page.locator("header button").filter({ hasText: /Account|Viewing|Subaccounts|Parent/i }),
+    page.getByRole("link", { name: /^Users$/i }),
+    page.getByRole("link", { name: /^Devices$/i }),
+    page.getByRole("link", { name: /^Policies$/i }),
+    page.getByRole("heading", { name: /^Applications$/i }),
+    page.getByText(/^Configured applications$/i),
   );
   return match !== null;
 }
 
 async function waitForAuthenticated(page: Page): Promise<void> {
-  const timeoutMs = 180_000;
+  const timeoutMs = AUTH_WAIT_TIMEOUT_MS;
   const started = Date.now();
 
   while (Date.now() - started < timeoutMs) {
@@ -282,6 +327,34 @@ async function waitForAuthenticated(page: Page): Promise<void> {
   }
 
   throw new Error("Timed out waiting for Duo admin authentication.");
+}
+
+async function waitForAdminShell(page: Page): Promise<void> {
+  const timeoutMs = 60_000;
+  const started = Date.now();
+
+  while (Date.now() - started < timeoutMs) {
+    if (/\/login(?:[/?#]|$)/i.test(page.url())) {
+      throw new Error(`Duo admin shell is not available because the page is on login: ${page.url()}`);
+    }
+
+    const signal = await firstVisibleOf(
+      page.getByRole("link", { name: /^Applications$/i }),
+      page.getByRole("link", { name: /^Home$/i }),
+      page.locator('button[data-testid="header-menu-btn"]'),
+      page.locator("button").filter({ hasText: /^Account\s+/i }),
+      page.locator("button").filter({ hasText: /\bViewing\b|\bSubaccounts\b|\bParent\b/ }),
+      page.getByText(/^Configured applications$/i),
+    );
+    if (signal) {
+      return;
+    }
+
+    await page.waitForLoadState("domcontentloaded").catch(() => {});
+    await page.waitForTimeout(1_000);
+  }
+
+  throw new Error(`Timed out waiting for the Duo admin shell on ${page.url()}.`);
 }
 
 async function ensureLogin(page: Page, adminUrl: string): Promise<void> {
@@ -323,14 +396,18 @@ async function ensureLogin(page: Page, adminUrl: string): Promise<void> {
     throw new Error(
       "No saved Duo admin session is available. Run with HEADED=1 once and complete login manually, or set DUO_ADMIN_EMAIL and DUO_ADMIN_PASSWORD if direct login is supported.",
     );
+  } else if (headed && !hasCredentials) {
+    console.log("Complete Duo admin login in the opened browser window. The scraper will continue after the admin shell appears.");
   }
 
   await waitForAuthenticated(page);
+  await waitForAdminShell(page);
 }
 
 async function openApplicationsPage(page: Page, adminUrl: string): Promise<void> {
   const targetUrl = `${adminUrl.replace(/\/+$/, "")}/applications`;
   await page.goto(targetUrl, { waitUntil: "domcontentloaded" });
+  await waitForAdminShell(page);
 
   const heading = await firstVisibleOf(
     page.getByRole("heading", { name: /^Applications$/i }),
@@ -355,16 +432,19 @@ async function openApplicationsPage(page: Page, adminUrl: string): Promise<void>
 }
 
 async function openAccountSwitcher(page: Page): Promise<void> {
+  await waitForAdminShell(page);
+
   const opener = await firstVisibleOf(
-    page.getByRole("button", { name: /Account/i }),
+    page.locator('button[data-testid="header-menu-btn"]'),
+    page.getByRole("button", { name: /^Account\s+/i }),
     page.getByRole("button", { name: /Viewing/i }),
-    page.locator("header button").filter({ hasText: /Account|Viewing|Subaccounts|Parent/i }),
-    page.locator('[role="banner"] button').filter({ hasText: /Account|Viewing|Subaccounts|Parent/i }),
-    page.locator("button").filter({ hasText: /Viewing|Subaccounts|Parent/i }),
+    page.locator("header button").filter({ hasText: /^Account\s+/i }),
+    page.locator('[role="banner"] button').filter({ hasText: /^Account\s+/i }),
+    page.locator("button").filter({ hasText: /\bViewing\b|\bSubaccounts\b|\bParent\b/ }),
   );
 
   if (!opener) {
-    throw new Error("Could not find the Duo account switcher.");
+    throw new Error(`Could not find the Duo account switcher on ${page.url()}.`);
   }
 
   await opener.click();
@@ -396,6 +476,10 @@ async function switchToAccount(page: Page, accountName: string): Promise<void> {
   const exactPattern = new RegExp(`^${escapeRegex(accountName)}$`, "i");
   const containsPattern = new RegExp(escapeRegex(accountName), "i");
   const result = await firstVisibleOf(
+    page.locator('a[role="option"]').filter({ hasText: exactPattern }),
+    page.getByRole("option", { name: exactPattern }),
+    page.locator('a[role="option"]').filter({ hasText: containsPattern }),
+    page.getByRole("option", { name: containsPattern }),
     page.getByRole("button", { name: exactPattern }),
     page.getByRole("link", { name: exactPattern }),
     page.getByText(exactPattern),
@@ -408,9 +492,37 @@ async function switchToAccount(page: Page, accountName: string): Promise<void> {
     throw new Error(`Could not find account switcher result for '${accountName}'.`);
   }
 
-  await result.click();
-  await page.waitForTimeout(1_250);
+  const previousUrl = page.url();
+  await Promise.all([
+    page
+      .waitForURL(
+        (url) => url.toString() !== previousUrl && !/\/login(?:[/?#]|$)/i.test(url.toString()),
+        { timeout: 30_000 },
+      )
+      .catch(() => null),
+    result.click(),
+  ]);
   await page.waitForLoadState("domcontentloaded", { timeout: 30_000 }).catch(() => {});
+  await waitForAdminShell(page);
+  await page
+    .waitForFunction(
+      (wantedAccountName) => {
+        const bodyText = document.body?.innerText ?? "";
+        const match = bodyText.match(/Selected:\s*([\s\S]*?)\s*\/\s*ID:/i);
+        const selectedAccountName = match?.[1]?.replace(/\s+/g, " ").trim().toLowerCase() ?? "";
+        return selectedAccountName === wantedAccountName.toLowerCase();
+      },
+      accountName,
+      { timeout: 30_000 },
+    )
+    .catch(() => {});
+
+  const bodyText = await page.locator("body").innerText().catch(() => "");
+  const selectedAccountMatch = bodyText.match(/Selected:\s*([\s\S]*?)\s*\/\s*ID:/i);
+  const selectedAccountName = selectedAccountMatch?.[1]?.replace(/\s+/g, " ").trim() ?? "";
+  if (selectedAccountName.toLowerCase() !== accountName.toLowerCase()) {
+    throw new Error(`Account switch to '${accountName}' did not complete. Current page is ${page.url()}.`);
+  }
 }
 
 async function searchForIntegration(page: Page, searchText: string): Promise<void> {
@@ -505,16 +617,73 @@ async function readFieldValue(page: Page, label: string): Promise<string> {
   return cleaned;
 }
 
+async function readInputOrAttributeValue(
+  container: Locator,
+  inputName: string,
+  dataAttribute: string,
+  fallbackValue: string,
+): Promise<string> {
+  const input = container.locator(`input[name="${inputName}"]`).first();
+  const inputValue = (await input.inputValue().catch(() => "")).trim();
+  if (inputValue) {
+    return inputValue;
+  }
+
+  const attributeValue = (await container.getAttribute(dataAttribute).catch(() => ""))?.trim() ?? "";
+  if (attributeValue) {
+    return attributeValue;
+  }
+
+  return fallbackValue;
+}
+
 async function scrapeIntegrationDetails(page: Page): Promise<ScrapedFields> {
   const bodyText = await page.locator("body").innerText();
   const tenantIdMatch = bodyText.match(/Tenant ID:\s*([0-9a-fA-F-]{36})/i);
+  const eamContainer = page.locator("#integration_eam_info_container").first();
+  const hasEamContainer = (await eamContainer.count().catch(() => 0)) > 0;
 
   return {
-    UiProviderName: await readFieldValue(page, "Name"),
-    UiClientId: await readFieldValue(page, "Client ID"),
-    UiGuestClientId: await readFieldValue(page, "Client ID (Guest/Cross-Tenant)"),
-    UiDiscoveryEndpoint: await readFieldValue(page, "Discovery Endpoint"),
-    UiAppId: await readFieldValue(page, "App ID"),
+    UiProviderName: hasEamContainer
+      ? await readInputOrAttributeValue(
+          eamContainer,
+          "integrationName",
+          "data-integration-name",
+          await readFieldValue(page, "Name"),
+        )
+      : await readFieldValue(page, "Name"),
+    UiClientId: hasEamContainer
+      ? await readInputOrAttributeValue(
+          eamContainer,
+          "integrationClientId",
+          "data-integration-client-id",
+          await readFieldValue(page, "Client ID"),
+        )
+      : await readFieldValue(page, "Client ID"),
+    UiGuestClientId: hasEamContainer
+      ? await readInputOrAttributeValue(
+          eamContainer,
+          "integrationClientIdGuest",
+          "data-integration-client-id-guest",
+          await readFieldValue(page, "Client ID (Guest/Cross-Tenant)"),
+        )
+      : await readFieldValue(page, "Client ID (Guest/Cross-Tenant)"),
+    UiDiscoveryEndpoint: hasEamContainer
+      ? await readInputOrAttributeValue(
+          eamContainer,
+          "integrationDiscoveryEndpoint",
+          "data-integration-discovery-endpoint",
+          await readFieldValue(page, "Discovery Endpoint"),
+        )
+      : await readFieldValue(page, "Discovery Endpoint"),
+    UiAppId: hasEamContainer
+      ? await readInputOrAttributeValue(
+          eamContainer,
+          "integrationAppId",
+          "data-integration-app-id",
+          await readFieldValue(page, "App ID"),
+        )
+      : await readFieldValue(page, "App ID"),
     UiEntraTenantId: tenantIdMatch?.[1] ?? "",
     UiDetailsUrl: page.url(),
     UiScrapeStatus: "Scraped",
@@ -604,22 +773,23 @@ async function main(): Promise<void> {
     let currentAccount = "";
     for (const row of targetRows) {
       const accountName = row.AccountName ?? "";
+      const accountAdminUrl = normalizeAdminUrl(deriveAdminUrlFromApiHost(row.ApiHost ?? "") || adminUrl);
       const integrationName = row.IntegrationName ?? "Microsoft Entra ID: External MFA";
       const integrationKey = row.IntegrationKey ?? "";
       const outputRow = withDefaultScrapeFields(row);
 
       try {
-        await page.goto(adminUrl, { waitUntil: "domcontentloaded" });
+        await waitForAdminShell(page);
 
-        if (accountName !== currentAccount) {
-          console.log(`Switching to account: ${accountName}`);
-          await switchToAccount(page, accountName);
-          currentAccount = accountName;
-        }
+          if (accountName !== currentAccount) {
+            console.log(`Switching to account: ${accountName}`);
+            await switchToAccount(page, accountName);
+            currentAccount = accountName;
+          }
 
-        await openApplicationsPage(page, adminUrl);
-        console.log(`Opening app in ${accountName}: ${integrationName} (${integrationKey})`);
-        await openIntegrationDetails(page, integrationName, integrationKey);
+          await openApplicationsPage(page, accountAdminUrl);
+          console.log(`Opening app in ${accountName}: ${integrationName} (${integrationKey})`);
+          await openIntegrationDetails(page, integrationName, integrationKey);
 
         Object.assign(outputRow, await scrapeIntegrationDetails(page));
       } catch (error) {

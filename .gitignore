@@ -21,3 +21,4 @@ duo-external-mfa-ui-details.csv
 duo-headless/duo-headless.env
 duo-headless/storage_state.json
 duo-headless/artifacts/
+node_modules/
