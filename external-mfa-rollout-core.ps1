@@ -20,6 +20,10 @@
 .PARAMETER AppId
   Application (resource) AppId / identifier required by the external auth method configuration
 
+.PARAMETER DuoUiDetailsCsvPath
+  Optional path to duo-external-mfa-ui-details.csv. When ClientId/DiscoveryEndpoint/AppId are omitted, the script
+  can use this CSV to auto-resolve the Duo provider details for the connected tenant before creating the EAM.
+
 .PARAMETER ExternalAuthConfigId
   Optional override for an existing External Authentication Method configuration ID. Normally the script reuses an
   existing EAM automatically by display name and provider identifiers; use this only when Graph lookup is inconsistent
@@ -79,6 +83,10 @@ param(
   # Provider-specific app/resource identifier expected by Entra EAM config (rollout mode only).
   [Parameter(Mandatory=$false)]
   [string]$AppId,
+
+  # Optional path to the scraped Duo UI details CSV used to auto-resolve provider config fields.
+  [Parameter(Mandatory=$false)]
+  [string]$DuoUiDetailsCsvPath,
 
   # Optional override to force a specific existing EAM config when automatic lookup is unreliable.
   [Parameter(Mandatory=$false)]
@@ -209,6 +217,8 @@ $script:DefaultManagedFinalTargetGroupNames = @(
   "ActaMSP Global Administrators Audit",
   "ActaMSP Integration Group"
 )
+$script:DefaultDuoUiDetailsCsvFileName = "duo-external-mfa-ui-details.csv"
+$script:DuoUiDetailsCsvCache = @{}
 
 # Consistent high-visibility console output for major stages.
 function Write-Step($msg) {
@@ -230,6 +240,231 @@ function Ensure-Module {
   if (-not (Get-Module -ListAvailable -Name $ModuleName)) {
     throw "Missing module '$ModuleName'. Install with: Install-Module $ModuleName -Scope CurrentUser"
   }
+}
+
+function Get-DuoUiDetailsCsvPath {
+  param([Parameter(Mandatory=$false)][string]$Path)
+
+  $effectivePath = if ([string]::IsNullOrWhiteSpace($Path)) {
+    Join-Path $PSScriptRoot $script:DefaultDuoUiDetailsCsvFileName
+  }
+  else {
+    $Path
+  }
+
+  return $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($effectivePath)
+}
+
+function Get-DuoUiDetailsCsvData {
+  param([Parameter(Mandatory=$false)][string]$Path)
+
+  $resolvedPath = Get-DuoUiDetailsCsvPath -Path $Path
+  if ($script:DuoUiDetailsCsvCache.ContainsKey($resolvedPath)) {
+    return $script:DuoUiDetailsCsvCache[$resolvedPath]
+  }
+
+  $result = [pscustomobject]@{
+    Path   = $resolvedPath
+    Exists = (Test-Path -LiteralPath $resolvedPath)
+    Rows   = @()
+  }
+
+  if ($result.Exists) {
+    $result.Rows = @(Import-Csv -LiteralPath $resolvedPath -ErrorAction Stop)
+  }
+
+  $script:DuoUiDetailsCsvCache[$resolvedPath] = $result
+  return $result
+}
+
+function Get-DuoUiDetailsMatchForTenant {
+  param(
+    [Parameter(Mandatory=$true)][string]$TenantId,
+    [Parameter(Mandatory=$false)][string]$ConfigurationDisplayName,
+    [Parameter(Mandatory=$false)][string]$CsvPath
+  )
+
+  $csvData = Get-DuoUiDetailsCsvData -Path $CsvPath
+  if (-not $csvData.Exists) {
+    return [pscustomobject]@{
+      Status   = "CsvNotFound"
+      CsvPath  = $csvData.Path
+      Row      = $null
+      Message  = "Duo UI details CSV not found."
+    }
+  }
+
+  $tenantMatches = @(
+    $csvData.Rows | Where-Object {
+      ([string]$_.UiEntraTenantId).Trim() -eq $TenantId
+    }
+  )
+
+  if ($tenantMatches.Count -eq 0) {
+    return [pscustomobject]@{
+      Status   = "NoTenantMatch"
+      CsvPath  = $csvData.Path
+      Row      = $null
+      Message  = "No CSV row matched tenant '$TenantId'."
+    }
+  }
+
+  $providerMatches = @()
+  if (-not [string]::IsNullOrWhiteSpace($ConfigurationDisplayName)) {
+    $providerMatches = @(
+      $tenantMatches | Where-Object {
+        ([string]$_.UiProviderName).Trim() -eq $ConfigurationDisplayName
+      }
+    )
+  }
+
+  $candidateRows = if ($providerMatches.Count -gt 0) { $providerMatches } else { $tenantMatches }
+  $usableRows = @(
+    $candidateRows | Where-Object {
+      -not [string]::IsNullOrWhiteSpace(([string]$_.UiClientId).Trim()) -and
+      -not [string]::IsNullOrWhiteSpace(([string]$_.UiDiscoveryEndpoint).Trim()) -and
+      -not [string]::IsNullOrWhiteSpace(([string]$_.UiAppId).Trim())
+    }
+  )
+
+  if ($usableRows.Count -eq 0) {
+    $matchLabel = if ($providerMatches.Count -gt 0) {
+      "provider '$ConfigurationDisplayName'"
+    }
+    else {
+      "tenant '$TenantId'"
+    }
+
+    throw "Duo UI details CSV '$($csvData.Path)' contains row(s) for $matchLabel, but none contain all required values (UiClientId, UiDiscoveryEndpoint, UiAppId). Refresh the CSV or pass -ClientId, -DiscoveryEndpoint, and -AppId explicitly."
+  }
+
+  $distinctRows = New-Object System.Collections.Generic.List[object]
+  $seenSignatures = @{}
+  foreach ($row in $usableRows) {
+    $signature = "{0}|{1}|{2}|{3}|{4}" -f `
+      ([string]$row.UiProviderName).Trim(), `
+      ([string]$row.UiClientId).Trim(), `
+      ([string]$row.UiGuestClientId).Trim(), `
+      ([string]$row.UiDiscoveryEndpoint).Trim(), `
+      ([string]$row.UiAppId).Trim()
+
+    if (-not $seenSignatures.ContainsKey($signature)) {
+      $seenSignatures[$signature] = $true
+      $distinctRows.Add($row) | Out-Null
+    }
+  }
+
+  if ($distinctRows.Count -gt 1) {
+    $options = @(
+      $distinctRows | ForEach-Object {
+        $accountName = ([string]$_.AccountName).Trim()
+        $providerName = ([string]$_.UiProviderName).Trim()
+        $integrationKey = ([string]$_.IntegrationKey).Trim()
+        if ([string]::IsNullOrWhiteSpace($integrationKey)) {
+          $integrationKey = "<none>"
+        }
+        "{0} / {1} / IntegrationKey={2}" -f $accountName, $providerName, $integrationKey
+      }
+    ) -join "; "
+
+    throw "Multiple distinct Duo UI details rows matched tenant '$TenantId' in '$($csvData.Path)'. Narrow the CSV or pass -ClientId, -DiscoveryEndpoint, and -AppId explicitly. Matches: $options"
+  }
+
+  return [pscustomobject]@{
+    Status  = "Resolved"
+    CsvPath = $csvData.Path
+    Row     = $distinctRows[0]
+    Message = "Resolved tenant '$TenantId' from Duo UI details CSV."
+  }
+}
+
+function Resolve-DuoProviderConfigInputs {
+  param(
+    [Parameter(Mandatory=$true)][string]$TenantId,
+    [Parameter(Mandatory=$false)][string]$ConfigurationDisplayName,
+    [Parameter(Mandatory=$false)][string]$ClientId,
+    [Parameter(Mandatory=$false)][string]$GuestClientId,
+    [Parameter(Mandatory=$false)][string]$DiscoveryEndpoint,
+    [Parameter(Mandatory=$false)][string]$AppId,
+    [Parameter(Mandatory=$false)][bool]$GuestSupport = $false,
+    [Parameter(Mandatory=$false)][string]$CsvPath
+  )
+
+  $needsResolution = (
+    [string]::IsNullOrWhiteSpace($ClientId) -or
+    [string]::IsNullOrWhiteSpace($DiscoveryEndpoint) -or
+    [string]::IsNullOrWhiteSpace($AppId) -or
+    ($GuestSupport -and [string]::IsNullOrWhiteSpace($GuestClientId))
+  )
+
+  $result = [pscustomobject]@{
+    Status            = "NotNeeded"
+    CsvPath           = $null
+    ClientId          = $ClientId
+    GuestClientId     = $GuestClientId
+    DiscoveryEndpoint = $DiscoveryEndpoint
+    AppId             = $AppId
+    AppliedFields     = @()
+    SourceAccountName = $null
+    SourceProviderName = $null
+    DetailsUrl        = $null
+  }
+
+  if (-not $needsResolution) {
+    return $result
+  }
+
+  if ([string]::IsNullOrWhiteSpace($TenantId)) {
+    $result.Status = "TenantIdUnavailable"
+    return $result
+  }
+
+  $match = Get-DuoUiDetailsMatchForTenant -TenantId $TenantId -ConfigurationDisplayName $ConfigurationDisplayName -CsvPath $CsvPath
+  $result.Status = [string]$match.Status
+  $result.CsvPath = [string]$match.CsvPath
+
+  if ($match.Status -ne "Resolved" -or $null -eq $match.Row) {
+    return $result
+  }
+
+  $row = $match.Row
+  $appliedFields = New-Object System.Collections.Generic.List[string]
+
+  if ([string]::IsNullOrWhiteSpace($result.ClientId)) {
+    $result.ClientId = ([string]$row.UiClientId).Trim()
+    if (-not [string]::IsNullOrWhiteSpace($result.ClientId)) {
+      $appliedFields.Add("ClientId") | Out-Null
+    }
+  }
+
+  if ([string]::IsNullOrWhiteSpace($result.GuestClientId)) {
+    $result.GuestClientId = ([string]$row.UiGuestClientId).Trim()
+    if (-not [string]::IsNullOrWhiteSpace($result.GuestClientId)) {
+      $appliedFields.Add("GuestClientId") | Out-Null
+    }
+  }
+
+  if ([string]::IsNullOrWhiteSpace($result.DiscoveryEndpoint)) {
+    $result.DiscoveryEndpoint = ([string]$row.UiDiscoveryEndpoint).Trim()
+    if (-not [string]::IsNullOrWhiteSpace($result.DiscoveryEndpoint)) {
+      $appliedFields.Add("DiscoveryEndpoint") | Out-Null
+    }
+  }
+
+  if ([string]::IsNullOrWhiteSpace($result.AppId)) {
+    $result.AppId = ([string]$row.UiAppId).Trim()
+    if (-not [string]::IsNullOrWhiteSpace($result.AppId)) {
+      $appliedFields.Add("AppId") | Out-Null
+    }
+  }
+
+  $result.Status = if ($appliedFields.Count -gt 0) { "Resolved" } else { "ResolvedNoChanges" }
+  $result.AppliedFields = @($appliedFields)
+  $result.SourceAccountName = ([string]$row.AccountName).Trim()
+  $result.SourceProviderName = ([string]$row.UiProviderName).Trim()
+  $result.DetailsUrl = ([string]$row.UiDetailsUrl).Trim()
+
+  return $result
 }
 
 # Flattens nested exception chains so warnings include the full Graph error context.
@@ -2294,6 +2529,10 @@ function Invoke-ExternalMfaPreflight {
   param(
     [Parameter(Mandatory=$false)][string]$Name,
     [Parameter(Mandatory=$false)][string]$ExternalAuthConfigId,
+    [Parameter(Mandatory=$false)][string]$ClientId,
+    [Parameter(Mandatory=$false)][string]$DiscoveryEndpoint,
+    [Parameter(Mandatory=$false)][string]$AppId,
+    [Parameter(Mandatory=$false)][string]$DuoUiDetailsCsvPath,
     [Parameter(Mandatory=$true)][ValidateSet("PilotGlobalAdmins","FinalGroups")][string]$Stage,
     [Parameter(Mandatory=$true)][ValidateSet("MirrorLegacy","AllApps","ExplicitApps")][string]$CaScopeMode,
     [Parameter(Mandatory=$false)][string]$WrapperGroupName,
@@ -2315,6 +2554,11 @@ function Invoke-ExternalMfaPreflight {
   $mirroredScope = $null
   $breakGlassGroup = $null
   $breakGlassMemberCount = 0
+  $hasAllProviderConfigInputs = (
+    -not [string]::IsNullOrWhiteSpace($ClientId) -and
+    -not [string]::IsNullOrWhiteSpace($DiscoveryEndpoint) -and
+    -not [string]::IsNullOrWhiteSpace($AppId)
+  )
 
   if ($GuestSupport -and [string]::IsNullOrWhiteSpace($GuestClientId)) {
     $manualBlockers.Add((New-ExternalMfaPreflightFinding -Category "ManualBlocker" -Code "GuestClientIdMissing" -Message "GuestSupport is enabled, but GuestClientId was not provided.")) | Out-Null
@@ -2372,43 +2616,51 @@ function Invoke-ExternalMfaPreflight {
     }
   }
 
-  if ($Stage -eq "PilotGlobalAdmins") {
-    try {
-      $existingExternalAuthConfig = $null
-      if (-not [string]::IsNullOrWhiteSpace($ExternalAuthConfigId)) {
-        $existingExternalAuthConfig = (Get-ExternalAuthMethodConfigById -Id $ExternalAuthConfigId).Item
-      }
-      elseif (-not [string]::IsNullOrWhiteSpace($Name)) {
-        $existingExternalAuthConfig = (Get-ExternalAuthMethodConfigByName -DisplayName $Name).Item
-        if ($existingExternalAuthConfig) {
-          $resolvedExternalAuthConfigId = [string](Get-GraphMemberValue -Object $existingExternalAuthConfig -Name "id")
-          if (-not [string]::IsNullOrWhiteSpace($resolvedExternalAuthConfigId)) {
-            try {
-              $existingExternalAuthConfig = (Get-ExternalAuthMethodConfigById -Id $resolvedExternalAuthConfigId).Item
-            }
-            catch {
-              # Keep the list-response shape if the by-id refresh fails.
-            }
+  try {
+    $existingExternalAuthConfig = $null
+    if (-not [string]::IsNullOrWhiteSpace($ExternalAuthConfigId)) {
+      $existingExternalAuthConfig = (Get-ExternalAuthMethodConfigById -Id $ExternalAuthConfigId).Item
+    }
+    elseif (-not [string]::IsNullOrWhiteSpace($Name)) {
+      $existingExternalAuthConfig = (Get-ExternalAuthMethodConfigByName -DisplayName $Name).Item
+      if ($existingExternalAuthConfig) {
+        $resolvedExternalAuthConfigId = [string](Get-GraphMemberValue -Object $existingExternalAuthConfig -Name "id")
+        if (-not [string]::IsNullOrWhiteSpace($resolvedExternalAuthConfigId)) {
+          try {
+            $existingExternalAuthConfig = (Get-ExternalAuthMethodConfigById -Id $resolvedExternalAuthConfigId).Item
+          }
+          catch {
+            # Keep the list-response shape if the by-id refresh fails.
           }
         }
       }
+    }
 
-      if ($existingExternalAuthConfig -and (Test-ExternalAuthMethodConfigIncludesAllUsers -Configuration $existingExternalAuthConfig)) {
-        $targetGroupLabel = if ($Stage -eq "FinalGroups") {
-          "the supplied final rollout groups"
-        }
-        elseif ([string]::IsNullOrWhiteSpace($WrapperGroupName)) {
-          "the wrapper group"
-        }
-        else {
-          "'$WrapperGroupName'"
-        }
-        $autoFixable.Add((New-ExternalMfaPreflightFinding -Category "AutoFixable" -Code "ExternalAuthConfigAllUsersTargeted" -Message "External Authentication Method configuration '$Name' currently includes 'All users'. Live rollout will retarget the EAM to $targetGroupLabel.")) | Out-Null
+    if ($existingExternalAuthConfig -and (Test-ExternalAuthMethodConfigIncludesAllUsers -Configuration $existingExternalAuthConfig)) {
+      $targetGroupLabel = if ($Stage -eq "FinalGroups") {
+        "the supplied final rollout groups"
       }
+      elseif ([string]::IsNullOrWhiteSpace($WrapperGroupName)) {
+        "the wrapper group"
+      }
+      else {
+        "'$WrapperGroupName'"
+      }
+      $autoFixable.Add((New-ExternalMfaPreflightFinding -Category "AutoFixable" -Code "ExternalAuthConfigAllUsersTargeted" -Message "External Authentication Method configuration '$Name' currently includes 'All users'. Live rollout will retarget the EAM to $targetGroupLabel.")) | Out-Null
     }
-    catch {
-      # Best-effort only. Some tenants expose sparse/preview-varying EAM responses.
+
+    if ((-not $existingExternalAuthConfig) -and (-not $hasAllProviderConfigInputs)) {
+      $csvHint = if ([string]::IsNullOrWhiteSpace($DuoUiDetailsCsvPath)) {
+        " Ensure duo-external-mfa-ui-details.csv is present beside the rollout scripts, or pass -ClientId, -DiscoveryEndpoint, and -AppId explicitly."
+      }
+      else {
+        " Ensure '$DuoUiDetailsCsvPath' has a unique row for the tenant, or pass -ClientId, -DiscoveryEndpoint, and -AppId explicitly."
+      }
+      $manualBlockers.Add((New-ExternalMfaPreflightFinding -Category "ManualBlocker" -Code "ExternalAuthConfigCreateInputsMissing" -Message "External Authentication Method configuration '$Name' was not found, and the script does not have all provider fields required to create it.$csvHint")) | Out-Null
     }
+  }
+  catch {
+    # Best-effort only. Some tenants expose sparse/preview-varying EAM responses.
   }
 
   foreach ($groupId in @(ConvertTo-StringArray -Value $FinalTargetGroupIds | Sort-Object -Unique)) {
@@ -2682,6 +2934,33 @@ $graphConnection = Connect-ExternalMfaGraph `
   -SkipConnect:$SkipGraphConnect
 
 $tenantLabel = $graphConnection.TenantLabel
+$connectedTenantId = [string]$graphConnection.Context.TenantId
+$providerConfigResolution = Resolve-DuoProviderConfigInputs `
+  -TenantId $connectedTenantId `
+  -ConfigurationDisplayName $Name `
+  -ClientId $ClientId `
+  -GuestClientId $GuestClientId `
+  -DiscoveryEndpoint $DiscoveryEndpoint `
+  -AppId $AppId `
+  -GuestSupport $GuestSupport `
+  -CsvPath $DuoUiDetailsCsvPath
+
+$ClientId = [string]$providerConfigResolution.ClientId
+$GuestClientId = [string]$providerConfigResolution.GuestClientId
+$DiscoveryEndpoint = [string]$providerConfigResolution.DiscoveryEndpoint
+$AppId = [string]$providerConfigResolution.AppId
+
+if (@($providerConfigResolution.AppliedFields).Count -gt 0) {
+  $resolutionContext = if (-not [string]::IsNullOrWhiteSpace($providerConfigResolution.SourceAccountName)) {
+    "'$($providerConfigResolution.SourceAccountName)'"
+  }
+  else {
+    "tenant '$connectedTenantId'"
+  }
+  Write-Host "   Filled missing Duo provider config fields from '$($providerConfigResolution.CsvPath)' using $resolutionContext." -ForegroundColor Green
+  Write-Host "   Auto-resolved fields: $(@($providerConfigResolution.AppliedFields) -join ', ')." -ForegroundColor Green
+}
+
 $effectiveClientId = if ($GuestSupport -and -not [string]::IsNullOrWhiteSpace($GuestClientId)) { $GuestClientId } else { $ClientId }
 if ($GuestSupport -and -not [string]::IsNullOrWhiteSpace($GuestClientId)) {
   Write-Host "   Guest or cross-tenant support requested; using the guest-capable Duo Client ID for this rollout." -ForegroundColor Yellow
@@ -2699,7 +2978,7 @@ if ($isOffboarding) {
   Write-Step "Offboarding mode enabled: removing Duo CA and restoring Microsoft-preferred MFA settings (best-effort)."
 }
 else {
-  $providedProviderConfigInputs = @(
+  $explicitProviderConfigInputs = @(
     foreach ($paramName in @("ClientId","DiscoveryEndpoint","AppId")) {
       if ($PSBoundParameters.ContainsKey($paramName)) {
         $value = Get-Variable -Name $paramName -ValueOnly
@@ -2710,14 +2989,30 @@ else {
     }
   )
 
-  $hasAllProviderConfigInputs = (@($providedProviderConfigInputs).Count -eq 3)
-  $hasAnyProviderConfigInputs = (@($providedProviderConfigInputs).Count -gt 0)
+  $availableProviderConfigInputs = @(
+    foreach ($paramName in @("ClientId","DiscoveryEndpoint","AppId")) {
+      $value = Get-Variable -Name $paramName -ValueOnly
+      if (-not [string]::IsNullOrWhiteSpace([string]$value)) {
+        $paramName
+      }
+    }
+  )
 
-  if ($hasAnyProviderConfigInputs -and -not $hasAllProviderConfigInputs) {
-    Write-Warning "Provider config inputs are incomplete ($($providedProviderConfigInputs -join ', ')). The script can still reuse an existing EAM automatically, but it cannot create a new EAM or fully reconcile provider fields unless ClientId, DiscoveryEndpoint, and AppId are all supplied."
+  $hasAllProviderConfigInputs = (@($availableProviderConfigInputs).Count -eq 3)
+  $hasAnyProviderConfigInputs = (@($availableProviderConfigInputs).Count -gt 0)
+  $hasAnyExplicitProviderConfigInputs = (@($explicitProviderConfigInputs).Count -gt 0)
+
+  if ($hasAnyExplicitProviderConfigInputs -and -not $hasAllProviderConfigInputs) {
+    Write-Warning "Provider config inputs are incomplete ($($explicitProviderConfigInputs -join ', ')). The script can still reuse an existing EAM automatically, but it cannot create a new EAM or fully reconcile provider fields unless ClientId, DiscoveryEndpoint, and AppId are all supplied."
   }
   elseif (-not $hasAllProviderConfigInputs) {
-    Write-Host "   ClientId/DiscoveryEndpoint/AppId not supplied. The script will try to reuse an existing EAM automatically by name first, then provider identifiers when available. If no matching EAM exists, creation will fail until those values are provided." -ForegroundColor Yellow
+    $csvResolutionNote = switch ([string]$providerConfigResolution.Status) {
+      "CsvNotFound" { " Duo UI details CSV was not found at '$($providerConfigResolution.CsvPath)'." ; break }
+      "NoTenantMatch" { " No matching row was found in '$($providerConfigResolution.CsvPath)' for tenant '$connectedTenantId'." ; break }
+      "TenantIdUnavailable" { " Connected tenant id was unavailable, so the CSV auto-resolve path could not run." ; break }
+      default { "" }
+    }
+    Write-Host "   ClientId/DiscoveryEndpoint/AppId not fully supplied. The script will try to reuse an existing EAM automatically by name first, then provider identifiers when available. If no matching EAM exists, creation will fail until those values are provided or auto-resolved from the Duo UI details CSV.$csvResolutionNote" -ForegroundColor Yellow
   }
 
   if ($Stage -eq "FinalGroups") {
@@ -2746,6 +3041,10 @@ if (-not $isOffboarding) {
   $preflightSummary = Invoke-ExternalMfaPreflight `
     -Name $Name `
     -ExternalAuthConfigId $ExternalAuthConfigId `
+    -ClientId $ClientId `
+    -DiscoveryEndpoint $DiscoveryEndpoint `
+    -AppId $AppId `
+    -DuoUiDetailsCsvPath $DuoUiDetailsCsvPath `
     -Stage $Stage `
     -CaScopeMode $CaScopeMode `
     -WrapperGroupName $WrapperGroupName `

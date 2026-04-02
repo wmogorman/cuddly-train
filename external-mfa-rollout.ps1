@@ -25,6 +25,9 @@ param(
   [string]$AppId,
 
   [Parameter(Mandatory=$false)]
+  [string]$DuoUiDetailsCsvPath,
+
+  [Parameter(Mandatory=$false)]
   [string]$ExternalAuthConfigId,
 
   [Parameter(Mandatory=$false)]

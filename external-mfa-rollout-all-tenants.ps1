@@ -6,6 +6,8 @@
   Supports two execution modes:
   - Delegated: omit -ClientId/-Thumbprint and the core script will prompt for tenant-by-tenant sign-in.
   - App-only: provide -ClientId/-Thumbprint and the core script will connect certificate-authenticated per tenant.
+  - If a tenant's Duo provider fields are omitted from JSON, the core script can auto-resolve them from
+    duo-external-mfa-ui-details.csv by matching UiEntraTenantId to the connected tenant.
 
   Auto-discovery is only supported in app-only mode. Discovered tenant IDs are filtered to entries present in the JSON config.
 
@@ -24,6 +26,9 @@
 param(
   [Parameter(Mandatory=$true)]
   [string]$TenantConfigPath,
+
+  [Parameter(Mandatory=$false)]
+  [string]$DuoUiDetailsCsvPath,
 
   [Parameter(Mandatory=$false)]
   [switch]$AutoDiscoverTenants,
@@ -317,6 +322,7 @@ foreach ($tenant in $resolvedTargets) {
     GuestClientId = [string](Get-ConfigValue -Object $tenantDuo -Name "guestClientId")
     DiscoveryEndpoint = [string](Get-ConfigValue -Object $tenantDuo -Name "discoveryEndpoint")
     AppId = [string](Get-ConfigValue -Object $tenantDuo -Name "appId")
+    DuoUiDetailsCsvPath = [string]$(if ([string]::IsNullOrWhiteSpace([string]$DuoUiDetailsCsvPath)) { $null } else { $DuoUiDetailsCsvPath })
     ExternalAuthConfigId = [string](Get-ConfigValue -Object $tenantDuo -Name "externalAuthConfigId")
     Stage = [string](Get-ConfigValue -Object $tenant -Name "stage" -Default "PilotGlobalAdmins")
     CaScopeMode = [string](Get-ConfigValue -Object $tenant -Name "caScopeMode" -Default "MirrorLegacy")

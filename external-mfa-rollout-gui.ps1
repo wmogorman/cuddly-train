@@ -116,17 +116,17 @@ $txtName = New-TextBoxControl -X 240 -Y ($y - 2) -Width 660 -Text "Cisco Duo"
 $tabBasics.Controls.Add($txtName)
 $y += 34
 
-$tabBasics.Controls.Add((New-LabelControl -Text "ClientId (optional if EAM already exists)" -X 16 -Y $y))
+$tabBasics.Controls.Add((New-LabelControl -Text "ClientId (optional if EAM exists or CSV resolves it)" -X 16 -Y $y))
 $txtClientId = New-TextBoxControl -X 240 -Y ($y - 2) -Width 660
 $tabBasics.Controls.Add($txtClientId)
 $y += 34
 
-$tabBasics.Controls.Add((New-LabelControl -Text "DiscoveryEndpoint (optional if EAM already exists)" -X 16 -Y $y))
+$tabBasics.Controls.Add((New-LabelControl -Text "DiscoveryEndpoint (optional if EAM exists or CSV resolves it)" -X 16 -Y $y))
 $txtDiscovery = New-TextBoxControl -X 240 -Y ($y - 2) -Width 660 -Text "https://us.azureauth.duosecurity.com/.well-known/openid-configuration"
 $tabBasics.Controls.Add($txtDiscovery)
 $y += 34
 
-$tabBasics.Controls.Add((New-LabelControl -Text "AppId (optional if EAM already exists)" -X 16 -Y $y))
+$tabBasics.Controls.Add((New-LabelControl -Text "AppId (optional if EAM exists or CSV resolves it)" -X 16 -Y $y))
 $txtAppId = New-TextBoxControl -X 240 -Y ($y - 2) -Width 660
 $tabBasics.Controls.Add($txtAppId)
 $y += 34
@@ -226,7 +226,7 @@ Use this GUI to launch external-mfa-rollout.ps1 for teammates.
 
 Recommended workflow:
 1. Fill required rollout value: Name.
-2. If creating a NEW EAM, also provide ClientId, DiscoveryEndpoint, and AppId.
+2. If creating a NEW EAM, either provide ClientId, DiscoveryEndpoint, and AppId, or keep duo-external-mfa-ui-details.csv populated with a unique row for the tenant so the script can auto-resolve those fields.
 3. If the EAM already exists in Entra, leave ExternalAuthConfigId blank first; the script should find it automatically by name. Only use ExternalAuthConfigId if lookup fails and you need an override.
 4. BreakGlassGroupId is optional when the tenant contains the standard managed group 'ActaMSP Break Glass'; use the field only as an override.
 5. PilotGroupName identifies the managed pilot SOURCE group when you let the script mirror Global Administrators automatically. If no pilot source override is supplied, the rollout will try to use 'ActaMSP Global Administrators Audit' by default.
