@@ -14,3 +14,10 @@ datto-edr-policy-audit.csv
 datto-edr-policy-audit.json
 datto-edr-ui-snapshot.json
 nosync-department-audit-*.csv
+duo-external-mfa-applications.csv
+duo-external-mfa-missing-accounts.csv
+duo-accounts-api.env
+duo-external-mfa-ui-details.csv
+duo-headless/duo-headless.env
+duo-headless/storage_state.json
+duo-headless/artifacts/

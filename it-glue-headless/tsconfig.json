@@ -16,6 +16,7 @@
   },
   "include": [
     "../it-glue-headless/**/*.ts",
-    "../datto-edr-headless/**/*.ts"
+    "../datto-edr-headless/**/*.ts",
+    "../duo-headless/**/*.ts"
   ]
 }
