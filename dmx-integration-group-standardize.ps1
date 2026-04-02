@@ -1,7 +1,7 @@
 <#
 Standardize the ActaMSP Integration Group across target tenants.
 - Canonical name: ActaMSP Integration Group
-- Dynamic rule: enabled internal members with at least one enabled assigned plan
+- Dynamic rule: enabled internal members with at least one enabled assigned plan, excluding Department = NoSync
 - Fallback: assigned security group with direct membership sync when dynamic membership is unavailable
 #>
 
@@ -19,6 +19,7 @@ param(
     [string]$Thumbprint = "D0278AED132F9C816A815A4BFFF0F48CE8FAECEF",
     [string]$GroupDisplayName = "ActaMSP Integration Group",
     [string[]]$LegacyGroupDisplayName = @("DMX Integration Group", "DMX_Integration_Group", "Datamax_Integration_Group", "Datamax Integration"),
+    [string]$ExemptDepartmentValue = "NoSync",
     [switch]$DryRun,
     [switch]$StopOnError
 )
@@ -27,7 +28,15 @@ $ErrorActionPreference = "Stop"
 $script:TenantDisplayNameById = @{}
 $script:ManagedGroupProperties = "id,displayName,description,groupTypes,membershipRule,membershipRuleProcessingState,securityEnabled,mailEnabled,mailNickname"
 $script:DynamicGroupType = "DynamicMembership"
-$script:DynamicMembershipRule = '(user.userType -eq "Member") and (user.accountEnabled -eq true) and (user.assignedPlans -any (assignedPlan.capabilityStatus -eq "Enabled"))'
+$script:ExemptDepartmentValue = if ([string]::IsNullOrWhiteSpace($ExemptDepartmentValue)) { $null } else { $ExemptDepartmentValue.Trim() }
+$ruleClauses = [System.Collections.Generic.List[string]]::new()
+$ruleClauses.Add('(user.userType -eq "Member")') | Out-Null
+$ruleClauses.Add('(user.accountEnabled -eq true)') | Out-Null
+if (-not [string]::IsNullOrWhiteSpace($script:ExemptDepartmentValue)) {
+    $ruleClauses.Add(('(user.department -ne "{0}")' -f $script:ExemptDepartmentValue)) | Out-Null
+}
+$ruleClauses.Add('(user.assignedPlans -any (assignedPlan.capabilityStatus -eq "Enabled"))') | Out-Null
+$script:DynamicMembershipRule = $ruleClauses -join ' and '
 $script:DynamicGroupDescription = "Maintained by ActaMSP automation. Dynamic membership for enabled licensed internal users."
 $script:AssignedFallbackDescription = "Maintained by ActaMSP automation. Assigned fallback where dynamic membership is unavailable. Direct members mirror enabled licensed internal users."
 $autoDiscoverTenantsEnabled = if ($PSBoundParameters.ContainsKey('AutoDiscoverTenants')) { [bool]$AutoDiscoverTenants } else { $true }
@@ -877,6 +886,14 @@ function Test-UserMatchesIntegrationRule {
         return $false
     }
 
+    $department = [string]$User.Department
+    if ([string]::IsNullOrWhiteSpace($department) -and $User.PSObject.Properties.Name -contains "AdditionalProperties" -and $null -ne $User.AdditionalProperties) {
+        $department = [string]$User.AdditionalProperties["department"]
+    }
+    if (-not [string]::IsNullOrWhiteSpace($script:ExemptDepartmentValue) -and -not [string]::IsNullOrWhiteSpace($department) -and $department.Trim() -ieq $script:ExemptDepartmentValue) {
+        return $false
+    }
+
     return (Test-UserHasEnabledAssignedPlan -User $User)
 }
 
@@ -885,7 +902,7 @@ function Get-DesiredIntegrationUsers {
 
     $desiredUsersById = @{}
     $users = @(Invoke-WithRetry -Tenant $TenantLabel -Operation "Get users for rule evaluation" -Script {
-            Get-MgUser -All -Property "id,displayName,userPrincipalName,accountEnabled,userType,assignedPlans" -ErrorAction Stop
+            Get-MgUser -All -Property "id,displayName,userPrincipalName,accountEnabled,userType,department,assignedPlans" -ErrorAction Stop
         })
 
     foreach ($user in $users) {
