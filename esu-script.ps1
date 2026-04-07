@@ -4,6 +4,7 @@
 
 .PARAMETER ProductKey
   Optional. If supplied, the script installs this key (slmgr /ipk) and activates online with the ESU application ID.
+  If omitted, the script also honors env:ESUKey for Datto RMM compatibility.
 
 .PARAMETER Json
   Optional. Emit a JSON summary without the normal host-formatted status output.
@@ -28,7 +29,6 @@
 [CmdletBinding()]
 param(
 [Parameter(Mandatory=$false)]
-[ValidatePattern('^[A-Za-z0-9]{5}(-[A-Za-z0-9]{5}){4}$')]
 [string]$ProductKey,
 
 [switch]$Json,
@@ -40,9 +40,39 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-if ($PSBoundParameters.ContainsKey('ProductKey')) {
-  $ProductKey = $ProductKey.Trim().ToUpperInvariant()
+function Resolve-ProductKeyInput {
+  param(
+    [string]$ExplicitProductKey,
+    [bool]$ExplicitProductKeyProvided,
+    [string]$EnvironmentProductKey
+  )
+
+  $candidate = $null
+
+  if ($ExplicitProductKeyProvided) {
+    if ([string]::IsNullOrWhiteSpace($ExplicitProductKey)) {
+      throw "ProductKey cannot be empty when supplied."
+    }
+    $candidate = $ExplicitProductKey
+  }
+  elseif (-not [string]::IsNullOrWhiteSpace($EnvironmentProductKey)) {
+    $candidate = $EnvironmentProductKey
+  }
+  else {
+    return $null
+  }
+
+  $candidate = $candidate.Trim().ToUpperInvariant()
+  if ($candidate -notmatch '^[A-Za-z0-9]{5}(-[A-Za-z0-9]{5}){4}$') {
+    throw "ProductKey must be in the format XXXXX-XXXXX-XXXXX-XXXXX-XXXXX."
+  }
+
+  return $candidate
 }
+
+$hasExplicitProductKey = $PSBoundParameters.ContainsKey('ProductKey')
+$ProductKey = Resolve-ProductKeyInput -ExplicitProductKey $ProductKey -ExplicitProductKeyProvided $hasExplicitProductKey -EnvironmentProductKey $env:ESUKey
+$hasProductKey = -not [string]::IsNullOrWhiteSpace($ProductKey)
 
 # -- Helpers -------------------------------------------------------
 
@@ -284,7 +314,7 @@ try {
 
   $actions = @()
 
-  if ($PSBoundParameters.ContainsKey('ProductKey')) {
+  if ($hasProductKey) {
     $actions += "Installing product key (slmgr /ipk)"
     $ipk = Invoke-Slmgr "/ipk $ProductKey"
     $actions += "  /ipk exit=$($ipk.ExitCode)"
@@ -303,7 +333,7 @@ try {
   $finalWindows = Get-WindowsActivation
   $finalEsu = Get-ActivationByAppId -ApplicationId $esuApplicationId
   $finalEsuSummary = New-ActivationSummary -Activation $finalEsu
-  $esuRelevant = $PSBoundParameters.ContainsKey('ProductKey') -or $null -ne $initialEsu -or $null -ne $finalEsu
+  $esuRelevant = $hasProductKey -or $null -ne $initialEsu -or $null -ne $finalEsu
   $outcome = Test-OverallActivationSuccess -WindowsActivation $finalWindows -EsuSummary $finalEsuSummary -EsuRelevant $esuRelevant
 
   $result = [pscustomobject]@{
