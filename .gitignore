@@ -22,3 +22,5 @@ duo-headless/duo-headless.env
 duo-headless/storage_state.json
 duo-headless/artifacts/
 node_modules/
+ActaMSP-GDAP-Automation.cer
+ActaMSP-GDAP-Automation.pfx
