@@ -1,3 +1,4 @@
+#requires -Version 5.1
 [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'Medium')]
 param(
     [Parameter(Mandatory = $true)]
@@ -8,6 +9,9 @@ param(
 
     [switch]$DryRun,
 
+    [ValidateRange(1, 60)]
+    [int]$UninstallTimeoutMinutes = 15,
+
     [string]$LogRoot = 'C:\ProgramData\DattoRMM\AVRemediation'
 )
 
@@ -16,6 +20,9 @@ $ErrorActionPreference = 'Stop'
 
 # region Globals
 $script:SuccessExitCodes = @(0, 1641, 3010)
+$script:MinimumSupportedPowerShellVersion = [version]'5.1'
+$script:UninstallTimeoutMinutes = $UninstallTimeoutMinutes
+$script:UninstallTimeoutMilliseconds = $UninstallTimeoutMinutes * 60 * 1000
 $script:InventoryDisplayNamePatterns = @(
     'Antivirus',
     'Internet Security',
@@ -236,6 +243,13 @@ function Join-DisplayValues {
 
     return ($items | Sort-Object -Unique) -join '; '
 }
+
+function Assert-SupportedPowerShellVersion {
+    $currentVersion = $PSVersionTable.PSVersion
+    if ($currentVersion -lt $script:MinimumSupportedPowerShellVersion) {
+        throw "PowerShell $($script:MinimumSupportedPowerShellVersion) or later is required. Current version: $currentVersion"
+    }
+}
 # endregion GeneralHelpers
 
 # region UninstallHelpers
@@ -400,7 +414,7 @@ function Add-SilentUninstallArguments {
     return $updated.Trim()
 }
 
-function Start-HiddenProcessAndWait {
+function Start-HiddenProcess {
     param(
         [Parameter(Mandatory = $true)]
         [string]$FilePath,
@@ -411,7 +425,6 @@ function Start-HiddenProcessAndWait {
     $parameters = @{
         FilePath     = $FilePath
         ArgumentList = $ArgumentList
-        Wait         = $true
         PassThru     = $true
         WindowStyle  = 'Hidden'
         ErrorAction  = 'Stop'
@@ -423,6 +436,29 @@ function Start-HiddenProcessAndWait {
     }
 
     return Start-Process @parameters
+}
+
+function Stop-ProcessTree {
+    param(
+        [Parameter(Mandatory = $true)]
+        [int]$ProcessId
+    )
+
+    try {
+        $taskKill = Start-Process -FilePath 'taskkill.exe' -ArgumentList "/PID $ProcessId /T /F" -Wait -PassThru -WindowStyle Hidden -ErrorAction Stop
+        return [pscustomobject]@{
+            Succeeded = ($taskKill.ExitCode -eq 0)
+            ExitCode  = $taskKill.ExitCode
+            ErrorText = $null
+        }
+    }
+    catch {
+        return [pscustomobject]@{
+            Succeeded = $false
+            ExitCode  = $null
+            ErrorText = $_.Exception.Message
+        }
+    }
 }
 
 function Invoke-AvgPreUninstallCleanup {
@@ -658,18 +694,48 @@ function Invoke-UninstallProcess {
     )
 
     try {
-        $process = Start-HiddenProcessAndWait -FilePath $FilePath -ArgumentList $Arguments
+        $process = Start-HiddenProcess -FilePath $FilePath -ArgumentList $Arguments
+        $completed = $process.WaitForExit($script:UninstallTimeoutMilliseconds)
+        if (-not $completed) {
+            $killResult = Stop-ProcessTree -ProcessId $process.Id
+            $timeoutReason = "Process timed out after $($script:UninstallTimeoutMinutes) minute(s)."
+            if ($killResult.Succeeded) {
+                $timeoutReason += " Process tree was terminated."
+            }
+            else {
+                $timeoutReason += " Failed to terminate process tree: $($killResult.ErrorText)"
+            }
+
+            return [pscustomobject]@{
+                Started       = $true
+                ExitCode      = $null
+                ErrorText     = $timeoutReason
+                TimedOut      = $true
+                ProcessId     = $process.Id
+                KillSucceeded = $killResult.Succeeded
+                KillExitCode  = $killResult.ExitCode
+            }
+        }
+
         return [pscustomobject]@{
-            Started   = $true
-            ExitCode  = $process.ExitCode
-            ErrorText = $null
+            Started       = $true
+            ExitCode      = $process.ExitCode
+            ErrorText     = $null
+            TimedOut      = $false
+            ProcessId     = $process.Id
+            KillSucceeded = $null
+            KillExitCode  = $null
         }
     }
     catch {
         return [pscustomobject]@{
-            Started   = $false
-            ExitCode  = $null
-            ErrorText = $_.Exception.Message
+            Started       = $false
+            ExitCode      = $null
+            ErrorText     = $_.Exception.Message
+            TimedOut      = $false
+            ProcessId     = $null
+            KillSucceeded = $null
+            KillExitCode  = $null
         }
     }
 }
@@ -729,6 +795,13 @@ function Invoke-UninstallEntry {
         return [pscustomobject]$result
     }
 
+    if ($primary.TimedOut) {
+        Write-Log -Message "Uninstall for [$displayName] timed out: $($primary.ErrorText)" -Level ERROR
+        $result.Status = 'Failed'
+        $result.Reason = $primary.ErrorText
+        return [pscustomobject]$result
+    }
+
     $result.ExitCode = $primary.ExitCode
     if ($script:SuccessExitCodes -contains $primary.ExitCode) {
         $result.RebootRequired = @(1641, 3010) -contains $primary.ExitCode
@@ -753,6 +826,14 @@ function Invoke-UninstallEntry {
                 RebootRequired = (@(1641, 3010) -contains $statsRetry.ExitCode)
             }) | Out-Null
 
+            if ($statsRetry.TimedOut) {
+                Write-Log -Message "AVG Stats.ini retry timed out for [$displayName]: $($statsRetry.ErrorText)" -Level ERROR
+                $result.Status = 'Failed'
+                $result.Reason = $statsRetry.ErrorText
+                $result.RetryActions = @($retryActions)
+                return [pscustomobject]$result
+            }
+
             if ($statsRetry.Started -and $script:SuccessExitCodes -contains $statsRetry.ExitCode) {
                 $result.ExitCode = $statsRetry.ExitCode
                 $result.RebootRequired = @(1641, 3010) -contains $statsRetry.ExitCode
@@ -776,6 +857,14 @@ function Invoke-UninstallEntry {
                 RebootRequired = (@(1641, 3010) -contains $cleanupRetry.ExitCode)
             }) | Out-Null
 
+            if ($cleanupRetry.TimedOut) {
+                Write-Log -Message "AVG cleanup retry timed out for [$displayName]: $($cleanupRetry.ErrorText)" -Level ERROR
+                $result.Status = 'Failed'
+                $result.Reason = $cleanupRetry.ErrorText
+                $result.RetryActions = @($retryActions)
+                return [pscustomobject]$result
+            }
+
             if ($cleanupRetry.Started -and $script:SuccessExitCodes -contains $cleanupRetry.ExitCode) {
                 $result.ExitCode = $cleanupRetry.ExitCode
                 $result.RebootRequired = @(1641, 3010) -contains $cleanupRetry.ExitCode
@@ -798,6 +887,14 @@ function Invoke-UninstallEntry {
                 ErrorText      = $fallbackRun.ErrorText
                 RebootRequired = (@(1641, 3010) -contains $fallbackRun.ExitCode)
             }) | Out-Null
+
+            if ($fallbackRun.TimedOut) {
+                Write-Log -Message "AVG MSI fallback timed out for [$displayName]: $($fallbackRun.ErrorText)" -Level ERROR
+                $result.Status = 'Failed'
+                $result.Reason = $fallbackRun.ErrorText
+                $result.RetryActions = @($retryActions)
+                return [pscustomobject]$result
+            }
 
             if ($fallbackRun.Started -and $script:SuccessExitCodes -contains $fallbackRun.ExitCode) {
                 $result.AttemptedCommand = $fallback.DisplayCommand
@@ -1286,6 +1383,7 @@ $attempts = @()
 $summary = $null
 
 try {
+    Assert-SupportedPowerShellVersion
     Write-Log -Message "=== Starting RMM antivirus remediation. TargetMode=$TargetMode DryRun=$($DryRun.IsPresent) ==="
 
     if (-not (Test-IsAdministrator)) {
@@ -1315,6 +1413,8 @@ try {
         ComputerName             = $env:COMPUTERNAME
         Timestamp                = (Get-Date).ToString('o')
         TargetMode               = $TargetMode
+        PowerShellVersion        = $PSVersionTable.PSVersion.ToString()
+        UninstallTimeoutMinutes  = $script:UninstallTimeoutMinutes
         ApprovedProductPatterns  = @($approvedPatternsToUse)
         AllowedNonTargetPatterns = @($allowedNonTargetPatterns)
         DryRun                   = $DryRun.IsPresent
@@ -1362,6 +1462,8 @@ catch {
         ComputerName             = $env:COMPUTERNAME
         Timestamp                = (Get-Date).ToString('o')
         TargetMode               = $TargetMode
+        PowerShellVersion        = $PSVersionTable.PSVersion.ToString()
+        UninstallTimeoutMinutes  = $script:UninstallTimeoutMinutes
         ApprovedProductPatterns  = @($approvedPatternsToUse)
         AllowedNonTargetPatterns = @($allowedNonTargetPatterns)
         DryRun                   = $DryRun.IsPresent
