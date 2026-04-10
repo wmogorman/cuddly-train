@@ -157,6 +157,12 @@ function Test-TimeoutExceeded {
     return $elapsed -ge $MaxSeconds
 }
 
+function Test-IsAdministrator {
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $principal = [Security.Principal.WindowsPrincipal]::new($identity)
+    return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
 function Get-OptionalMemberValue {
     param(
         [psobject]$InputObject,
@@ -1273,7 +1279,127 @@ function Get-SecurityInventory {
 }
 # endregion InventoryHelpers
 
-# region EvaluationHelpers
+# region ReportingValidationHelpers
+function Get-ReportingDiscrepancies {
+    <#
+    .SYNOPSIS
+    Detects discrepancies between registry/installed programs and WMI SecurityCenter2 reporting.
+    
+    .DESCRIPTION
+    Some endpoints have AV installed and active (visible in WMI SecurityCenter2) but it may not 
+    appear in registry uninstall entries, or vice versa. This function identifies these discrepancies
+    to help diagnose Datto RMM reporting issues vs. actual compliance problems.
+    #>
+    param(
+        [Parameter(Mandatory = $true)]
+        [psobject]$Inventory,
+        [Parameter(Mandatory = $true)]
+        [string[]]$ApprovedPatterns,
+        [Parameter(Mandatory = $true)]
+        [ValidateSet('DattoAV', 'WindowsDefender')]
+        [string]$Mode
+    )
+    
+    $discrepancies = @()
+    
+    # Get what's reported in SecurityCenter2 (WMI - the "truth" from Windows)
+    $wmiProducts = @($Inventory.SecurityCenter2 | Select-Object -ExpandProperty DisplayName)
+    
+    # Get what's in the registry (installed programs)
+    $registryProducts = @($Inventory.RegistryPrograms | Select-Object -ExpandProperty DisplayName)
+    
+    # Check for products in WMI but not in registry (ghost installs or reporting issues)
+    foreach ($wmiProduct in $wmiProducts) {
+        $foundInRegistry = $false
+        foreach ($regProduct in $registryProducts) {
+            if ($wmiProduct -eq $regProduct -or $wmiProduct -like "*$regProduct*" -or $regProduct -like "*$wmiProduct*") {
+                $foundInRegistry = $true
+                break
+            }
+        }
+        
+        if (-not $foundInRegistry) {
+            $isApproved = Test-PatternMatch -Value $wmiProduct -Patterns $ApprovedPatterns
+            $discrepancies += [pscustomobject]@{
+                Type           = 'WMI-Only'
+                Product        = $wmiProduct
+                Source         = 'SecurityCenter2 (WMI)'
+                RegistryStatus = 'Not Found'
+                IsApproved     = $isApproved
+                Interpretation = if ($isApproved) { 
+                    'Target AV is ACTIVE in Windows Security Center but missing from registry (possible reporting lag or clean uninstall remnant)'
+                } else { 
+                    'Non-target AV reported in Windows Security Center but not in registry (ghost entry or reporting issue)'
+                }
+            }
+        }
+    }
+    
+    # Check for products in registry but not in WMI (uninstalled but registry entry remains)
+    foreach ($regProduct in $registryProducts) {
+        $foundInWmi = $false
+        foreach ($wmiProduct in $wmiProducts) {
+            if ($regProduct -eq $wmiProduct -or $regProduct -like "*$wmiProduct*" -or $wmiProduct -like "*$regProduct*") {
+                $foundInWmi = $true
+                break
+            }
+        }
+        
+        if (-not $foundInWmi) {
+            $isApproved = Test-PatternMatch -Value $regProduct -Patterns $ApprovedPatterns
+            $discrepancies += [pscustomobject]@{
+                Type           = 'Registry-Only'
+                Product        = $regProduct
+                Source         = 'Uninstall Registry'
+                WmiStatus      = 'Not Detected'
+                IsApproved     = $isApproved
+                Interpretation = if ($isApproved) { 
+                    'Target AV is registered but NOT active in Windows Security Center (likely already uninstalled or needs activation check)'
+                } else { 
+                    'Non-target AV registry entry remains but not detected by WMI (successful uninstall but registry cleanup needed)'
+                }
+            }
+        }
+    }
+    
+    return @($discrepancies)
+}
+
+function Test-TargetComplianceByWmi {
+    <#
+    .SYNOPSIS
+    Directly tests if the target AV is present and active in WMI, independent of installation attempts.
+    
+    .DESCRIPTION
+    This provides a definitive check: is the target actually installed and active according to
+    Windows Security Center? This helps distinguish between "we need to install" vs "it's installed
+    but Datto RMM doesn't see it."
+    #>
+    param(
+        [Parameter(Mandatory = $true)]
+        [psobject]$Inventory,
+        [Parameter(Mandatory = $true)]
+        [ValidateSet('DattoAV', 'WindowsDefender')]
+        [string]$Mode,
+        [Parameter(Mandatory = $true)]
+        [string[]]$ApprovedPatterns
+    )
+    
+    $targetProducts = @($Inventory.SecurityCenter2 | 
+        Where-Object { Test-PatternMatch -Value $_.DisplayName -Patterns $ApprovedPatterns } |
+        Select-Object -ExpandProperty DisplayName)
+    
+    $wmiStatus = @{
+        TargetDetected      = ($targetProducts.Count -gt 0)
+        TargetProducts      = @($targetProducts)
+        ProductCount        = $targetProducts.Count
+        ComplianceByWmi     = ($targetProducts.Count -gt 0)
+        TotalWmiProducts    = @($Inventory.SecurityCenter2).Count
+    }
+    
+    return [pscustomobject]$wmiStatus
+}
+# endregion ReportingValidationHelpers
 function Get-BlockingProductNames {
     param(
         [Parameter(Mandatory = $true)]
@@ -1487,6 +1613,27 @@ function Write-ConsoleSummary {
     Write-Output "Outcome: $($Summary.Outcome)"
     Write-Output "Reboot Required: $(if ($Summary.RebootRequired) { 'Yes' } else { 'No' })"
     Write-Output "Next Action: $($Summary.NextAction)"
+    
+    if ($null -ne $Summary.WmiComplianceCheck) {
+        Write-Output ""
+        Write-Output "WMI Compliance Check (Target Detection via Windows Security Center):"
+        Write-Output "  Target Detected: $($Summary.WmiComplianceCheck.TargetDetected)"
+        Write-Output "  Compliant by WMI: $($Summary.WmiComplianceCheck.ComplianceByWmi)"
+        if ($Summary.WmiComplianceCheck.TargetProducts.Count -gt 0) {
+            Write-Output "  Target Products in WMI: $(($Summary.WmiComplianceCheck.TargetProducts -join '; '))"
+        }
+    }
+    
+    if ($null -ne $Summary.ReportingDiscrepancies -and @($Summary.ReportingDiscrepancies).Count -gt 0) {
+        Write-Output ""
+        Write-Output "Reporting Discrepancies (Registry vs WMI Mismatch - Possible Datto RMM Reporting Issue):"
+        foreach ($disc in $Summary.ReportingDiscrepancies) {
+            Write-Output "  [$($disc.Type)] $($disc.Product)"
+            Write-Output "    Interpretation: $($disc.Interpretation)"
+        }
+    }
+    
+    Write-Output ""
     Write-Output "Log Path: $($Summary.LogPath)"
     Write-Output "Summary JSON: $($Summary.SummaryPath)"
 }
@@ -1547,6 +1694,8 @@ try {
 
     $outcome = Resolve-Outcome -BeforeInventory $beforeInventory -AfterInventory $afterInventory -Attempts $attempts -Mode $TargetMode -ApprovedPatterns $approvedPatternsToUse -AllowedNonTargetPatterns $allowedNonTargetPatterns -DryRun:$DryRun
     $targetPresence = Get-TargetPresenceState -Inventory $afterInventory -Mode $TargetMode -ApprovedPatterns $approvedPatternsToUse
+    $reportingDiscrepancies = Get-ReportingDiscrepancies -Inventory $afterInventory -ApprovedPatterns $approvedPatternsToUse -Mode $TargetMode
+    $wmiComplianceCheck = Test-TargetComplianceByWmi -Inventory $afterInventory -Mode $TargetMode -ApprovedPatterns $approvedPatternsToUse
 
     $summary = [pscustomobject]@{
         ComputerName             = $env:COMPUTERNAME
@@ -1567,6 +1716,8 @@ try {
             DefenderSatisfied       = $targetPresence.DefenderSatisfied
             DattoPresent            = $targetPresence.DattoPresent
         }
+        WmiComplianceCheck       = $wmiComplianceCheck
+        ReportingDiscrepancies   = @($reportingDiscrepancies)
         Outcome                  = $outcome.Outcome
         RebootRequired           = $outcome.RebootRequired
         NextAction               = $outcome.NextAction
@@ -1597,6 +1748,9 @@ catch {
     }
 
     $targetPresence = Get-TargetPresenceState -Inventory $afterInventory -Mode $TargetMode -ApprovedPatterns $approvedPatternsToUse
+    $reportingDiscrepancies = Get-ReportingDiscrepancies -Inventory $afterInventory -ApprovedPatterns $approvedPatternsToUse -Mode $TargetMode
+    $wmiComplianceCheck = Test-TargetComplianceByWmi -Inventory $afterInventory -Mode $TargetMode -ApprovedPatterns $approvedPatternsToUse
+    
     $summary = [pscustomobject]@{
         ComputerName             = $env:COMPUTERNAME
         Timestamp                = (Get-Date).ToString('o')
@@ -1616,6 +1770,8 @@ catch {
             DefenderSatisfied       = $targetPresence.DefenderSatisfied
             DattoPresent            = $targetPresence.DattoPresent
         }
+        WmiComplianceCheck       = $wmiComplianceCheck
+        ReportingDiscrepancies   = @($reportingDiscrepancies)
         Outcome                  = 'Failed'
         RebootRequired           = $afterInventory.PendingReboot.IsPending
         NextAction               = 'Review the log and summary JSON.'
