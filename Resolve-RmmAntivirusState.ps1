@@ -731,7 +731,7 @@ function Invoke-UninstallEntry {
 
     $result.ExitCode = $primary.ExitCode
     if ($script:SuccessExitCodes -contains $primary.ExitCode) {
-        $result.RebootRequired = $primary.ExitCode -in @(1641, 3010)
+        $result.RebootRequired = @(1641, 3010) -contains $primary.ExitCode
         $result.Status = if ($result.RebootRequired) { 'PendingReboot' } else { 'Removed' }
         $result.Reason = "Uninstall completed with exit code $($primary.ExitCode)."
         Write-Log -Message "Uninstall for [$displayName] completed with exit code $($primary.ExitCode)."
@@ -750,12 +750,12 @@ function Invoke-UninstallEntry {
                 ExitCode       = $statsRetry.ExitCode
                 Started        = $statsRetry.Started
                 ErrorText      = $statsRetry.ErrorText
-                RebootRequired = ($statsRetry.ExitCode -in @(1641, 3010))
+                RebootRequired = (@(1641, 3010) -contains $statsRetry.ExitCode)
             }) | Out-Null
 
             if ($statsRetry.Started -and $script:SuccessExitCodes -contains $statsRetry.ExitCode) {
                 $result.ExitCode = $statsRetry.ExitCode
-                $result.RebootRequired = $statsRetry.ExitCode -in @(1641, 3010)
+                $result.RebootRequired = @(1641, 3010) -contains $statsRetry.ExitCode
                 $result.Status = if ($result.RebootRequired) { 'PendingReboot' } else { 'Removed' }
                 $result.Reason = "Uninstall completed after AVG Stats.ini retry with exit code $($statsRetry.ExitCode)."
                 $result.RetryActions = @($retryActions)
@@ -773,12 +773,12 @@ function Invoke-UninstallEntry {
                 ExitCode       = $cleanupRetry.ExitCode
                 Started        = $cleanupRetry.Started
                 ErrorText      = $cleanupRetry.ErrorText
-                RebootRequired = ($cleanupRetry.ExitCode -in @(1641, 3010))
+                RebootRequired = (@(1641, 3010) -contains $cleanupRetry.ExitCode)
             }) | Out-Null
 
             if ($cleanupRetry.Started -and $script:SuccessExitCodes -contains $cleanupRetry.ExitCode) {
                 $result.ExitCode = $cleanupRetry.ExitCode
-                $result.RebootRequired = $cleanupRetry.ExitCode -in @(1641, 3010)
+                $result.RebootRequired = @(1641, 3010) -contains $cleanupRetry.ExitCode
                 $result.Status = if ($result.RebootRequired) { 'PendingReboot' } else { 'Removed' }
                 $result.Reason = "Uninstall completed after AVG cleanup retry with exit code $($cleanupRetry.ExitCode)."
                 $result.RetryActions = @($retryActions)
@@ -796,14 +796,14 @@ function Invoke-UninstallEntry {
                 ExitCode       = $fallbackRun.ExitCode
                 Started        = $fallbackRun.Started
                 ErrorText      = $fallbackRun.ErrorText
-                RebootRequired = ($fallbackRun.ExitCode -in @(1641, 3010))
+                RebootRequired = (@(1641, 3010) -contains $fallbackRun.ExitCode)
             }) | Out-Null
 
             if ($fallbackRun.Started -and $script:SuccessExitCodes -contains $fallbackRun.ExitCode) {
                 $result.AttemptedCommand = $fallback.DisplayCommand
                 $result.CommandSource = $fallback.CommandSource
                 $result.ExitCode = $fallbackRun.ExitCode
-                $result.RebootRequired = $fallbackRun.ExitCode -in @(1641, 3010)
+                $result.RebootRequired = @(1641, 3010) -contains $fallbackRun.ExitCode
                 $result.Status = if ($result.RebootRequired) { 'PendingReboot' } else { 'Removed' }
                 $result.Reason = "Uninstall completed after AVG MSI fallback with exit code $($fallbackRun.ExitCode)."
                 $result.RetryActions = @($retryActions)
@@ -1133,7 +1133,7 @@ function Resolve-Outcome {
     $afterBlocking = @(Get-BlockingProductNames -Inventory $AfterInventory -ApprovedPatterns $ApprovedPatterns -AllowedNonTargetPatterns $AllowedNonTargetPatterns)
     $targetPresence = Get-TargetPresenceState -Inventory $AfterInventory -Mode $Mode -ApprovedPatterns $ApprovedPatterns
     $attemptStatuses = @($Attempts | Select-Object -ExpandProperty Status)
-    $successfulRemoval = @($attemptStatuses | Where-Object { $_ -in @('Removed', 'PendingReboot') }).Count -gt 0
+    $successfulRemoval = @($attemptStatuses | Where-Object { @('Removed', 'PendingReboot') -contains $_ }).Count -gt 0
     $rebootRequired = @($Attempts | Where-Object { $_.RebootRequired }).Count -gt 0 -or $AfterInventory.PendingReboot.IsPending
     $manualCleanupNeeded = @($attemptStatuses | Where-Object { $_ -eq 'ManualCleanupRequired' }).Count -gt 0
     $failedAttempts = @($attemptStatuses | Where-Object { $_ -eq 'Failed' }).Count -gt 0
@@ -1390,7 +1390,7 @@ finally {
     }
 }
 
-if ($summary.Outcome -in @('NeedsDattoPolicy', 'NeedsManualCleanup', 'Failed')) {
+if (@('NeedsDattoPolicy', 'NeedsManualCleanup', 'Failed') -contains $summary.Outcome) {
     throw "Resolve-RmmAntivirusState completed with outcome [$($summary.Outcome)]. Review $summaryPath and $($summary.LogPath)."
 }
 # endregion Main
