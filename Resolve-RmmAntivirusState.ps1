@@ -2,7 +2,6 @@
 [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'Medium')]
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet('DattoAV', 'WindowsDefender')]
     [string]$TargetMode,
 
     [string[]]$ApprovedProductPatterns,
@@ -12,11 +11,18 @@ param(
     [ValidateRange(1, 60)]
     [int]$UninstallTimeoutMinutes = 15,
 
-    [string]$LogRoot = 'C:\ProgramData\DattoRMM\AVRemediation'
+    [string]$LogRoot = 'C:\ProgramData\DattoRMM\AVRemediation',
+
+    [string[]]$SupportedTargetModes = @('DattoAV', 'WindowsDefender')
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+
+# Validate TargetMode against supported modes
+if ($TargetMode -notin $SupportedTargetModes) {
+    throw "Invalid TargetMode '$TargetMode'. Supported modes are: $($SupportedTargetModes -join ', ')"
+}
 
 # region Globals
 $script:SuccessExitCodes = @(0, 1641, 3010)
