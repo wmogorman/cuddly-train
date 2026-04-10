@@ -225,7 +225,6 @@ function Test-PatternMatch {
 function Get-DefaultApprovedProductPatterns {
     param(
         [Parameter(Mandatory = $true)]
-        [ValidateSet('DattoAV', 'WindowsDefender')]
         [string]$Mode
     )
 
@@ -239,7 +238,6 @@ function Get-DefaultApprovedProductPatterns {
 function Get-AllowedNonTargetPatterns {
     param(
         [Parameter(Mandatory = $true)]
-        [ValidateSet('DattoAV', 'WindowsDefender')]
         [string]$Mode
     )
 
@@ -1302,7 +1300,6 @@ function Get-ReportingDiscrepancies {
         [Parameter(Mandatory = $true)]
         [string[]]$ApprovedPatterns,
         [Parameter(Mandatory = $true)]
-        [ValidateSet('DattoAV', 'WindowsDefender')]
         [string]$Mode
     )
     
@@ -1385,7 +1382,6 @@ function Test-TargetComplianceByWmi {
         [Parameter(Mandatory = $true)]
         [psobject]$Inventory,
         [Parameter(Mandatory = $true)]
-        [ValidateSet('DattoAV', 'WindowsDefender')]
         [string]$Mode,
         [Parameter(Mandatory = $true)]
         [string[]]$ApprovedPatterns
@@ -1450,7 +1446,6 @@ function Get-TargetPresenceState {
         [Parameter(Mandatory = $true)]
         [psobject]$Inventory,
         [Parameter(Mandatory = $true)]
-        [ValidateSet('DattoAV', 'WindowsDefender')]
         [string]$Mode,
         [Parameter(Mandatory = $true)]
         [string[]]$ApprovedPatterns
@@ -1479,7 +1474,6 @@ function Resolve-Outcome {
         [AllowEmptyCollection()]
         [object[]]$Attempts,
         [Parameter(Mandatory = $true)]
-        [ValidateSet('DattoAV', 'WindowsDefender')]
         [string]$Mode,
         [Parameter(Mandatory = $true)]
         [string[]]$ApprovedPatterns,
