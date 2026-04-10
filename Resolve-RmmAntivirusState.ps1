@@ -21,6 +21,7 @@ $ErrorActionPreference = 'Stop'
 # region Globals
 $script:SuccessExitCodes = @(0, 1641, 3010)
 $script:MinimumSupportedPowerShellVersion = [version]'5.1'
+$script:InventoryQueryTimeoutSeconds = 45
 $script:UninstallTimeoutMinutes = $UninstallTimeoutMinutes
 $script:UninstallTimeoutMilliseconds = $UninstallTimeoutMinutes * 60 * 1000
 $script:InventoryDisplayNamePatterns = @(
@@ -248,6 +249,50 @@ function Assert-SupportedPowerShellVersion {
     $currentVersion = $PSVersionTable.PSVersion
     if ($currentVersion -lt $script:MinimumSupportedPowerShellVersion) {
         throw "PowerShell $($script:MinimumSupportedPowerShellVersion) or later is required. Current version: $currentVersion"
+    }
+}
+
+function Assert-WindowsPlatform {
+    if ([System.Environment]::OSVersion.Platform -ne [System.PlatformID]::Win32NT) {
+        throw 'This script must run on Windows.'
+    }
+}
+
+function Invoke-CommandWithTimeout {
+    param(
+        [Parameter(Mandatory = $true)]
+        [scriptblock]$ScriptBlock,
+        [Parameter(Mandatory = $true)]
+        [ValidateRange(1, 600)]
+        [int]$TimeoutSeconds,
+        [Parameter(Mandatory = $true)]
+        [string]$Description
+    )
+
+    $job = $null
+
+    try {
+        $job = Start-Job -ScriptBlock $ScriptBlock
+        if (-not (Wait-Job -Job $job -Timeout $TimeoutSeconds)) {
+            try {
+                Stop-Job -Job $job -ErrorAction SilentlyContinue | Out-Null
+            }
+            catch {
+            }
+
+            throw "$Description timed out after $TimeoutSeconds second(s)."
+        }
+
+        return @(Receive-Job -Job $job -ErrorAction Stop)
+    }
+    finally {
+        if ($null -ne $job) {
+            try {
+                Remove-Job -Job $job -Force -ErrorAction SilentlyContinue | Out-Null
+            }
+            catch {
+            }
+        }
     }
 }
 # endregion GeneralHelpers
@@ -925,7 +970,21 @@ function Get-SecurityCenterProducts {
     $errorText = $null
 
     try {
-        $products = Get-CimInstance -Namespace 'root/SecurityCenter2' -ClassName 'AntivirusProduct' -ErrorAction Stop
+        Write-Log -Message "Inventory step started: SecurityCenter2 query (timeout ${script:InventoryQueryTimeoutSeconds}s)."
+        $products = Invoke-CommandWithTimeout -TimeoutSeconds $script:InventoryQueryTimeoutSeconds -Description 'SecurityCenter2 query' -ScriptBlock {
+            $ErrorActionPreference = 'Stop'
+            Get-CimInstance -Namespace 'root/SecurityCenter2' -ClassName 'AntivirusProduct' -ErrorAction Stop |
+                ForEach-Object {
+                    [pscustomobject]@{
+                        DisplayName              = [string]$_.displayName
+                        InstanceGuid             = [string]$_.instanceGuid
+                        ProductState             = [string]$_.productState
+                        PathToSignedProductExe   = [string]$_.pathToSignedProductExe
+                        PathToSignedReportingExe = [string]$_.pathToSignedReportingExe
+                    }
+                }
+        }
+
         foreach ($product in $products) {
             if (-not [string]::IsNullOrWhiteSpace([string]$product.displayName)) {
                 $items.Add([pscustomobject]@{
@@ -937,6 +996,8 @@ function Get-SecurityCenterProducts {
                 }) | Out-Null
             }
         }
+
+        Write-Log -Message "Inventory step completed: SecurityCenter2 query returned $($items.Count) item(s)."
     }
     catch {
         $errorText = $_.Exception.Message
@@ -959,6 +1020,7 @@ function Get-InstalledSecurityPrograms {
     $errorText = $null
 
     try {
+        Write-Log -Message 'Inventory step started: uninstall registry scan.'
         $programs = Get-ItemProperty -Path $registryPaths -ErrorAction SilentlyContinue |
             Where-Object {
                 $displayName = Get-OptionalPropertyValue -InputObject $_ -Name 'DisplayName'
@@ -984,6 +1046,8 @@ function Get-InstalledSecurityPrograms {
                 ProductCode          = Get-MsiProductCodeFromUninstallEntry -InputObject $program
             }) | Out-Null
         }
+
+        Write-Log -Message "Inventory step completed: uninstall registry scan returned $($items.Count) item(s)."
     }
     catch {
         $errorText = $_.Exception.Message
@@ -1012,17 +1076,24 @@ function Get-DefenderStatus {
     }
 
     try {
-        $status = Get-MpComputerStatus -ErrorAction Stop
-        return [pscustomobject]@{
-            Available                 = $true
-            Error                     = $null
-            AMServiceEnabled          = [bool](Get-OptionalMemberValue -InputObject $status -Name 'AMServiceEnabled')
-            AntivirusEnabled          = [bool](Get-OptionalMemberValue -InputObject $status -Name 'AntivirusEnabled')
-            AntispywareEnabled        = [bool](Get-OptionalMemberValue -InputObject $status -Name 'AntispywareEnabled')
-            RealTimeProtectionEnabled = [bool](Get-OptionalMemberValue -InputObject $status -Name 'RealTimeProtectionEnabled')
-            ProductStatus             = Get-OptionalPropertyValue -InputObject $status -Name 'ProductStatus'
-            SignatureVersion          = Get-OptionalPropertyValue -InputObject $status -Name 'AntivirusSignatureVersion'
-        }
+        Write-Log -Message "Inventory step started: Get-MpComputerStatus (timeout ${script:InventoryQueryTimeoutSeconds}s)."
+        $status = Invoke-CommandWithTimeout -TimeoutSeconds $script:InventoryQueryTimeoutSeconds -Description 'Get-MpComputerStatus' -ScriptBlock {
+            $ErrorActionPreference = 'Stop'
+            $status = Get-MpComputerStatus -ErrorAction Stop
+            [pscustomobject]@{
+                Available                 = $true
+                Error                     = $null
+                AMServiceEnabled          = [bool]$status.AMServiceEnabled
+                AntivirusEnabled          = [bool]$status.AntivirusEnabled
+                AntispywareEnabled        = [bool]$status.AntispywareEnabled
+                RealTimeProtectionEnabled = [bool]$status.RealTimeProtectionEnabled
+                ProductStatus             = [string]$status.ProductStatus
+                SignatureVersion          = [string]$status.AntivirusSignatureVersion
+            }
+        } | Select-Object -First 1
+
+        Write-Log -Message 'Inventory step completed: Get-MpComputerStatus succeeded.'
+        return $status
     }
     catch {
         Write-Log -Message "Get-MpComputerStatus failed: $($_.Exception.Message)" -Level WARN
@@ -1384,6 +1455,7 @@ $summary = $null
 
 try {
     Assert-SupportedPowerShellVersion
+    Assert-WindowsPlatform
     Write-Log -Message "=== Starting RMM antivirus remediation. TargetMode=$TargetMode DryRun=$($DryRun.IsPresent) ==="
 
     if (-not (Test-IsAdministrator)) {
@@ -1395,14 +1467,17 @@ try {
         }
     }
 
+    Write-Log -Message 'Collecting pre-remediation inventory.'
     $beforeInventory = Get-SecurityInventory
     Write-Log -Message ("Products before remediation: {0}" -f (Join-DisplayValues -Values @($beforeInventory.Products | Select-Object -ExpandProperty Name)))
 
     $candidates = Get-RemovalCandidates -Inventory $beforeInventory -ApprovedPatterns $approvedPatternsToUse -AllowedNonTargetPatterns $allowedNonTargetPatterns
+    Write-Log -Message "Found $(@($candidates).Count) removal candidate(s)."
     foreach ($candidate in $candidates) {
         $attempts += Invoke-UninstallEntry -RegistryEntry $candidate -DryRun:$DryRun -WhatIf:$WhatIfPreference
     }
 
+    Write-Log -Message 'Collecting post-remediation inventory.'
     $afterInventory = Get-SecurityInventory
     Write-Log -Message ("Products after remediation: {0}" -f (Join-DisplayValues -Values @($afterInventory.Products | Select-Object -ExpandProperty Name)))
 
