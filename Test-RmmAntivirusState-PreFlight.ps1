@@ -23,13 +23,17 @@ Default: 'Quick'
 
 [CmdletBinding()]
 param(
-    [string]$ScriptPath = (Join-Path $PSScriptRoot 'Resolve-RmmAntivirusState.ps1'),
+    [string]$ScriptPath,
     [ValidateSet('Quick', 'Full', 'Extended')]
     [string]$Mode = 'Quick'
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+
+if ([string]::IsNullOrWhiteSpace($ScriptPath)) {
+    $ScriptPath = Join-Path -Path $PSScriptRoot -ChildPath 'Resolve-RmmAntivirusState.ps1'
+}
 
 $script:TestsPassed = 0
 $script:TestsFailed = 0
@@ -38,26 +42,26 @@ $script:TestsWarnings = 0
 function Write-TestHeader {
     param([string]$Header)
     Write-Host "`n" -NoNewline
-    Write-Host '=' * 70 -ForegroundColor Cyan
+    Write-Host ('=' * 70) -ForegroundColor Cyan
     Write-Host $Header -ForegroundColor Cyan
-    Write-Host '=' * 70 -ForegroundColor Cyan
+    Write-Host ('=' * 70) -ForegroundColor Cyan
 }
 
 function Write-TestPass {
     param([string]$Message)
-    Write-Host "✓ PASS: $Message" -ForegroundColor Green
+    Write-Host "[PASS] $Message" -ForegroundColor Green
     $script:TestsPassed++
 }
 
 function Write-TestFail {
     param([string]$Message)
-    Write-Host "✗ FAIL: $Message" -ForegroundColor Red
+    Write-Host "[FAIL] $Message" -ForegroundColor Red
     $script:TestsFailed++
 }
 
 function Write-TestWarn {
     param([string]$Message)
-    Write-Host "⚠ WARN: $Message" -ForegroundColor Yellow
+    Write-Host "[WARN] $Message" -ForegroundColor Yellow
     $script:TestsWarnings++
 }
 
@@ -79,7 +83,7 @@ Write-TestHeader 'Test 2: PowerShell Syntax Validation'
 try {
     $tokens = @()
     $errors = @()
-    $null = [System.Management.Automation.PSParser]::Tokenize(
+    $tokens = [System.Management.Automation.PSParser]::Tokenize(
         [IO.File]::ReadAllText($ScriptPath),
         [ref]$errors
     )
@@ -253,14 +257,49 @@ if ($Mode -in @('Full', 'Extended')) {
 if ($Mode -in @('Full', 'Extended')) {
     Write-TestHeader 'Test 8: Parameter Validation'
     
-    $validModes = @('DattoAV', 'WindowsDefender')
-    foreach ($mode in $validModes) {
+    $validModes = @(
+        'DattoAV',
+        'Datto AV',
+        'WindowsDefender',
+        'Windows Defender',
+        'MicrosoftDefender',
+        'Microsoft Defender'
+    )
+    foreach ($candidateMode in $validModes) {
         try {
-            $null = & $ScriptPath -TargetMode $mode -DryRun -ErrorAction Stop 2>&1
-            Write-TestPass "Mode parameter accepted: $mode"
+            $null = & $ScriptPath -TargetMode $candidateMode -DryRun -ErrorAction Stop 2>&1
+            Write-TestPass "Mode parameter accepted: $candidateMode"
         }
         catch {
-            Write-TestFail "Mode parameter validation failed for: $mode"
+            $isBindingFailure =
+                ($_.Exception -is [System.Management.Automation.ParameterBindingException]) -or
+                ($_.FullyQualifiedErrorId -like 'ParameterBinding*') -or
+                ($_.Exception.Message -like "Unsupported TargetMode*")
+
+            if ($isBindingFailure) {
+                Write-TestFail "Mode parameter validation failed for: $candidateMode"
+            }
+            else {
+                Write-TestPass "Mode parameter accepted: $candidateMode"
+            }
+        }
+    }
+
+    try {
+        $null = & $ScriptPath -SupportedTargetModes 'Datto AV' -DryRun -ErrorAction Stop 2>&1
+        Write-TestPass "Legacy parameter alias accepted: -SupportedTargetModes"
+    }
+    catch {
+        $isBindingFailure =
+            ($_.Exception -is [System.Management.Automation.ParameterBindingException]) -or
+            ($_.FullyQualifiedErrorId -like 'ParameterBinding*') -or
+            ($_.Exception.Message -like "Unsupported TargetMode*")
+
+        if ($isBindingFailure) {
+            Write-TestFail "Legacy parameter alias validation failed: $($_.Exception.Message)"
+        }
+        else {
+            Write-TestPass "Legacy parameter alias accepted: -SupportedTargetModes"
         }
     }
 }
@@ -297,15 +336,15 @@ $totalTests = $script:TestsPassed + $script:TestsFailed
 $passRate = if ($totalTests -gt 0) { [Math]::Round(($script:TestsPassed / $totalTests) * 100) } else { 0 }
 
 Write-Host "Total Tests: $totalTests"
-Write-Host "  ✓ Passed: $($script:TestsPassed) ($passRate%)" -ForegroundColor Green
-Write-Host "  ✗ Failed: $($script:TestsFailed)" -ForegroundColor $(if ($script:TestsFailed -gt 0) { 'Red' } else { 'Green' })
-Write-Host "  ⚠ Warnings: $($script:TestsWarnings)" -ForegroundColor Yellow
+Write-Host "  Passed: $($script:TestsPassed) ($passRate%)" -ForegroundColor Green
+Write-Host "  Failed: $($script:TestsFailed)" -ForegroundColor $(if ($script:TestsFailed -gt 0) { 'Red' } else { 'Green' })
+Write-Host "  Warnings: $($script:TestsWarnings)" -ForegroundColor Yellow
 
 if ($script:TestsFailed -eq 0) {
-    Write-Host "`n✓ All checks passed! Script is ready for deployment." -ForegroundColor Green
+    Write-Host "`nAll checks passed. Script is ready for deployment." -ForegroundColor Green
     exit 0
 }
 else {
-    Write-Host "`n✗ Some checks failed. Fix issues before deploying." -ForegroundColor Red
+    Write-Host "`nSome checks failed. Fix issues before deploying." -ForegroundColor Red
     exit 1
 }

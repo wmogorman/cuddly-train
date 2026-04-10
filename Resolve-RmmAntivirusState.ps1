@@ -2,7 +2,7 @@
 [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'Medium')]
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet('DattoAV', 'WindowsDefender')]
+    [Alias('SupportedTargetModes')]
     [string]$TargetMode,
 
     [string[]]$ApprovedProductPatterns,
@@ -17,6 +17,34 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+
+if ([string]::IsNullOrWhiteSpace($TargetMode)) {
+    throw 'TargetMode is required.'
+}
+
+$requestedTargetMode = $TargetMode.Trim()
+
+switch -Regex ($requestedTargetMode) {
+    '^Datto\s*AV$' {
+        $TargetMode = 'DattoAV'
+        break
+    }
+    '^DattoAV$' {
+        $TargetMode = 'DattoAV'
+        break
+    }
+    '^(Windows|Microsoft)\s*Defender$' {
+        $TargetMode = 'WindowsDefender'
+        break
+    }
+    '^(Windows|Microsoft)Defender$' {
+        $TargetMode = 'WindowsDefender'
+        break
+    }
+    default {
+        throw "Unsupported TargetMode '$requestedTargetMode'. Supported values: DattoAV, Datto AV, WindowsDefender, Windows Defender, MicrosoftDefender, Microsoft Defender."
+    }
+}
 
 # region Globals
 $script:SuccessExitCodes = @(0, 1641, 3010)
