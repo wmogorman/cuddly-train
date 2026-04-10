@@ -24,6 +24,9 @@ $script:MinimumSupportedPowerShellVersion = [version]'5.1'
 $script:InventoryQueryTimeoutSeconds = 45
 $script:UninstallTimeoutMinutes = $UninstallTimeoutMinutes
 $script:UninstallTimeoutMilliseconds = $UninstallTimeoutMinutes * 60 * 1000
+$script:ServiceStopTimeoutSeconds = 5
+$script:ProcessCleanupTimeoutSeconds = 5
+$script:StartTimeUtc = [System.DateTime]::UtcNow
 $script:InventoryDisplayNamePatterns = @(
     'Antivirus',
     'Internet Security',
@@ -141,10 +144,17 @@ function Write-Log {
     Add-Content -Path $script:LogPath -Value $line
 }
 
-function Test-IsAdministrator {
-    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
-    $principal = [Security.Principal.WindowsPrincipal]::new($identity)
-    return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+function Get-ElapsedTimeSeconds {
+    $elapsed = [System.DateTime]::UtcNow - $script:StartTimeUtc
+    return [int]$elapsed.TotalSeconds
+}
+
+function Test-TimeoutExceeded {
+    param(
+        [int]$MaxSeconds
+    )
+    $elapsed = Get-ElapsedTimeSeconds
+    return $elapsed -ge $MaxSeconds
 }
 
 function Get-OptionalMemberValue {
@@ -266,13 +276,14 @@ function Invoke-CommandWithTimeout {
         [ValidateRange(1, 600)]
         [int]$TimeoutSeconds,
         [Parameter(Mandatory = $true)]
-        [string]$Description
+        [string]$Description,
+        [object[]]$ArgumentList = @()
     )
 
     $job = $null
 
     try {
-        $job = Start-Job -ScriptBlock $ScriptBlock
+        $job = Start-Job -ScriptBlock $ScriptBlock -ArgumentList $ArgumentList
         if (-not (Wait-Job -Job $job -Timeout $TimeoutSeconds)) {
             try {
                 Stop-Job -Job $job -ErrorAction SilentlyContinue | Out-Null
@@ -490,10 +501,15 @@ function Stop-ProcessTree {
     )
 
     try {
-        $taskKill = Start-Process -FilePath 'taskkill.exe' -ArgumentList "/PID $ProcessId /T /F" -Wait -PassThru -WindowStyle Hidden -ErrorAction Stop
+        $result = Invoke-CommandWithTimeout -TimeoutSeconds 10 -Description "Terminate process tree for PID $ProcessId" -ScriptBlock {
+            param([int]$Pid)
+            $taskKill = Start-Process -FilePath 'taskkill.exe' -ArgumentList "/PID $Pid /T /F" -Wait -PassThru -WindowStyle Hidden -ErrorAction Stop
+            return $taskKill.ExitCode
+        } -ArgumentList $ProcessId
+
         return [pscustomobject]@{
-            Succeeded = ($taskKill.ExitCode -eq 0)
-            ExitCode  = $taskKill.ExitCode
+            Succeeded = ($result -eq 0)
+            ExitCode  = $result
             ErrorText = $null
         }
     }
@@ -509,24 +525,46 @@ function Stop-ProcessTree {
 function Invoke-AvgPreUninstallCleanup {
     $attempted = $false
 
-    $avgServices = Get-Service -Name 'AVG*' -ErrorAction SilentlyContinue
+    try {
+        $avgServices = Invoke-CommandWithTimeout -TimeoutSeconds $script:ServiceStopTimeoutSeconds -Description 'AVG service enumeration' -ScriptBlock {
+            Get-Service -Name 'AVG*' -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq [System.ServiceProcess.ServiceControllerStatus]::Running }
+        }
+    }
+    catch {
+        Write-Log -Message "AVG service enumeration timed out or failed: $($_.Exception.Message)" -Level WARN
+        $avgServices = @()
+    }
+
     foreach ($service in $avgServices) {
-        if ($service.Status -eq [System.ServiceProcess.ServiceControllerStatus]::Running) {
-            try {
-                Stop-Service -Name $service.Name -Force -ErrorAction Stop
-                Write-Log -Message "Stopped AVG service [$($service.Name)] before retry."
-                $attempted = $true
-            }
-            catch {
-                Write-Log -Message "Could not stop AVG service [$($service.Name)]: $($_.Exception.Message)" -Level WARN
-            }
+        try {
+            Invoke-CommandWithTimeout -TimeoutSeconds $script:ServiceStopTimeoutSeconds -Description "Stop AVG service $($service.Name)" -ScriptBlock {
+                param([string]$ServiceName)
+                Stop-Service -Name $ServiceName -Force -ErrorAction Stop
+            } -ArgumentList $service.Name | Out-Null
+            Write-Log -Message "Stopped AVG service [$($service.Name)] before retry."
+            $attempted = $true
+        }
+        catch {
+            Write-Log -Message "Could not stop AVG service [$($service.Name)]: $($_.Exception.Message)" -Level WARN
         }
     }
 
-    $avgProcesses = Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.ProcessName -match '^(?i)avg' }
+    try {
+        $avgProcesses = Invoke-CommandWithTimeout -TimeoutSeconds $script:ProcessCleanupTimeoutSeconds -Description 'AVG process enumeration' -ScriptBlock {
+            Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.ProcessName -match '^(?i)avg' }
+        }
+    }
+    catch {
+        Write-Log -Message "AVG process enumeration timed out or failed: $($_.Exception.Message)" -Level WARN
+        $avgProcesses = @()
+    }
+
     foreach ($process in $avgProcesses) {
         try {
-            Stop-Process -Id $process.Id -Force -ErrorAction Stop
+            Invoke-CommandWithTimeout -TimeoutSeconds $script:ProcessCleanupTimeoutSeconds -Description "Stop AVG process $($process.ProcessName)" -ScriptBlock {
+                param([int]$ProcessId)
+                Stop-Process -Id $ProcessId -Force -ErrorAction Stop
+            } -ArgumentList $process.Id | Out-Null
             Write-Log -Message "Stopped AVG process [$($process.ProcessName)] (PID $($process.Id)) before retry."
             $attempted = $true
         }
@@ -790,10 +828,30 @@ function Invoke-UninstallEntry {
     param(
         [Parameter(Mandatory = $true)]
         [psobject]$RegistryEntry,
-        [switch]$DryRun
+        [switch]$DryRun,
+        [int]$MaxElapsedSeconds = 2400
     )
 
     $displayName = Get-OptionalPropertyValue -InputObject $RegistryEntry -Name 'DisplayName'
+    $elapsedSeconds = Get-ElapsedTimeSeconds
+    
+    if ($elapsedSeconds -ge $MaxElapsedSeconds) {
+        Write-Log -Message "Timeout budget exceeded ($elapsedSeconds/$MaxElapsedSeconds seconds); skipping uninstall for [$displayName]." -Level WARN
+        return [pscustomobject]@{
+            DisplayName      = $displayName
+            Publisher        = Get-OptionalPropertyValue -InputObject $RegistryEntry -Name 'Publisher'
+            DisplayVersion   = Get-OptionalPropertyValue -InputObject $RegistryEntry -Name 'DisplayVersion'
+            ProductCode      = Get-OptionalPropertyValue -InputObject $RegistryEntry -Name 'ProductCode'
+            CommandSource    = $null
+            AttemptedCommand = $null
+            Status           = 'TimeoutExceeded'
+            ExitCode         = $null
+            RebootRequired   = $false
+            Reason           = "Global timeout budget exceeded after ${elapsedSeconds}s."
+            RetryActions     = @()
+        }
+    }
+
     $resolved = Resolve-UninstallAction -RegistryEntry $RegistryEntry
     $retryActions = [System.Collections.Generic.List[object]]::new()
 
@@ -1474,11 +1532,17 @@ try {
     $candidates = Get-RemovalCandidates -Inventory $beforeInventory -ApprovedPatterns $approvedPatternsToUse -AllowedNonTargetPatterns $allowedNonTargetPatterns
     Write-Log -Message "Found $(@($candidates).Count) removal candidate(s)."
     foreach ($candidate in $candidates) {
-        $attempts += Invoke-UninstallEntry -RegistryEntry $candidate -DryRun:$DryRun -WhatIf:$WhatIfPreference
+        $attempts += Invoke-UninstallEntry -RegistryEntry $candidate -DryRun:$DryRun -WhatIf:$WhatIfPreference -MaxElapsedSeconds 2400
     }
 
     Write-Log -Message 'Collecting post-remediation inventory.'
-    $afterInventory = Get-SecurityInventory
+    if (Test-TimeoutExceeded -MaxSeconds 2700) {
+        Write-Log -Message "Approaching timeout budget; skipping post-remediation inventory collection." -Level WARN
+        $afterInventory = $beforeInventory
+    }
+    else {
+        $afterInventory = Get-SecurityInventory
+    }
     Write-Log -Message ("Products after remediation: {0}" -f (Join-DisplayValues -Values @($afterInventory.Products | Select-Object -ExpandProperty Name)))
 
     $outcome = Resolve-Outcome -BeforeInventory $beforeInventory -AfterInventory $afterInventory -Attempts $attempts -Mode $TargetMode -ApprovedPatterns $approvedPatternsToUse -AllowedNonTargetPatterns $allowedNonTargetPatterns -DryRun:$DryRun
