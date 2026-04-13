@@ -303,6 +303,8 @@ function Assert-WindowsPlatform {
 }
 
 function Invoke-CommandWithTimeout {
+    # Uses runspaces instead of Start-Job so this works correctly when running as SYSTEM
+    # (Start-Job requires a user profile/temp environment that SYSTEM may not have in RMM contexts).
     param(
         [Parameter(Mandatory = $true)]
         [scriptblock]$ScriptBlock,
@@ -314,29 +316,45 @@ function Invoke-CommandWithTimeout {
         [object[]]$ArgumentList = @()
     )
 
-    $job = $null
+    $runspace = $null
+    $ps = $null
 
     try {
-        $job = Start-Job -ScriptBlock $ScriptBlock -ArgumentList $ArgumentList
-        if (-not (Wait-Job -Job $job -Timeout $TimeoutSeconds)) {
-            try {
-                Stop-Job -Job $job -ErrorAction SilentlyContinue | Out-Null
-            }
-            catch {
-            }
+        $runspace = [runspacefactory]::CreateRunspace()
+        $runspace.Open()
 
+        $ps = [powershell]::Create()
+        $ps.Runspace = $runspace
+        [void]$ps.AddScript($ScriptBlock)
+        foreach ($arg in $ArgumentList) {
+            [void]$ps.AddArgument($arg)
+        }
+
+        $asyncResult = $ps.BeginInvoke()
+
+        if (-not $asyncResult.AsyncWaitHandle.WaitOne([timespan]::FromSeconds($TimeoutSeconds))) {
+            try { $ps.Stop() } catch { }
             throw "$Description timed out after $TimeoutSeconds second(s)."
         }
 
-        return @(Receive-Job -Job $job -ErrorAction Stop)
+        $results = $ps.EndInvoke($asyncResult)
+
+        if ($ps.HadErrors -and $ps.Streams.Error.Count -gt 0) {
+            $firstError = $ps.Streams.Error[0]
+            if ($null -ne $firstError -and $null -ne $firstError.Exception) {
+                throw $firstError.Exception
+            }
+        }
+
+        return @($results)
     }
     finally {
-        if ($null -ne $job) {
-            try {
-                Remove-Job -Job $job -Force -ErrorAction SilentlyContinue | Out-Null
-            }
-            catch {
-            }
+        if ($null -ne $ps) {
+            try { $ps.Dispose() } catch { }
+        }
+        if ($null -ne $runspace) {
+            try { $runspace.Close() } catch { }
+            try { $runspace.Dispose() } catch { }
         }
     }
 }
