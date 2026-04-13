@@ -47,10 +47,10 @@ If the `.pfx` and `.cer` files do not already exist, these are the export comman
 $thumb = 'D0278AED132F9C816A815A4BFFF0F48CE8FAECEF'
 $cert = Get-ChildItem Cert:\CurrentUser\My | Where-Object Thumbprint -eq $thumb
 
-Export-Certificate -Cert $cert -FilePath .\ActaMSP-GDAP-Automation.cer
+Export-Certificate -Cert $cert -FilePath .\certs\ActaMSP-GDAP-Automation.cer
 
 $pfxPassword = Read-Host 'Enter a password for the PFX file' -AsSecureString
-Export-PfxCertificate -Cert $cert -FilePath .\ActaMSP-GDAP-Automation.pfx -Password $pfxPassword
+Export-PfxCertificate -Cert $cert -FilePath .\certs\ActaMSP-GDAP-Automation.pfx -Password $pfxPassword
 ```
 
 If `Export-PfxCertificate` fails, the private key is not exportable and the certificate must be recreated.

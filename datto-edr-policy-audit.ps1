@@ -1975,10 +1975,10 @@ $configHashtable = ConvertTo-PlainData -InputObject $rawConfig
 $normalizedConfig = Normalize-BaselineConfig -Config $configHashtable -BaseDirectory $configDirectory
 
 if ([string]::IsNullOrWhiteSpace($OutputCsvPath)) {
-  $OutputCsvPath = ".\datto-edr-policy-audit.csv"
+  $OutputCsvPath = Join-Path -Path $PSScriptRoot -ChildPath "artifacts\datto-edr\datto-edr-policy-audit.csv"
 }
 if ([string]::IsNullOrWhiteSpace($OutputJsonPath)) {
-  $OutputJsonPath = ".\datto-edr-policy-audit.json"
+  $OutputJsonPath = Join-Path -Path $PSScriptRoot -ChildPath "artifacts\datto-edr\datto-edr-policy-audit.json"
 }
 
 $resolvedCsvPath = Resolve-AbsolutePath -Path $OutputCsvPath -BaseDirectory $configDirectory

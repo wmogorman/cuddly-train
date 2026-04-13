@@ -226,7 +226,7 @@ Use this GUI to launch external-mfa-rollout.ps1 for teammates.
 
 Recommended workflow:
 1. Fill required rollout value: Name.
-2. If creating a NEW EAM, either provide ClientId, DiscoveryEndpoint, and AppId, or keep duo-external-mfa-ui-details.csv populated with a unique row for the tenant so the script can auto-resolve those fields.
+2. If creating a NEW EAM, either provide ClientId, DiscoveryEndpoint, and AppId, or keep artifacts/duo/duo-external-mfa-ui-details.csv populated with a unique row for the tenant so the script can auto-resolve those fields.
 3. If the EAM already exists in Entra, leave ExternalAuthConfigId blank first; the script should find it automatically by name. Only use ExternalAuthConfigId if lookup fails and you need an override.
 4. BreakGlassGroupId is optional when the tenant contains the standard managed group 'ActaMSP Break Glass'; use the field only as an override.
 5. PilotGroupName identifies the managed pilot SOURCE group when you let the script mirror Global Administrators automatically. If no pilot source override is supplied, the rollout will try to use 'ActaMSP Global Administrators Audit' by default.

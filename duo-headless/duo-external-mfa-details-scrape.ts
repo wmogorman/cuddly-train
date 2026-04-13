@@ -30,8 +30,13 @@ type ScrapedFields = {
   UiArtifactPath: string;
 };
 
-const DEFAULT_INPUT = path.resolve("./duo-external-mfa-applications.csv");
-const DEFAULT_OUTPUT = path.resolve("./duo-external-mfa-ui-details.csv");
+const DEFAULT_INPUT_CANDIDATES = [
+  path.resolve("./artifacts/duo/duo-external-mfa-applications.csv"),
+  path.resolve("./samples/duo/duo-external-mfa-applications.csv"),
+  path.resolve("./duo-external-mfa-applications.csv"),
+];
+const DEFAULT_INPUT = DEFAULT_INPUT_CANDIDATES.find((candidate) => fs.existsSync(candidate)) ?? DEFAULT_INPUT_CANDIDATES[0];
+const DEFAULT_OUTPUT = path.resolve("./artifacts/duo/duo-external-mfa-ui-details.csv");
 const DEFAULT_ADMIN_URL = "https://admin.duosecurity.com";
 const STORAGE = path.resolve("./duo-headless/storage_state.json");
 const ARTIFACTS_DIR = path.resolve("./duo-headless/artifacts");

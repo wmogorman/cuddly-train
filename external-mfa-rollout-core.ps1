@@ -21,8 +21,8 @@
   Application (resource) AppId / identifier required by the external auth method configuration
 
 .PARAMETER DuoUiDetailsCsvPath
-  Optional path to duo-external-mfa-ui-details.csv. When ClientId/DiscoveryEndpoint/AppId are omitted, the script
-  can use this CSV to auto-resolve the Duo provider details for the connected tenant before creating the EAM.
+  Optional path to `artifacts/duo/duo-external-mfa-ui-details.csv`. When ClientId/DiscoveryEndpoint/AppId are omitted,
+  the script can use this CSV to auto-resolve the Duo provider details for the connected tenant before creating the EAM.
 
 .PARAMETER ExternalAuthConfigId
   Optional override for an existing External Authentication Method configuration ID. Normally the script reuses an
@@ -246,7 +246,19 @@ function Get-DuoUiDetailsCsvPath {
   param([Parameter(Mandatory=$false)][string]$Path)
 
   $effectivePath = if ([string]::IsNullOrWhiteSpace($Path)) {
-    Join-Path $PSScriptRoot $script:DefaultDuoUiDetailsCsvFileName
+    $defaultCandidates = @(
+      (Join-Path $PSScriptRoot "artifacts\duo\$($script:DefaultDuoUiDetailsCsvFileName)")
+      (Join-Path $PSScriptRoot "samples\duo\$($script:DefaultDuoUiDetailsCsvFileName)")
+      (Join-Path $PSScriptRoot $script:DefaultDuoUiDetailsCsvFileName)
+    )
+
+    $existingDefault = $defaultCandidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+    if ([string]::IsNullOrWhiteSpace($existingDefault)) {
+      $defaultCandidates[0]
+    }
+    else {
+      $existingDefault
+    }
   }
   else {
     $Path
@@ -2651,7 +2663,7 @@ function Invoke-ExternalMfaPreflight {
 
     if ((-not $existingExternalAuthConfig) -and (-not $hasAllProviderConfigInputs)) {
       $csvHint = if ([string]::IsNullOrWhiteSpace($DuoUiDetailsCsvPath)) {
-        " Ensure duo-external-mfa-ui-details.csv is present beside the rollout scripts, or pass -ClientId, -DiscoveryEndpoint, and -AppId explicitly."
+        " Ensure artifacts/duo/duo-external-mfa-ui-details.csv is populated, or pass -ClientId, -DiscoveryEndpoint, and -AppId explicitly."
       }
       else {
         " Ensure '$DuoUiDetailsCsvPath' has a unique row for the tenant, or pass -ClientId, -DiscoveryEndpoint, and -AppId explicitly."

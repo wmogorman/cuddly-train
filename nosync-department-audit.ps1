@@ -28,7 +28,7 @@ Behavior flags
 - -StopOnError: stop after first tenant failure (otherwise continue and summarize).
 
 Output
-- Writes a detail CSV to -OutputPath or a timestamped default path in the repo root.
+- Writes a detail CSV to -OutputPath or a timestamped default path in `artifacts/entra`.
 - Prints a per-tenant summary table and a distinct raw-department count summary.
 - Returns tenant summary objects on the pipeline.
 
@@ -96,7 +96,7 @@ $script:DetailColumns = @(
 $autoDiscoverTenantsEnabled = if ($PSBoundParameters.ContainsKey("AutoDiscoverTenants")) { [bool]$AutoDiscoverTenants } else { $true }
 
 if ([string]::IsNullOrWhiteSpace($OutputPath)) {
-    $OutputPath = Join-Path -Path $PSScriptRoot -ChildPath ("nosync-department-audit-{0}.csv" -f (Get-Date -Format "yyyyMMdd-HHmmss"))
+    $OutputPath = Join-Path -Path $PSScriptRoot -ChildPath ("artifacts\entra\nosync-department-audit-{0}.csv" -f (Get-Date -Format "yyyyMMdd-HHmmss"))
 }
 
 function Write-Log {

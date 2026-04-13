@@ -5,6 +5,8 @@ nethack-username.txt
 dfremote-password.txt
 users.csv
 users-with-share-links.csv
+artifacts/
+certs/
 duo-admin-api-integrations.csv
 powertechnology-immybot/dist/
 duo-entra-sync-group-audit.csv

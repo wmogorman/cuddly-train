@@ -39,11 +39,15 @@ param(
   [switch] $WhatIf,
 
   # Output includes integration keys and (for newly created integrations) secret keys.
-  [string] $OutputCsvPath = ".\duo-admin-api-integrations.csv"
+  [string] $OutputCsvPath
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+
+if ([string]::IsNullOrWhiteSpace($OutputCsvPath)) {
+  $OutputCsvPath = Join-Path -Path $PSScriptRoot -ChildPath "artifacts\duo\duo-admin-api-integrations.csv"
+}
 
 if ([string]::IsNullOrWhiteSpace($IKey)) {
   throw "IKey cannot be empty."
@@ -70,6 +74,15 @@ $RequiredPermissionParams = [ordered]@{
   # Existing required grants
   adminapi_read_resource          = "1"
   adminapi_allow_to_set_permissions = "1"
+}
+
+function Ensure-ParentDirectory {
+  param([Parameter(Mandatory)][string] $Path)
+
+  $parent = Split-Path -Parent $Path
+  if (-not [string]::IsNullOrWhiteSpace($parent) -and -not (Test-Path -LiteralPath $parent)) {
+    [void](New-Item -ItemType Directory -Path $parent -Force)
+  }
 }
 
 function Resolve-DuoHost {
@@ -546,6 +559,7 @@ foreach ($acct in $accounts) {
 
 if (-not $WhatIf -and $results.Count -gt 0) {
   try {
+    Ensure-ParentDirectory -Path $OutputCsvPath
     $results | Export-Csv -Path $OutputCsvPath -NoTypeInformation
     Write-Host "Results exported to: $OutputCsvPath"
   } catch {

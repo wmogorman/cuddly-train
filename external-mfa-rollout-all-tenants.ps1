@@ -7,7 +7,7 @@
   - Delegated: omit -ClientId/-Thumbprint and the core script will prompt for tenant-by-tenant sign-in.
   - App-only: provide -ClientId/-Thumbprint and the core script will connect certificate-authenticated per tenant.
   - If a tenant's Duo provider fields are omitted from JSON, the core script can auto-resolve them from
-    duo-external-mfa-ui-details.csv by matching UiEntraTenantId to the connected tenant.
+    artifacts/duo/duo-external-mfa-ui-details.csv by matching UiEntraTenantId to the connected tenant.
 
   Auto-discovery is only supported in app-only mode. Discovered tenant IDs are filtered to entries present in the JSON config.
 

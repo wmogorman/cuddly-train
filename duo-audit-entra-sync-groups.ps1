@@ -30,7 +30,7 @@
     -ParentApiHost "api-xxxx.duosecurity.com" `
     -IKey "DIXXXXXXXXXXXXXXXXXX" `
     -SKey "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef" `
-    -OutputCsvPath ".\duo-entra-sync-group-audit.csv"
+    -OutputCsvPath ".\artifacts\duo\duo-entra-sync-group-audit.csv"
 
   .\duo-audit-entra-sync-groups.ps1 -SelfTest
 #>
@@ -59,7 +59,7 @@ param(
   ),
 
   [Parameter(ParameterSetName = "Audit")]
-  [string] $OutputCsvPath = ".\duo-entra-sync-group-audit.csv",
+  [string] $OutputCsvPath,
 
   [Parameter(Mandatory, ParameterSetName = "SelfTest")]
   [switch] $SelfTest
@@ -67,6 +67,10 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+
+if ([string]::IsNullOrWhiteSpace($OutputCsvPath)) {
+  $OutputCsvPath = Join-Path -Path $PSScriptRoot -ChildPath "artifacts\duo\duo-entra-sync-group-audit.csv"
+}
 
 function Resolve-DuoHost {
   param([Parameter(Mandatory)][string] $HostOrUrl)

@@ -70,7 +70,7 @@ Examples
 
 - Verification-only rerun against an existing tracker directory:
   .\enterprise-app-onboard-all-partners.ps1 `
-    -OutputDirectory ".\enterprise-app-onboard-wave-20260316-1"
+    -OutputDirectory ".\artifacts\enterprise-app-onboard\enterprise-app-onboard-wave-20260316-1"
 #>
 
 [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = "Low")]
@@ -93,7 +93,7 @@ param(
     [string]$DiscoveryThumbprint = "D0278AED132F9C816A815A4BFFF0F48CE8FAECEF",
     [string]$VerificationClientId = "f45ddef0-f613-4c3d-92d1-6b80bf00e6cf",
     [string]$VerificationThumbprint = "D0278AED132F9C816A815A4BFFF0F48CE8FAECEF",
-    [string]$OutputDirectory = (Join-Path -Path $PSScriptRoot -ChildPath ("enterprise-app-onboard-wave-" + (Get-Date -Format "yyyyMMdd-HHmmss"))),
+    [string]$OutputDirectory = (Join-Path -Path $PSScriptRoot -ChildPath ("artifacts\enterprise-app-onboard\enterprise-app-onboard-wave-" + (Get-Date -Format "yyyyMMdd-HHmmss"))),
     [switch]$SkipVerification,
     [switch]$StopOnError
 )

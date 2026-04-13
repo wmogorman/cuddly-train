@@ -60,10 +60,10 @@ param(
   [string[]] $OnlyAccountNames,
 
   [Parameter(ParameterSetName = "Audit")]
-  [string] $MatchesCsvPath = ".\duo-external-mfa-applications.csv",
+  [string] $MatchesCsvPath,
 
   [Parameter(ParameterSetName = "Audit")]
-  [string] $MissingCsvPath = ".\duo-external-mfa-missing-accounts.csv",
+  [string] $MissingCsvPath,
 
   [Parameter(Mandatory, ParameterSetName = "SelfTest")]
   [switch] $SelfTest
@@ -75,6 +75,14 @@ $ErrorActionPreference = "Stop"
 $script:ScriptRoot = Split-Path -Parent $PSCommandPath
 $script:MicrosoftEamType = "microsoft-eam"
 $script:SensitiveValueMarker = "[REDACTED]"
+
+if ([string]::IsNullOrWhiteSpace($MatchesCsvPath)) {
+  $MatchesCsvPath = Join-Path -Path $script:ScriptRoot -ChildPath "artifacts\duo\duo-external-mfa-applications.csv"
+}
+if ([string]::IsNullOrWhiteSpace($MissingCsvPath)) {
+  $MissingCsvPath = Join-Path -Path $script:ScriptRoot -ChildPath "artifacts\duo\duo-external-mfa-missing-accounts.csv"
+}
+
 $script:MatchFixedColumns = @(
   "AccountName",
   "AccountId",
