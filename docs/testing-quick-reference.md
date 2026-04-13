@@ -208,10 +208,19 @@ C:\ProgramData\DattoRMM\AVRemediation\         Output directory
 2. Create new component from Resolve-RmmAntivirusState.ps1
 3. Component settings:
    - **Type:** PowerShell (64-bit, no profile)
-   - **Command:** `-Command "& { . .\Resolve-RmmAntivirusState.ps1 -TargetMode 'WindowsDefender' -WhatIf:$false }"`
+   - **Command:** `.\Resolve-RmmAntivirusState.ps1 -TargetMode $env:TargetMode`
    - **Timeout:** 60 minutes (allows 45-minute script budget + 15-minute safety margin)
 4. Test on 1-2 pilot systems first
 5. Monitor logs in RMM for success/failure patterns
+
+**If you are keeping the older component command shape:**
+```powershell
+.\Resolve-RmmAntivirusState.ps1 -SupportedTargetModes $env:SupportedTargetModesVar
+```
+
+**Suggested Datto selection values:**
+- `Datto AV`
+- `Windows Defender`
 
 ---
 
@@ -229,7 +238,7 @@ C:\ProgramData\DattoRMM\AVRemediation\         Output directory
 
 **Datto RMM component (no profile):**
 ```powershell
-powershell.exe -NoProfile -Command "& { . .\Resolve-RmmAntivirusState.ps1 -TargetMode 'WindowsDefender' -WhatIf:$false }"
+.\Resolve-RmmAntivirusState.ps1 -TargetMode $env:TargetMode
 ```
 
 **Custom uninstall timeout (for slow systems):**
