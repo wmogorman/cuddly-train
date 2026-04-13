@@ -88,7 +88,8 @@ $script:InventoryDisplayNamePatterns = @(
 )
 $script:AlwaysAllowedNonTargetPatterns = @(
     '\bDatto\s+EDR\b',
-    '\bDatto\s+EDR\s+Agent\b'
+    '\bDatto\s+EDR\s+Agent\b',
+    '^Endpoint Protection SDK$'   # Datto AV embedded SDK — never a competing AV in any mode
 )
 $script:DattoAvPlaceholderPatterns = @(
     '^Endpoint Protection SDK$'
@@ -473,7 +474,7 @@ function Add-SilentUninstallArguments {
     if ($isMsiExec) {
         $updated = [regex]::Replace($updated, '(?i)(^|\s)/I(?=\s*[{])', '$1/X')
 
-        if ($updated -notmatch '(?i)(^|\s)/X(\s|$)') {
+        if ($updated -notmatch '(?i)(^|\s)/X') {
             Write-Log -Message "MSI command for [$DisplayName] did not include /X; leaving arguments unchanged." -Level WARN
         }
 
@@ -1579,6 +1580,25 @@ function Resolve-Outcome {
     }
 
     if ($failedAttempts) {
+        # Even if some uninstalls failed, the machine may still be functionally compliant:
+        # the target AV is active in SecurityCenter2 and no competing products appear there.
+        # Leftover registry entries are cosmetic orphans (e.g. Datto AV SDK after a partial uninstall).
+        $wmiBlockingProducts = @(
+            $AfterInventory.SecurityCenter2 |
+                Where-Object {
+                    -not (Test-PatternMatch -Value $_.DisplayName -Patterns $ApprovedPatterns) -and
+                    -not (Test-PatternMatch -Value $_.DisplayName -Patterns $AllowedNonTargetPatterns)
+                }
+        )
+        if ($wmiBlockingProducts.Count -eq 0 -and $targetPresence.DefenderSatisfied -or
+            $wmiBlockingProducts.Count -eq 0 -and $Mode -eq 'DattoAV' -and $targetPresence.DattoPresent) {
+            return [pscustomobject]@{
+                Outcome        = 'RemediatedWithOrphanedEntries'
+                RebootRequired = $rebootRequired
+                NextAction     = 'Target AV is active. Orphaned registry entries could not be removed automatically; manual cleanup or a rerun may resolve them.'
+            }
+        }
+
         return [pscustomobject]@{
             Outcome        = 'Failed'
             RebootRequired = $rebootRequired
