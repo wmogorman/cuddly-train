@@ -2,7 +2,6 @@
 [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'Medium')]
 param(
     [Parameter(Mandatory = $true)]
-    [Alias('SupportedTargetModes')]
     [string]$TargetMode,
 
     [string[]]$ApprovedProductPatterns,
