@@ -1067,6 +1067,51 @@ function Invoke-UninstallEntry {
         Write-Log -Message "AVG uninstall for [$displayName] still failed after retry workflow." -Level WARN
     }
 
+    # Webroot / OpenText Core Endpoint Protection: MSI exit 1603 is caused by Webroot's self-protection
+    # blocking the installer process. Fall back to WRSA.exe -uninstall which bypasses that protection.
+    if ($primary.ExitCode -eq 1603 -and $displayName -match '(?i)\bWebroot\b') {
+        $wrsaCandidates = @(
+            'C:\Program Files (x86)\Webroot\WRSA.exe',
+            'C:\Program Files\Webroot\WRSA.exe'
+        )
+        $wrsaPath = $wrsaCandidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+        if ($null -ne $wrsaPath) {
+            Write-Log -Message "Webroot self-protection likely blocked MSI uninstall (1603). Retrying via WRSA.exe at [$wrsaPath]."
+            $wrsaRetry = Invoke-UninstallProcess -FilePath $wrsaPath -Arguments '-uninstall'
+            $retryActions.Add([pscustomobject]@{
+                Step           = 'WebrootWrsaFallback'
+                Command        = "$wrsaPath -uninstall"
+                ExitCode       = $wrsaRetry.ExitCode
+                Started        = $wrsaRetry.Started
+                ErrorText      = $wrsaRetry.ErrorText
+                RebootRequired = (@(1641, 3010) -contains $wrsaRetry.ExitCode)
+            }) | Out-Null
+
+            if ($wrsaRetry.TimedOut) {
+                Write-Log -Message "WRSA.exe uninstall timed out for [$displayName]: $($wrsaRetry.ErrorText)" -Level ERROR
+                $result.Status = 'Failed'
+                $result.Reason = $wrsaRetry.ErrorText
+                $result.RetryActions = @($retryActions)
+                return [pscustomobject]$result
+            }
+
+            if ($wrsaRetry.Started -and $script:SuccessExitCodes -contains $wrsaRetry.ExitCode) {
+                $result.ExitCode = $wrsaRetry.ExitCode
+                $result.RebootRequired = @(1641, 3010) -contains $wrsaRetry.ExitCode
+                $result.Status = if ($result.RebootRequired) { 'PendingReboot' } else { 'Removed' }
+                $result.Reason = "Webroot removed via WRSA.exe fallback with exit code $($wrsaRetry.ExitCode)."
+                $result.RetryActions = @($retryActions)
+                Write-Log -Message "WRSA.exe fallback succeeded for [$displayName] with exit code $($wrsaRetry.ExitCode)."
+                return [pscustomobject]$result
+            }
+
+            Write-Log -Message "WRSA.exe fallback for [$displayName] also failed (started=$($wrsaRetry.Started) exit=$($wrsaRetry.ExitCode))." -Level WARN
+        }
+        else {
+            Write-Log -Message "Webroot MSI uninstall failed (1603) but WRSA.exe not found at standard paths; no fallback available." -Level WARN
+        }
+    }
+
     $result.Status = 'Failed'
     $result.Reason = "Uninstall failed with exit code $($primary.ExitCode)."
     $result.RetryActions = @($retryActions)
