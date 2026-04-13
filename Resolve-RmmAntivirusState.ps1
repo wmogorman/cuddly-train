@@ -1635,7 +1635,6 @@ function Resolve-Outcome {
                     -not (Test-PatternMatch -Value $_.DisplayName -Patterns $AllowedNonTargetPatterns)
                 }
         )
-        Write-Log -Message ("Resolve-Outcome diagnostics: wmiBlockingCount=$($wmiBlockingProducts.Count) defenderSatisfied=$($targetPresence.DefenderSatisfied) dattoPresent=$($targetPresence.DattoPresent) mode=$Mode afterBlockingCount=$($afterBlocking.Count)")
         if ($wmiBlockingProducts.Count -eq 0 -and $targetPresence.DefenderSatisfied -or
             $wmiBlockingProducts.Count -eq 0 -and $Mode -eq 'DattoAV' -and $targetPresence.DattoPresent) {
             return [pscustomobject]@{
