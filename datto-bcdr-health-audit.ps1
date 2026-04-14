@@ -167,10 +167,13 @@ function Test-DeviceCancelled {
   if ($null -ne $statusVal -and $script:CancelledStatuses -contains $statusVal.ToString().ToLower()) {
     return $true
   }
+  # Only treat a device as cancelled if its service period expired more than 60 days
+  # ago. This avoids false-positives for devices that are simply offline or a few
+  # weeks behind on billing — those should still appear as health issues.
   $sp = Resolve-Field -Obj $Device -Candidates @('servicePeriod','serviceExpiry','contractEnd','expiryDate')
   if ($null -ne $sp -and -not [string]::IsNullOrWhiteSpace($sp.ToString())) {
     try {
-      if ([datetime]::Parse($sp.ToString()) -lt $script:Now) { return $true }
+      if ([datetime]::Parse($sp.ToString()) -lt $script:Now.AddDays(-60)) { return $true }
     }
     catch { }
   }

@@ -187,8 +187,7 @@ function Test-DeviceCancelled {
   $sp = Resolve-Field -Obj $Device -Candidates @('servicePeriod','serviceExpiry','contractEnd','expiryDate')
   if ($null -ne $sp -and -not [string]::IsNullOrWhiteSpace($sp.ToString())) {
     try {
-      $spDate = [datetime]::Parse($sp.ToString())
-      if ($spDate -lt (Get-Date)) { return $true }
+      if ([datetime]::Parse($sp.ToString()) -lt (Get-Date).AddDays(-60)) { return $true }
     }
     catch { }
   }
