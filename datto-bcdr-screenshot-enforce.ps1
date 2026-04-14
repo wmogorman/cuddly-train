@@ -1,11 +1,11 @@
-<#
+﻿<#
 .SYNOPSIS
   Reports all active Datto BCDR agents with direct portal links for setting
   screenshot verification wait time to at least 5 minutes.
 
 .DESCRIPTION
   The Datto Partner Portal REST API (api.datto.com/v1) exposes only STATUS data
-  for BCDR agents — it does not expose or allow setting the screenshot verification
+  for BCDR agents â€” it does not expose or allow setting the screenshot verification
   wait-time configuration. That setting is stored on each physical device.
 
   This script:
@@ -104,8 +104,12 @@ function Invoke-DattoApi {
 
 function Get-AllPages {
   param([string] $Path, [hashtable] $Headers)
-  $allItems = [System.Collections.Generic.List[object]]::new()
-  $page = 1; $pageSize = 100
+  $allItems  = [System.Collections.Generic.List[object]]::new()
+  $seenIds   = [System.Collections.Generic.HashSet[string]]::new()
+  $page      = 1
+  $pageSize  = 100
+  $maxPages  = 50
+
   do {
     $sep   = if ($Path.Contains("?")) { "&" } else { "?" }
     $paged = Invoke-DattoApi -Path "${Path}${sep}page=${page}&perPage=${pageSize}" -Headers $Headers
@@ -115,11 +119,18 @@ function Get-AllPages {
              else { $null }
 
     if ($null -eq $batch -or @($batch).Count -eq 0) { break }
+
+    $firstItem = @($batch)[0]
+    $firstId   = Resolve-Field -Obj $firstItem -Candidates @(
+      'serialNumber','volume','agentKey','assetId','id','name'
+    )
+    if ($null -ne $firstId -and -not $seenIds.Add($firstId.ToString())) { break }
+
     foreach ($item in $batch) { $allItems.Add($item) }
 
     $total = $null
     if ($null -ne $paged -and $paged -isnot [array]) {
-      foreach ($candidate in @("pagination.totalCount","totalCount","count","total")) {
+      foreach ($candidate in @("pagination.totalCount","totalCount","pagination.total")) {
         $val = $paged
         foreach ($p in $candidate.Split(".")) {
           if ($null -eq $val) { $val = $null; break }
@@ -130,8 +141,10 @@ function Get-AllPages {
     }
     if ($null -ne $total -and $allItems.Count -ge $total) { break }
     if (@($batch).Count -lt $pageSize) { break }
+    if ($page -ge $maxPages) { break }
     $page++
   } while ($true)
+
   return $allItems
 }
 
@@ -228,7 +241,7 @@ foreach ($device in $devices) {
     if ($assetType -eq "share" -or $assetType -eq "nas" -or $assetType -eq "nasShare") { continue }
     if ((Resolve-Field -Obj $asset -Candidates @('hidden')) -eq $true) { continue }
 
-    # Skip archived and paused — they are not actively being backed up.
+    # Skip archived and paused â€” they are not actively being backed up.
     if ([bool]($asset.isArchived)) { continue }
     if ([bool]($asset.isPaused))   { continue }
 
@@ -331,3 +344,5 @@ if ($OpenPortalLinks) {
 }
 
 return $report
+
+

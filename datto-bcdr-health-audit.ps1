@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
   Audits health of all active Datto BCDR devices and agents.
 
@@ -105,8 +105,12 @@ function Invoke-DattoApi {
 
 function Get-AllPages {
   param([string] $Path, [hashtable] $Headers)
-  $allItems = [System.Collections.Generic.List[object]]::new()
-  $page = 1; $pageSize = 100
+  $allItems  = [System.Collections.Generic.List[object]]::new()
+  $seenIds   = [System.Collections.Generic.HashSet[string]]::new()
+  $page      = 1
+  $pageSize  = 100
+  $maxPages  = 50  # safety cap --- prevents infinite loops if the API ignores page param
+
   do {
     $sep   = if ($Path.Contains("?")) { "&" } else { "?" }
     $paged = Invoke-DattoApi -Path "${Path}${sep}page=${page}&perPage=${pageSize}" -Headers $Headers
@@ -116,11 +120,22 @@ function Get-AllPages {
              else { $null }
 
     if ($null -eq $batch -or @($batch).Count -eq 0) { break }
+
+    # Detect when the API is returning the same page repeatedly (ignores page param).
+    # Use the first item's identifier as a fingerprint.
+    $firstItem = @($batch)[0]
+    $firstId   = Resolve-Field -Obj $firstItem -Candidates @(
+      'serialNumber','volume','agentKey','assetId','id','name'
+    )
+    if ($null -ne $firstId -and -not $seenIds.Add($firstId.ToString())) {
+      break  # duplicate first item --- API is looping
+    }
+
     foreach ($item in $batch) { $allItems.Add($item) }
 
     $total = $null
     if ($null -ne $paged -and $paged -isnot [array]) {
-      foreach ($candidate in @("pagination.totalCount","totalCount","count","total")) {
+      foreach ($candidate in @("pagination.totalCount","totalCount","pagination.total")) {
         $val = $paged
         foreach ($p in $candidate.Split(".")) {
           if ($null -eq $val) { $val = $null; break }
@@ -131,8 +146,10 @@ function Get-AllPages {
     }
     if ($null -ne $total -and $allItems.Count -ge $total) { break }
     if (@($batch).Count -lt $pageSize) { break }
+    if ($page -ge $maxPages) { break }
     $page++
   } while ($true)
+
   return $allItems
 }
 
@@ -169,7 +186,7 @@ function Test-DeviceCancelled {
   }
   # Only treat a device as cancelled if its service period expired more than 60 days
   # ago. This avoids false-positives for devices that are simply offline or a few
-  # weeks behind on billing — those should still appear as health issues.
+  # weeks behind on billing --- those should still appear as health issues.
   $sp = Resolve-Field -Obj $Device -Candidates @('servicePeriod','serviceExpiry','contractEnd','expiryDate')
   if ($null -ne $sp -and -not [string]::IsNullOrWhiteSpace($sp.ToString())) {
     try {
@@ -318,7 +335,7 @@ foreach ($device in $devices) {
       $issues.Add((New-Issue -IssueType "screenshot-failed" `
         -DeviceName $dname -DeviceSerial $serial `
         -AgentName $agentName -AgentKey $agentKey `
-        -Detail "Last attempt: $(Format-UnixTime $lastSsAttemptTs) — failed" `
+        -Detail "Last attempt: $(Format-UnixTime $lastSsAttemptTs) --- failed" `
         -PortalUrl $agentUrl))
     }
   }
@@ -364,3 +381,5 @@ if ($OutputCsvPath) {
 }
 
 return $issues
+
+
