@@ -213,7 +213,7 @@ foreach ($device in $devices) {
   $serial = $device.serialNumber
   $dname  = $device.name
 
-  if ([bool]($device.hidden))                                             { continue }
+  if ((Resolve-Field -Obj $device -Candidates @('hidden')) -eq $true)      { continue }
   if (-not $IncludeCancelled -and (Test-DeviceCancelled -Device $device)) { continue }
 
   try {
@@ -227,7 +227,7 @@ foreach ($device in $devices) {
   foreach ($asset in $assets) {
     $assetType = Resolve-Field -Obj $asset -Candidates @("type","assetType","kind")
     if ($assetType -eq "share" -or $assetType -eq "nas" -or $assetType -eq "nasShare") { continue }
-    if ([bool]($asset.hidden)) { continue }
+    if ((Resolve-Field -Obj $asset -Candidates @('hidden')) -eq $true) { continue }
 
     # Skip archived and paused — they are not actively being backed up.
     if ([bool]($asset.isArchived)) { continue }

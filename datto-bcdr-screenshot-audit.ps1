@@ -230,7 +230,7 @@ foreach ($device in $devices) {
   foreach ($asset in $assets) {
     $assetType = Resolve-Field -Obj $asset -Candidates @("type","assetType","kind")
     if ($assetType -eq "share" -or $assetType -eq "nas" -or $assetType -eq "nasShare") { continue }
-    if ([bool]($asset.hidden)) { continue }
+    if ((Resolve-Field -Obj $asset -Candidates @('hidden')) -eq $true) { continue }
 
     $agentKey  = Resolve-Field -Obj $asset -Candidates @("volume","agentKey","keyName","key","assetId","id","name")
     $agentName = Resolve-Field -Obj $asset -Candidates @("name","hostname","displayName","agentName")
