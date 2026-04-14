@@ -105,58 +105,97 @@ function Invoke-DattoApi {
 
 function Get-AllPages {
   param([string] $Path, [hashtable] $Headers)
-  $allItems  = [System.Collections.Generic.List[object]]::new()
-  $seenIds   = [System.Collections.Generic.HashSet[string]]::new()
-  $page      = 1
-  $pageSize  = 100
-  $maxPages  = 50  # safety cap --- prevents infinite loops if the API ignores page param
+  $pageSize   = 100
+  $maxPages   = 50  # safety cap --- prevents infinite loops if the API repeats pages
+  $strategies = @(
+    @{ Name = "_page/_perPage"; PageParam = "_page"; PageSizeParam = "_perPage" },
+    @{ Name = "page/perPage";   PageParam = "page";  PageSizeParam = "perPage"  }
+  )
+  $lastItems  = [System.Collections.Generic.List[object]]::new()
 
-  do {
-    $sep   = if ($Path.Contains("?")) { "&" } else { "?" }
-    $paged = Invoke-DattoApi -Path "${Path}${sep}page=${page}&perPage=${pageSize}" -Headers $Headers
+  foreach ($strategy in $strategies) {
+    $allItems    = [System.Collections.Generic.List[object]]::new()
+    $seenIds     = [System.Collections.Generic.HashSet[string]]::new()
+    $page        = 1
+    $shouldRetry = $false
 
-    $batch = if ($paged -is [array]) { $paged }
-             elseif ($null -ne $paged.PSObject.Properties["items"]) { $paged.items }
-             else { $null }
+    do {
+      $sep   = if ($Path.Contains("?")) { "&" } else { "?" }
+      $paged = Invoke-DattoApi -Path "${Path}${sep}$($strategy.PageParam)=${page}&$($strategy.PageSizeParam)=${pageSize}" -Headers $Headers
 
-    if ($null -eq $batch -or @($batch).Count -eq 0) { break }
+      $batch = if ($paged -is [array]) { $paged }
+               elseif ($null -ne $paged.PSObject.Properties["items"]) { $paged.items }
+               else { $null }
 
-    # Detect when the API is returning the same page repeatedly (ignores page param).
-    # Use the first item's identifier as a fingerprint.
-    $firstItem = @($batch)[0]
-    $firstId   = Resolve-Field -Obj $firstItem -Candidates @(
-      'serialNumber','volume','agentKey','assetId','id','name'
-    )
-    if ($null -ne $firstId -and -not $seenIds.Add($firstId.ToString())) {
-      break  # duplicate first item --- API is looping
-    }
+      if ($null -eq $batch -or @($batch).Count -eq 0) { break }
 
-    foreach ($item in $batch) { $allItems.Add($item) }
-
-    $total = $null
-    if ($null -ne $paged -and $paged -isnot [array]) {
-      foreach ($candidate in @("pagination.totalCount","totalCount","pagination.total")) {
-        $val = $paged
-        foreach ($p in $candidate.Split(".")) {
-          if ($null -eq $val) { $val = $null; break }
-          try { $val = $val.$p } catch { $val = $null; break }
+      # Detect when the API is returning the same page repeatedly.
+      # Use the first item's identifier as a fingerprint.
+      $firstItem = @($batch)[0]
+      $firstId   = Resolve-Field -Obj $firstItem -Candidates @(
+        'serialNumber','volume','agentKey','assetId','id','name'
+      )
+      if ($null -ne $firstId -and -not $seenIds.Add($firstId.ToString())) {
+        $totalCount = Resolve-Field -Obj $paged -Candidates @(
+          'pagination.totalCount','totalCount','pagination.total'
+        )
+        $totalPages = Resolve-Field -Obj $paged -Candidates @(
+          'pagination.totalPages','totalPages','pagination.pages'
+        )
+        if (($null -ne $totalCount -and $allItems.Count -lt [int]$totalCount) -or
+            ($null -ne $totalPages -and $page -le [int]$totalPages) -or
+            ($page -gt 1 -and $allItems.Count -ge $pageSize -and @($batch).Count -eq $pageSize)) {
+          $shouldRetry = $true
         }
-        if ($null -ne $val) { $total = [int]$val; break }
+        break
       }
-    }
-    if ($null -ne $total -and $allItems.Count -ge $total) { break }
-    if (@($batch).Count -lt $pageSize) { break }
-    if ($page -ge $maxPages) { break }
-    $page++
-  } while ($true)
 
-  return $allItems
+      foreach ($item in $batch) { $allItems.Add($item) }
+
+      $totalCount = Resolve-Field -Obj $paged -Candidates @(
+        'pagination.totalCount','totalCount','pagination.total'
+      )
+      $totalPages = Resolve-Field -Obj $paged -Candidates @(
+        'pagination.totalPages','totalPages','pagination.pages'
+      )
+      $nextPage = Resolve-Field -Obj $paged -Candidates @(
+        'pagination.nextPage','nextPage','pagination.next'
+      )
+
+      if ($null -ne $totalCount -and $allItems.Count -ge [int]$totalCount) { break }
+      if ($null -ne $totalPages -and $page -ge [int]$totalPages) { break }
+      if (@($batch).Count -lt $pageSize) { break }
+      if ($page -ge $maxPages) { break }
+
+      if ($null -ne $nextPage -and [int]$nextPage -gt $page) { $page = [int]$nextPage }
+      else { $page++ }
+    } while ($true)
+
+    if ($allItems.Count -gt 0) { $lastItems = $allItems }
+    if (-not $shouldRetry) { return $allItems }
+
+    Write-Warning "Datto pagination for [$Path] repeated a page when using $($strategy.Name); retrying with alternate parameter names."
+  }
+
+  return $lastItems
 }
 
 function Resolve-Field {
   param($Obj, [string[]] $Candidates)
   foreach ($name in $Candidates) {
-    try { $val = $Obj.$name; if ($null -ne $val) { return $val } } catch { }
+    $val = $Obj
+    foreach ($segment in $name.Split('.')) {
+      if ($null -eq $val) { break }
+      if ($val -is [System.Collections.IDictionary]) {
+        if ($val.Contains($segment)) { $val = $val[$segment] }
+        else { $val = $null; break }
+        continue
+      }
+      $prop = $val.PSObject.Properties[$segment]
+      if ($null -eq $prop) { $val = $null; break }
+      $val = $prop.Value
+    }
+    if ($null -ne $val) { return $val }
   }
   return $null
 }

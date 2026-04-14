@@ -29,3 +29,4 @@ ActaMSP-GDAP-Automation.pfx
 datto-bcdr.env
 screenshot-audit.csv
 health-audit.csv
+screenshot-remediation.csv
