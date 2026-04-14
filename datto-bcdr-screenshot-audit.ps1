@@ -1,35 +1,43 @@
 <#
 .SYNOPSIS
-  Audits screenshot verification wait times for all agents across all Datto BCDR devices.
+  Audits screenshot verification status for all agents across all Datto BCDR devices.
 
 .DESCRIPTION
-  Uses the Datto Partner Portal REST API to enumerate all BCDR devices and their
-  agents, then reports the screenshot verification wait time configured for each.
-  Flags any agent whose wait time is below the specified minimum.
+  Uses the Datto Partner Portal REST API (api.datto.com/v1) to enumerate all BCDR
+  devices and their agents, then reports screenshot verification status for each.
+
+  NOTE: The Partner Portal API exposes only STATUS data (last attempt timestamp,
+  pass/fail). The screenshot verification wait-time CONFIGURATION setting is stored
+  on each physical device and is not accessible via this API. Use -OutputCsvPath to
+  export a report with portal links for manual remediation of wait-time settings.
+
+  Agents are flagged as needing attention if:
+    - Screenshot verification has never run  (lastScreenshotAttempt = 0)
+    - The last screenshot verification failed (lastScreenshotAttemptStatus = false)
+    - The agent is active (not paused and not archived)
 
 .PARAMETER PublicKey
-  Datto API public key. Can also be provided via DATTO_PUBLIC_KEY env var or a .env file.
+  Datto API public key. Can also be set via DATTO_PUBLIC_KEY env var or -EnvFile.
 
 .PARAMETER SecretKey
-  Datto API secret key. Can also be provided via DATTO_SECRET_KEY env var or a .env file.
+  Datto API secret key. Can also be set via DATTO_SECRET_KEY env var or -EnvFile.
 
 .PARAMETER EnvFile
   Path to a .env file containing DATTO_PUBLIC_KEY and DATTO_SECRET_KEY.
 
-.PARAMETER MinWaitMinutes
-  Minimum acceptable screenshot verification wait time in minutes. Defaults to 5.
-
 .PARAMETER OutputCsvPath
-  Optional path to write audit results as CSV.
+  Optional path to write full results as CSV.
 
-.PARAMETER ShowRawFields
-  Dumps all screenshot/verification-related fields from the raw API response.
-  Use this on first run to discover the exact field names the API returns.
+.PARAMETER IncludeArchived
+  Include archived agents in the report (excluded by default).
+
+.PARAMETER IncludePaused
+  Include paused agents in the report (excluded by default).
 
 .EXAMPLE
   .\datto-bcdr-screenshot-audit.ps1 -EnvFile .\datto-bcdr.env
-  .\datto-bcdr-screenshot-audit.ps1 -PublicKey e24658 -SecretKey 77abd2... -ShowRawFields
   .\datto-bcdr-screenshot-audit.ps1 -EnvFile .\datto-bcdr.env -OutputCsvPath .\screenshot-audit.csv
+  .\datto-bcdr-screenshot-audit.ps1 -EnvFile .\datto-bcdr.env -IncludeArchived -IncludePaused
 #>
 
 [CmdletBinding()]
@@ -37,9 +45,9 @@ param(
   [string] $PublicKey,
   [string] $SecretKey,
   [string] $EnvFile,
-  [int]    $MinWaitMinutes = 5,
   [string] $OutputCsvPath,
-  [switch] $ShowRawFields
+  [switch] $IncludeArchived,
+  [switch] $IncludePaused
 )
 
 Set-StrictMode -Version Latest
@@ -63,154 +71,74 @@ function Read-EnvFile {
   foreach ($line in (Get-Content $Path)) {
     $line = $line.Trim()
     if ($line -match '^\s*#' -or [string]::IsNullOrWhiteSpace($line)) { continue }
-    if ($line -match '^([^=]+)=(.*)$') {
-      $vars[$Matches[1].Trim()] = $Matches[2].Trim()
-    }
+    if ($line -match '^([^=]+)=(.*)$') { $vars[$Matches[1].Trim()] = $Matches[2].Trim() }
   }
   return $vars
 }
 
 function Get-AuthHeader {
   param([string] $Pub, [string] $Sec)
-  $raw   = "${Pub}:${Sec}"
-  $bytes = [System.Text.Encoding]::UTF8.GetBytes($raw)
-  $b64   = [Convert]::ToBase64String($bytes)
+  $b64 = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes("${Pub}:${Sec}"))
   return @{ Authorization = "Basic $b64" }
 }
 
 function Invoke-DattoApi {
-  param(
-    [string] $Path,
-    [string] $Method = "GET",
-    [hashtable] $Headers,
-    [object] $Body
-  )
-  $uri    = "$script:ApiBase$Path"
-  $params = @{
-    Uri     = $uri
-    Method  = $Method
-    Headers = $Headers
-    ContentType = "application/json"
-  }
-  if ($null -ne $Body) {
-    $params.Body = ($Body | ConvertTo-Json -Depth 10 -Compress)
-  }
+  param([string] $Path, [hashtable] $Headers)
   try {
-    return Invoke-RestMethod @params
+    return Invoke-RestMethod -Uri "$script:ApiBase$Path" -Method GET -Headers $Headers -ContentType "application/json"
   }
   catch {
     $status = $_.Exception.Response.StatusCode.value__
-    throw "API call failed [$Method $Path] → HTTP $status : $($_.Exception.Message)"
+    throw "API error [$Path] HTTP $status : $($_.Exception.Message)"
   }
 }
 
 function Get-AllPages {
-  param(
-    [string]    $Path,
-    [hashtable] $Headers
-  )
+  param([string] $Path, [hashtable] $Headers)
   $allItems = [System.Collections.Generic.List[object]]::new()
-  $page     = 1
+  $page = 1
   $pageSize = 100
-
   do {
     $sep   = if ($Path.Contains("?")) { "&" } else { "?" }
     $paged = Invoke-DattoApi -Path "${Path}${sep}page=${page}&perPage=${pageSize}" -Headers $Headers
 
-    # The API might return items directly as an array, or wrapped in a .items property.
-    $batch = if ($paged -is [array]) {
-      $paged
-    }
-    elseif ($null -ne $paged -and $null -ne $paged.PSObject.Properties["items"]) {
-      $paged.items
-    }
-    else {
-      $null
-    }
+    $batch = if ($paged -is [array]) { $paged }
+             elseif ($null -ne $paged.PSObject.Properties["items"]) { $paged.items }
+             else { $null }
 
     if ($null -eq $batch -or @($batch).Count -eq 0) { break }
-
     foreach ($item in $batch) { $allItems.Add($item) }
 
-    # Determine total from whichever pagination field the API provides.
     $total = $null
     if ($null -ne $paged -and $paged -isnot [array]) {
       foreach ($candidate in @("pagination.totalCount","totalCount","count","total")) {
-        $parts = $candidate.Split(".")
-        $val   = $paged
-        foreach ($p in $parts) {
+        $val = $paged
+        foreach ($p in $candidate.Split(".")) {
           if ($null -eq $val) { $val = $null; break }
           try { $val = $val.$p } catch { $val = $null; break }
         }
         if ($null -ne $val) { $total = [int]$val; break }
       }
     }
-
-    # Stop if we have all items, or if this page was smaller than the page size (last page).
     if ($null -ne $total -and $allItems.Count -ge $total) { break }
     if (@($batch).Count -lt $pageSize) { break }
-
     $page++
   } while ($true)
-
   return $allItems
 }
 
-# Recursively flattens a PSObject/hashtable into dot-notation key paths and values.
-function Get-FlatProperties {
-  param($Obj, [string] $Prefix = "")
-  if ($null -eq $Obj) { return }
-  if ($Obj -is [string] -or $Obj -is [ValueType]) {
-    [PSCustomObject]@{ Key = $Prefix; Value = $Obj }
-    return
-  }
-  foreach ($prop in $Obj.PSObject.Properties) {
-    $childKey = if ($Prefix) { "$Prefix.$($prop.Name)" } else { $prop.Name }
-    if ($null -eq $prop.Value -or $prop.Value -is [string] -or $prop.Value -is [ValueType]) {
-      [PSCustomObject]@{ Key = $childKey; Value = $prop.Value }
-    }
-    else {
-      Get-FlatProperties -Obj $prop.Value -Prefix $childKey
-    }
-  }
-}
-
-function Find-ScreenshotFields {
-  param($AgentObj)
-  $keywords = 'screenshot', 'verify', 'verification', 'waittime', 'wait_time', 'delay', 'localVerif'
-  $flat = Get-FlatProperties -Obj $AgentObj
-  return $flat | Where-Object {
-    $k = $_.Key.ToLower()
-    ($keywords | Where-Object { $k -like "*$_*" }) -ne $null
-  }
-}
-
-# Attempts to read the screenshot wait time from common field locations.
-# Returns $null if the field is not found.
-function Get-WaitTime {
-  param($AgentObj)
-
-  # Try the most likely field paths in order of probability.
-  $candidates = @(
-    { $AgentObj.screenshotVerification.waitTime },
-    { $AgentObj.screenshotVerification.delay },
-    { $AgentObj.screenshotVerification.waitMinutes },
-    { $AgentObj.localVerification.waitTime },
-    { $AgentObj.localVerification.delay },
-    { $AgentObj.localVerification.waitMinutes },
-    { $AgentObj.screenshotWaitTime },
-    { $AgentObj.screenshotDelay },
-    { $AgentObj.verification.waitTime }
-  )
-
-  foreach ($candidate in $candidates) {
-    try {
-      $val = & $candidate
-      if ($null -ne $val) { return [int]$val }
-    }
-    catch { }
+function Resolve-Field {
+  param($Obj, [string[]] $Candidates)
+  foreach ($name in $Candidates) {
+    try { $val = $Obj.$name; if ($null -ne $val) { return $val } } catch { }
   }
   return $null
+}
+
+function Format-UnixTime {
+  param([long] $Ts)
+  if ($Ts -eq 0 -or $null -eq $Ts) { return "never" }
+  return ([DateTimeOffset]::FromUnixTimeSeconds($Ts)).LocalDateTime.ToString("yyyy-MM-dd HH:mm")
 }
 
 # ---------------------------------------------------------------------------
@@ -218,26 +146,24 @@ function Get-WaitTime {
 # ---------------------------------------------------------------------------
 
 if ($EnvFile) {
-  Write-Step "Loading credentials from env file: $EnvFile"
-  $env = Read-EnvFile -Path $EnvFile
-  if (-not $PublicKey -and $env.ContainsKey("DATTO_PUBLIC_KEY"))  { $PublicKey = $env["DATTO_PUBLIC_KEY"] }
-  if (-not $SecretKey -and $env.ContainsKey("DATTO_SECRET_KEY"))  { $SecretKey = $env["DATTO_SECRET_KEY"] }
+  Write-Step "Loading credentials from: $EnvFile"
+  $envVars = Read-EnvFile -Path $EnvFile
+  if (-not $PublicKey -and $envVars.ContainsKey("DATTO_PUBLIC_KEY")) { $PublicKey = $envVars["DATTO_PUBLIC_KEY"] }
+  if (-not $SecretKey -and $envVars.ContainsKey("DATTO_SECRET_KEY")) { $SecretKey = $envVars["DATTO_SECRET_KEY"] }
 }
-
 if (-not $PublicKey) { $PublicKey = $env:DATTO_PUBLIC_KEY }
 if (-not $SecretKey) { $SecretKey = $env:DATTO_SECRET_KEY }
-
 if (-not $PublicKey -or -not $SecretKey) {
-  throw "API credentials are required. Provide -PublicKey/-SecretKey, -EnvFile, or set DATTO_PUBLIC_KEY/DATTO_SECRET_KEY environment variables."
+  throw "API credentials required. Use -PublicKey/-SecretKey, -EnvFile, or DATTO_PUBLIC_KEY/DATTO_SECRET_KEY env vars."
 }
 
 $headers = Get-AuthHeader -Pub $PublicKey -Sec $SecretKey
 
 # ---------------------------------------------------------------------------
-# Main audit
+# Main
 # ---------------------------------------------------------------------------
 
-Write-Step "Fetching BCDR device list from $script:ApiBase ..."
+Write-Step "Fetching device list ..."
 $devices = Get-AllPages -Path "/bcdr/device" -Headers $headers
 Write-Step "Found $($devices.Count) device(s)."
 
@@ -246,85 +172,87 @@ $results = [System.Collections.Generic.List[PSCustomObject]]::new()
 foreach ($device in $devices) {
   $serial = $device.serialNumber
   $dname  = $device.name
+  Write-Step "  $dname ($serial)"
 
-  Write-Step "  Device: $dname ($serial) — fetching agents ..."
   try {
-    $agents = Get-AllPages -Path "/bcdr/device/$serial/asset" -Headers $headers
+    $assets = @(Get-AllPages -Path "/bcdr/device/$serial/asset" -Headers $headers)
   }
   catch {
-    Write-Warning "    Could not retrieve agents for $serial : $_"
+    Write-Warning "    Could not list assets: $_"
     continue
   }
 
-  foreach ($agent in $agents) {
-    # Skip share-type assets (NAS shares); only process backup agents.
-    if ($agent.type -eq "share") { continue }
+  foreach ($asset in $assets) {
+    $assetType = Resolve-Field -Obj $asset -Candidates @("type","assetType","kind")
+    if ($assetType -eq "share" -or $assetType -eq "nas" -or $assetType -eq "nasShare") { continue }
 
-    $agentKey  = $agent.agentKey
-    $agentName = $agent.name
+    $agentKey  = Resolve-Field -Obj $asset -Candidates @("volume","agentKey","keyName","key","assetId","id","name")
+    $agentName = Resolve-Field -Obj $asset -Candidates @("name","hostname","displayName","agentName")
+    $isPaused  = [bool]($asset.isPaused)
+    $isArchived = [bool]($asset.isArchived)
 
-    # Fetch the full agent detail to get configuration fields.
-    try {
-      $detail = Invoke-DattoApi -Path "/bcdr/device/$serial/asset/$agentKey" -Headers $headers
-    }
-    catch {
-      Write-Warning "    Could not fetch detail for agent '$agentName' ($agentKey): $_"
-      $detail = $agent
-    }
+    if (-not $IncludeArchived -and $isArchived) { continue }
+    if (-not $IncludePaused  -and $isPaused)    { continue }
 
-    if ($ShowRawFields) {
-      $ssFields = Find-ScreenshotFields -AgentObj $detail
-      if ($ssFields) {
-        Write-Host "    [RAW] Agent: $agentName ($agentKey)" -ForegroundColor Cyan
-        foreach ($f in $ssFields) {
-          Write-Host "      $($f.Key) = $($f.Value)" -ForegroundColor DarkCyan
-        }
-      }
-    }
+    $lastAttemptTs = [long]($asset.lastScreenshotAttempt)
+    $lastAttemptOk = [bool]($asset.lastScreenshotAttemptStatus)
 
-    $waitTime = Get-WaitTime -AgentObj $detail
-    $compliant = if ($null -eq $waitTime) { $null } else { $waitTime -ge $MinWaitMinutes }
+    # An agent needs attention if screenshot verification has never run or last run failed.
+    $neverRan  = ($lastAttemptTs -eq 0)
+    $lastFailed = (-not $neverRan -and -not $lastAttemptOk)
+    $needsAttention = $neverRan -or $lastFailed
+
+    # Best-effort portal URL for the agent settings page.
+    $portalUrl = "https://portal.dattobackup.com/continuity/devices/$serial/agents/$agentKey/settings"
 
     $results.Add([PSCustomObject]@{
-      DeviceName   = $dname
-      DeviceSerial = $serial
-      AgentName    = $agentName
-      AgentKey     = $agentKey
-      WaitMinutes  = $waitTime
-      MinRequired  = $MinWaitMinutes
-      Compliant    = $compliant
+      DeviceName        = $dname
+      DeviceSerial      = $serial
+      AgentName         = $agentName
+      AgentKey          = $agentKey
+      IsPaused          = $isPaused
+      IsArchived        = $isArchived
+      LastAttempt       = Format-UnixTime -Ts $lastAttemptTs
+      LastAttemptPassed = if ($neverRan) { "n/a" } else { $lastAttemptOk.ToString() }
+      NeedsAttention    = $needsAttention
+      Reason            = if ($neverRan) { "never-ran" } elseif ($lastFailed) { "last-failed" } else { "ok" }
+      PortalUrl         = $portalUrl
     })
   }
 }
 
 # ---------------------------------------------------------------------------
-# Output summary
+# Summary
 # ---------------------------------------------------------------------------
 
-$unknown    = @($results | Where-Object { $null -eq $_.Compliant })
-$compliant  = @($results | Where-Object { $_.Compliant -eq $true  })
-$violations = @($results | Where-Object { $_.Compliant -eq $false })
+$ok         = @($results | Where-Object { -not $_.NeedsAttention })
+$attention  = @($results | Where-Object { $_.NeedsAttention })
+$neverRan   = @($results | Where-Object { $_.Reason -eq "never-ran" })
+$lastFailed = @($results | Where-Object { $_.Reason -eq "last-failed" })
 
 Write-Host ""
 Write-Host "=== Screenshot Verification Audit ===" -ForegroundColor White
-Write-Host "  Total agents checked : $($results.Count)"
-Write-Host "  Compliant (>= ${MinWaitMinutes}m)   : $($compliant.Count)" -ForegroundColor Green
-Write-Host "  Non-compliant        : $($violations.Count)" -ForegroundColor $(if ($violations.Count) { "Red" } else { "Green" })
-Write-Host "  Field not found      : $($unknown.Count)"    -ForegroundColor $(if ($unknown.Count)    { "Yellow" } else { "Green" })
+Write-Host "  Total active agents    : $($results.Count)"
+Write-Host "  Passing                : $($ok.Count)"         -ForegroundColor Green
+Write-Host "  Needs attention        : $($attention.Count)"  -ForegroundColor $(if ($attention.Count) { "Red" } else { "Green" })
+Write-Host "    Never ran            : $($neverRan.Count)"   -ForegroundColor $(if ($neverRan.Count)   { "Yellow" } else { "Green" })
+Write-Host "    Last attempt failed  : $($lastFailed.Count)" -ForegroundColor $(if ($lastFailed.Count) { "Red" }    else { "Green" })
 
-if ($unknown.Count -gt 0) {
+if ($attention.Count -gt 0) {
   Write-Host ""
-  Write-Host "--- Agents with unknown wait-time field (run -ShowRawFields to diagnose) ---" -ForegroundColor Yellow
-  $unknown | ForEach-Object { Write-Host "  $($_.DeviceName) / $($_.AgentName)" -ForegroundColor Yellow }
-}
-
-if ($violations.Count -gt 0) {
-  Write-Host ""
-  Write-Host "--- Non-compliant agents (wait < ${MinWaitMinutes} minutes) ---" -ForegroundColor Red
-  $violations | ForEach-Object {
-    Write-Host "  $($_.DeviceName) / $($_.AgentName)  [current: $($_.WaitMinutes)m]" -ForegroundColor Red
+  Write-Host "--- Agents needing attention ---" -ForegroundColor Yellow
+  $attention | ForEach-Object {
+    $flag = if ($_.Reason -eq "never-ran") { "[NEVER RAN]" } else { "[FAILED]   " }
+    Write-Host "  $flag  $($_.DeviceName) / $($_.AgentName)" -ForegroundColor $(if ($_.Reason -eq "last-failed") { "Red" } else { "Yellow" })
   }
 }
+
+Write-Host ""
+Write-Host "NOTE: The Partner Portal API does not expose the screenshot verification" -ForegroundColor Cyan
+Write-Host "wait-time configuration. To set wait time >= 5 minutes for each agent:" -ForegroundColor Cyan
+Write-Host "  1. Run this script with -OutputCsvPath to get a list with portal links" -ForegroundColor Cyan
+Write-Host "  2. Use datto-bcdr-screenshot-enforce.ps1 to open/report portal URLs"   -ForegroundColor Cyan
+Write-Host "  3. On each device: Protect tab > Configure Agent > Screenshot Verification > Additional wait time" -ForegroundColor Cyan
 
 if ($OutputCsvPath) {
   $results | Export-Csv -Path $OutputCsvPath -NoTypeInformation -Encoding UTF8
