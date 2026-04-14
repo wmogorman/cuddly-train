@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:portal.dattobackup.com)",
+      "WebFetch(domain:api.datto.com)",
+      "WebSearch",
+      "WebFetch(domain:continuity.datto.com)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebFetch(domain:celerium.github.io)",
+      "WebFetch(domain:docs.liongard.com)"
+    ]
+  }
+}
