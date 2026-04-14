@@ -47,7 +47,9 @@ param(
   [string] $EnvFile,
   [string] $OutputCsvPath,
   [switch] $IncludeArchived,
-  [switch] $IncludePaused
+  [switch] $IncludePaused,
+  [switch] $IncludeCancelled,
+  [switch] $ShowDeviceFields
 )
 
 Set-StrictMode -Version Latest
@@ -163,15 +165,58 @@ $headers = Get-AuthHeader -Pub $PublicKey -Sec $SecretKey
 # Main
 # ---------------------------------------------------------------------------
 
+$script:CancelledStatuses = @('cancelled','canceled','inactive','expired','terminated','suspended','decommissioned')
+
+function Test-DeviceCancelled {
+  param($Device)
+
+  # Check any explicit status field first.
+  $statusVal = Resolve-Field -Obj $Device -Candidates @(
+    'status','subscriptionStatus','deviceStatus','state',
+    'registrationStatus','contractStatus','serviceStatus'
+  )
+  if ($null -ne $statusVal -and $script:CancelledStatuses -contains $statusVal.ToString().ToLower()) {
+    return $true
+  }
+
+  # The API has no explicit "cancelled" flag, but servicePeriod is the contract
+  # end date. A device whose servicePeriod is in the past is a lapsed/cancelled
+  # subscription — the same logic the portal uses when hiding them by default.
+  $sp = Resolve-Field -Obj $Device -Candidates @('servicePeriod','serviceExpiry','contractEnd','expiryDate')
+  if ($null -ne $sp -and -not [string]::IsNullOrWhiteSpace($sp.ToString())) {
+    try {
+      $spDate = [datetime]::Parse($sp.ToString())
+      if ($spDate -lt (Get-Date)) { return $true }
+    }
+    catch { }
+  }
+
+  return $false
+}
+
 Write-Step "Fetching device list ..."
 $devices = Get-AllPages -Path "/bcdr/device" -Headers $headers
 Write-Step "Found $($devices.Count) device(s)."
+
+if ($ShowDeviceFields -and $devices.Count -gt 0) {
+  Write-Host "[RAW DEVICE FIELDS - first device]:" -ForegroundColor Magenta
+  $devices[0].PSObject.Properties | ForEach-Object {
+    Write-Host "  $($_.Name) = $($_.Value)" -ForegroundColor DarkMagenta
+  }
+}
 
 $results = [System.Collections.Generic.List[PSCustomObject]]::new()
 
 foreach ($device in $devices) {
   $serial = $device.serialNumber
   $dname  = $device.name
+
+  if ((Resolve-Field -Obj $device -Candidates @('hidden')) -eq $true)      { continue }
+  if (-not $IncludeCancelled -and (Test-DeviceCancelled -Device $device)) {
+    Write-Step "  $dname ($serial) — skipping (cancelled)"
+    continue
+  }
+
   Write-Step "  $dname ($serial)"
 
   try {
@@ -185,6 +230,7 @@ foreach ($device in $devices) {
   foreach ($asset in $assets) {
     $assetType = Resolve-Field -Obj $asset -Candidates @("type","assetType","kind")
     if ($assetType -eq "share" -or $assetType -eq "nas" -or $assetType -eq "nasShare") { continue }
+    if ([bool]($asset.hidden)) { continue }
 
     $agentKey  = Resolve-Field -Obj $asset -Candidates @("volume","agentKey","keyName","key","assetId","id","name")
     $agentName = Resolve-Field -Obj $asset -Candidates @("name","hostname","displayName","agentName")

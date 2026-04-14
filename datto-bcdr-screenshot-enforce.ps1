@@ -54,7 +54,9 @@ param(
   [string] $EnvFile,
   [string] $OutputCsvPath = ".\screenshot-remediation.csv",
   [switch] $OnlyNeedsAttention,
-  [switch] $OpenPortalLinks
+  [switch] $OpenPortalLinks,
+  [switch] $IncludeCancelled,
+  [switch] $ShowDeviceFields
 )
 
 Set-StrictMode -Version Latest
@@ -169,15 +171,50 @@ $headers = Get-AuthHeader -Pub $PublicKey -Sec $SecretKey
 # Enumerate
 # ---------------------------------------------------------------------------
 
+$script:CancelledStatuses = @('cancelled','canceled','inactive','expired','terminated','suspended','decommissioned')
+
+function Test-DeviceCancelled {
+  param($Device)
+
+  $statusVal = Resolve-Field -Obj $Device -Candidates @(
+    'status','subscriptionStatus','deviceStatus','state',
+    'registrationStatus','contractStatus','serviceStatus'
+  )
+  if ($null -ne $statusVal -and $script:CancelledStatuses -contains $statusVal.ToString().ToLower()) {
+    return $true
+  }
+
+  $sp = Resolve-Field -Obj $Device -Candidates @('servicePeriod','serviceExpiry','contractEnd','expiryDate')
+  if ($null -ne $sp -and -not [string]::IsNullOrWhiteSpace($sp.ToString())) {
+    try {
+      $spDate = [datetime]::Parse($sp.ToString())
+      if ($spDate -lt (Get-Date)) { return $true }
+    }
+    catch { }
+  }
+
+  return $false
+}
+
 Write-Step "Fetching device list ..."
 $devices = Get-AllPages -Path "/bcdr/device" -Headers $headers
 Write-Step "Found $($devices.Count) device(s). Enumerating agents ..."
+
+if ($ShowDeviceFields -and $devices.Count -gt 0) {
+  Write-Host "[RAW DEVICE FIELDS - first device]:" -ForegroundColor Magenta
+  $devices[0].PSObject.Properties | ForEach-Object {
+    Write-Host "  $($_.Name) = $($_.Value)" -ForegroundColor DarkMagenta
+  }
+}
 
 $report = [System.Collections.Generic.List[PSCustomObject]]::new()
 
 foreach ($device in $devices) {
   $serial = $device.serialNumber
   $dname  = $device.name
+
+  if ([bool]($device.hidden))                                             { continue }
+  if (-not $IncludeCancelled -and (Test-DeviceCancelled -Device $device)) { continue }
 
   try {
     $assets = @(Get-AllPages -Path "/bcdr/device/$serial/asset" -Headers $headers)
@@ -190,6 +227,7 @@ foreach ($device in $devices) {
   foreach ($asset in $assets) {
     $assetType = Resolve-Field -Obj $asset -Candidates @("type","assetType","kind")
     if ($assetType -eq "share" -or $assetType -eq "nas" -or $assetType -eq "nasShare") { continue }
+    if ([bool]($asset.hidden)) { continue }
 
     # Skip archived and paused — they are not actively being backed up.
     if ([bool]($asset.isArchived)) { continue }
