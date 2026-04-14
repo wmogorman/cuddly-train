@@ -40,7 +40,7 @@
   # Generate full report
   .\datto-bcdr-screenshot-enforce.ps1 -EnvFile .\datto-bcdr.env -OutputCsvPath .\remediation.csv
 
-  # Report only agents that need fixing
+  # Report only agents that need fixing (see also datto-bcdr-health-audit.ps1)
   .\datto-bcdr-screenshot-enforce.ps1 -EnvFile .\datto-bcdr.env -OnlyNeedsAttention
 
   # Open portal pages for agents that need fixing (one tab per agent)
