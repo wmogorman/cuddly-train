@@ -112,13 +112,47 @@ function Get-AllPages {
   $allItems = [System.Collections.Generic.List[object]]::new()
   $page     = 1
   $pageSize = 100
+
   do {
     $sep   = if ($Path.Contains("?")) { "&" } else { "?" }
     $paged = Invoke-DattoApi -Path "${Path}${sep}page=${page}&perPage=${pageSize}" -Headers $Headers
-    if ($null -eq $paged -or $null -eq $paged.items) { break }
-    foreach ($item in $paged.items) { $allItems.Add($item) }
+
+    # The API might return items directly as an array, or wrapped in a .items property.
+    $batch = if ($paged -is [array]) {
+      $paged
+    }
+    elseif ($null -ne $paged -and $null -ne $paged.PSObject.Properties["items"]) {
+      $paged.items
+    }
+    else {
+      $null
+    }
+
+    if ($null -eq $batch -or @($batch).Count -eq 0) { break }
+
+    foreach ($item in $batch) { $allItems.Add($item) }
+
+    # Determine total from whichever pagination field the API provides.
+    $total = $null
+    if ($null -ne $paged -and $paged -isnot [array]) {
+      foreach ($candidate in @("pagination.totalCount","totalCount","count","total")) {
+        $parts = $candidate.Split(".")
+        $val   = $paged
+        foreach ($p in $parts) {
+          if ($null -eq $val) { $val = $null; break }
+          try { $val = $val.$p } catch { $val = $null; break }
+        }
+        if ($null -ne $val) { $total = [int]$val; break }
+      }
+    }
+
+    # Stop if we have all items, or if this page was smaller than the page size (last page).
+    if ($null -ne $total -and $allItems.Count -ge $total) { break }
+    if (@($batch).Count -lt $pageSize) { break }
+
     $page++
-  } while ($allItems.Count -lt $paged.pagination.totalCount)
+  } while ($true)
+
   return $allItems
 }
 
