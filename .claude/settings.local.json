@@ -1,5 +1,4 @@
 {
-  "dangerouslySkipPermissions": true,
   "permissions": {
     "allow": [
       "WebFetch(domain:portal.dattobackup.com)",

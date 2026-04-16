@@ -1,0 +1,10 @@
+{
+  "dangerouslySkipPermissions": true,
+  "permissions": {
+    "allow": [
+      "WebFetch(*)",
+      "WebSearch",
+      "Bash(*)"
+    ]
+  }
+}
