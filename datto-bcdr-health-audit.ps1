@@ -241,6 +241,7 @@ function New-Issue {
     [string] $IssueType,
     [string] $DeviceName,
     [string] $DeviceSerial,
+    [string] $Organization = "",
     [string] $Detail,
     [string] $AgentName  = "",
     [string] $AgentKey   = ""
@@ -249,6 +250,7 @@ function New-Issue {
     IssueType    = $IssueType
     DeviceName   = $DeviceName
     DeviceSerial = $DeviceSerial
+    Organization = $Organization
     AgentName    = $AgentName
     AgentKey     = $AgentKey
     Detail       = $Detail
@@ -286,6 +288,8 @@ $issues = [System.Collections.Generic.List[PSCustomObject]]::new()
 foreach ($device in $devices) {
   $serial = $device.serialNumber
   $dname  = $device.name
+  $dorg   = Resolve-Field -Obj $device -Candidates @('organization','organizationName','clientName','accountName','client','account')
+  if ($null -eq $dorg) { $dorg = "" } else { $dorg = $dorg.ToString() }
 
   if ((Resolve-Field -Obj $device -Candidates @('hidden')) -eq $true) { continue }
   if (-not $IncludeCancelled -and (Test-DeviceCancelled -Device $device)) { continue }
@@ -299,7 +303,7 @@ foreach ($device in $devices) {
       $lastSeenDt = [datetime]::Parse($lastSeen.ToString())
       if (($script:Now - $lastSeenDt).TotalHours -gt $DeviceOfflineHours) {
         $issues.Add((New-Issue -IssueType "device-offline" `
-          -DeviceName $dname -DeviceSerial $serial `
+          -DeviceName $dname -DeviceSerial $serial -Organization $dorg `
           -Detail "Last seen: $($lastSeenDt.ToString('yyyy-MM-dd HH:mm')) ($([int]($script:Now - $lastSeenDt).TotalHours)h ago)"))
       }
     }
@@ -310,7 +314,7 @@ foreach ($device in $devices) {
   $alertCount = Resolve-Field -Obj $device -Candidates @('alertCount','activeAlerts','alerts')
   if ($null -ne $alertCount -and [int]$alertCount -gt 0) {
     $issues.Add((New-Issue -IssueType "device-alerts" `
-      -DeviceName $dname -DeviceSerial $serial `
+      -DeviceName $dname -DeviceSerial $serial -Organization $dorg `
       -Detail "$alertCount active alert(s)"))
   }
 
@@ -341,35 +345,31 @@ foreach ($device in $devices) {
     # Backup never ran
     if ($lastSnapshotTs -eq 0) {
       $issues.Add((New-Issue -IssueType "backup-never" `
-        -DeviceName $dname -DeviceSerial $serial `
+        -DeviceName $dname -DeviceSerial $serial -Organization $dorg `
         -AgentName $agentName -AgentKey $agentKey `
-        -Detail "No successful backup recorded" `
-        ))
+        -Detail "No successful backup recorded"))
     }
     # Backup stale
     elseif (($script:Now - ([DateTimeOffset]::FromUnixTimeSeconds($lastSnapshotTs)).LocalDateTime).TotalHours -gt $BackupStaleHours) {
       $issues.Add((New-Issue -IssueType "backup-stale" `
-        -DeviceName $dname -DeviceSerial $serial `
+        -DeviceName $dname -DeviceSerial $serial -Organization $dorg `
         -AgentName $agentName -AgentKey $agentKey `
-        -Detail "Last backup: $(Format-UnixTime $lastSnapshotTs) ($(Format-Age $lastSnapshotTs))" `
-        ))
+        -Detail "Last backup: $(Format-UnixTime $lastSnapshotTs) ($(Format-Age $lastSnapshotTs))"))
     }
 
     # Screenshot verification never ran
     if ($lastSsAttemptTs -eq 0) {
       $issues.Add((New-Issue -IssueType "screenshot-never" `
-        -DeviceName $dname -DeviceSerial $serial `
+        -DeviceName $dname -DeviceSerial $serial -Organization $dorg `
         -AgentName $agentName -AgentKey $agentKey `
-        -Detail "Screenshot verification never attempted" `
-        ))
+        -Detail "Screenshot verification never attempted"))
     }
     # Screenshot verification last failed
     elseif (-not $lastSsOk) {
       $issues.Add((New-Issue -IssueType "screenshot-failed" `
-        -DeviceName $dname -DeviceSerial $serial `
+        -DeviceName $dname -DeviceSerial $serial -Organization $dorg `
         -AgentName $agentName -AgentKey $agentKey `
-        -Detail "Last attempt: $(Format-UnixTime $lastSsAttemptTs) --- failed" `
-        ))
+        -Detail "Last attempt: $(Format-UnixTime $lastSsAttemptTs) --- failed"))
     }
   }
 }
