@@ -243,12 +243,8 @@ function New-Issue {
     [string] $DeviceSerial,
     [string] $Detail,
     [string] $AgentName  = "",
-    [string] $AgentKey   = "",
-    [string] $PortalUrl  = ""
+    [string] $AgentKey   = ""
   )
-  if (-not $PortalUrl) {
-    $PortalUrl = "https://portal.dattobackup.com/continuity/devices/$DeviceSerial"
-  }
   [PSCustomObject]@{
     IssueType    = $IssueType
     DeviceName   = $DeviceName
@@ -256,7 +252,6 @@ function New-Issue {
     AgentName    = $AgentName
     AgentKey     = $AgentKey
     Detail       = $Detail
-    PortalUrl    = $PortalUrl
   }
 }
 
@@ -338,7 +333,6 @@ foreach ($device in $devices) {
 
     $agentKey  = Resolve-Field -Obj $asset -Candidates @("volume","agentKey","keyName","key","assetId","id","name")
     $agentName = Resolve-Field -Obj $asset -Candidates @("name","hostname","displayName","agentName")
-    $agentUrl  = "https://portal.dattobackup.com/continuity/devices/$serial/agents/$agentKey/settings"
 
     $lastSnapshotTs = [long]($asset.lastSnapshot)
     $lastSsAttemptTs = [long]($asset.lastScreenshotAttempt)
@@ -350,7 +344,7 @@ foreach ($device in $devices) {
         -DeviceName $dname -DeviceSerial $serial `
         -AgentName $agentName -AgentKey $agentKey `
         -Detail "No successful backup recorded" `
-        -PortalUrl $agentUrl))
+        ))
     }
     # Backup stale
     elseif (($script:Now - ([DateTimeOffset]::FromUnixTimeSeconds($lastSnapshotTs)).LocalDateTime).TotalHours -gt $BackupStaleHours) {
@@ -358,7 +352,7 @@ foreach ($device in $devices) {
         -DeviceName $dname -DeviceSerial $serial `
         -AgentName $agentName -AgentKey $agentKey `
         -Detail "Last backup: $(Format-UnixTime $lastSnapshotTs) ($(Format-Age $lastSnapshotTs))" `
-        -PortalUrl $agentUrl))
+        ))
     }
 
     # Screenshot verification never ran
@@ -367,7 +361,7 @@ foreach ($device in $devices) {
         -DeviceName $dname -DeviceSerial $serial `
         -AgentName $agentName -AgentKey $agentKey `
         -Detail "Screenshot verification never attempted" `
-        -PortalUrl $agentUrl))
+        ))
     }
     # Screenshot verification last failed
     elseif (-not $lastSsOk) {
@@ -375,7 +369,7 @@ foreach ($device in $devices) {
         -DeviceName $dname -DeviceSerial $serial `
         -AgentName $agentName -AgentKey $agentKey `
         -Detail "Last attempt: $(Format-UnixTime $lastSsAttemptTs) --- failed" `
-        -PortalUrl $agentUrl))
+        ))
     }
   }
 }
