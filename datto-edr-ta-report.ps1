@@ -12,12 +12,17 @@ param(
 
   [string] $OutputPoliciesCsvPath,
 
-  [string] $OutputPolicyAssignmentsCsvPath
+  [string] $OutputPolicyAssignmentsCsvPath,
+
+  [int] $ApiTimeoutSec = 120,
+
+  [int] $RequestDelayMs = 200
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
-$script:EdrApiTimeoutSec = 10
+$script:EdrApiTimeoutSec = $ApiTimeoutSec
+$script:RequestDelayMs   = $RequestDelayMs
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -78,15 +83,39 @@ function Invoke-EdrApiGet {
   $query = ConvertTo-QueryString -Parameters $params
   $fullUri = "{0}?{1}" -f $uri, $query
 
-  try {
-    return Invoke-RestMethod -Uri $fullUri -Method GET -ContentType 'application/json' -TimeoutSec $script:EdrApiTimeoutSec
-  } catch {
-    if ($NoThrow) { return $null }
-    $msg = $_.Exception.Message
-    if ($_.ErrorDetails -and -not [string]::IsNullOrWhiteSpace($_.ErrorDetails.Message)) {
-      $msg = "{0} | Response: {1}" -f $msg, $_.ErrorDetails.Message
+  if ($script:RequestDelayMs -gt 0) {
+    Start-Sleep -Milliseconds $script:RequestDelayMs
+  }
+
+  $headers = @{ 'Connection' = 'close' }
+  $retryDelays = @(2, 5)
+  $attempt = 0
+
+  while ($true) {
+    $attempt++
+    try {
+      return Invoke-RestMethod -Uri $fullUri -Method GET -ContentType 'application/json' -Headers $headers -TimeoutSec $script:EdrApiTimeoutSec
+    } catch {
+      $msg = $_.Exception.Message
+      if ($_.ErrorDetails -and -not [string]::IsNullOrWhiteSpace($_.ErrorDetails.Message)) {
+        $msg = "{0} | Response: {1}" -f $msg, $_.ErrorDetails.Message
+      }
+
+      $isTransient = $msg -match 'ResponseEnded|response ended prematurely|connection.*reset|connection.*abort|SendFailure'
+
+      if ($isTransient -and $attempt -le $retryDelays.Count) {
+        $wait = $retryDelays[$attempt - 1]
+        Write-Verbose "Transient error on '/$relative' (attempt $attempt), retrying in ${wait}s: $msg"
+        Start-Sleep -Seconds $wait
+        continue
+      }
+
+      if ($NoThrow) {
+        Write-Verbose "API call skipped for '/$relative': $msg"
+        return $null
+      }
+      throw "API request failed for '/$relative': $msg"
     }
-    throw "API request failed for '/$relative': $msg"
   }
 }
 
@@ -1328,16 +1357,14 @@ $artifactsDir = Join-Path (Split-Path $PSCommandPath -Parent) "artifacts/datto-e
 if (-not (Test-Path $artifactsDir)) {
   New-Item -ItemType Directory -Path $artifactsDir -Force | Out-Null
 }
-$datestamp = (Get-Date).ToString("yyyy-MM-dd")
-
 if ([string]::IsNullOrWhiteSpace($OutputCsvPath)) {
-  $OutputCsvPath = Join-Path $artifactsDir "ta-report-enrollment-$datestamp.csv"
+  $OutputCsvPath = Join-Path $artifactsDir "ta-report-enrollment.csv"
 }
 if ([string]::IsNullOrWhiteSpace($OutputPoliciesCsvPath)) {
-  $OutputPoliciesCsvPath = Join-Path $artifactsDir "ta-report-policies-$datestamp.csv"
+  $OutputPoliciesCsvPath = Join-Path $artifactsDir "ta-report-policies.csv"
 }
 if ([string]::IsNullOrWhiteSpace($OutputPolicyAssignmentsCsvPath)) {
-  $OutputPolicyAssignmentsCsvPath = Join-Path $artifactsDir "ta-report-policy-assignments-$datestamp.csv"
+  $OutputPolicyAssignmentsCsvPath = Join-Path $artifactsDir "ta-report-policy-assignments.csv"
 }
 
 # ---------------------------------------------------------------------------
