@@ -28,6 +28,7 @@ ActaMSP-GDAP-Automation.cer
 ActaMSP-GDAP-Automation.pfx
 datto-bcdr.env
 datto-edr.env
+datto-rmm.env
 screenshot-audit.csv
 health-audit.csv
 screenshot-remediation.csv

@@ -11,6 +11,8 @@ This repository is a mixed operations toolkit: PowerShell, shell, and Playwright
 - `certs/`: local certificate exports. This is gitignored.
 
 ## Notable Directories
+
+- [`reports/`](reports/): daily API audit and CSV export scripts for Datto RMM, BCDR, EDR, and Duo — run all at once with `reports/morning-report.ps1`.
 - [`duo-headless/`](duo-headless/): Playwright helpers for Duo admin scraping.
 - [`datto-edr-headless/`](datto-edr-headless/): Playwright capture tooling for Datto EDR.
 - [`it-glue-headless/`](it-glue-headless/): headless Network Glue automation.

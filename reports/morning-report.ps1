@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]   $ArtifactsRoot    = (Join-Path $PSScriptRoot "artifacts"),
+    [string]   $ArtifactsRoot    = (Join-Path $PSScriptRoot ".." "artifacts"),
     [string]   $DattoRmmEnvFile  = (Join-Path $PSScriptRoot "datto-rmm.env"),
     [string]   $DattoBcdrEnvFile = (Join-Path $PSScriptRoot "datto-bcdr.env"),
     [string]   $DattoEdrEnvFile  = (Join-Path $PSScriptRoot "datto-edr.env"),
