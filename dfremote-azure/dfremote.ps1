@@ -1352,31 +1352,38 @@ if ($SshPlay) {
 }
 
 Write-Host ""
-Write-Host "==================== DEPLOYMENT COMPLETE ====================" -ForegroundColor Green
-Write-Host "VM Action:   $(if ($SkipAzureProvisioning) { 'Skipped Azure provisioning' } elseif ($vmCreated) { 'Created' } else { 'Reused existing VM' })"
-Write-Host "SSH:        ssh $AdminUsername@$pubIp"
-Write-Host "UDP Port:   1235 (opened in NSG + UFW)"
-Write-Host "Data dir:   /srv/dfremote (on attached disk, persistent)"
-if ($InstallDfRemote) {
-  Write-Host "Install dir: /opt/dfremote (DF Remote package installed)"
+if ($SshPlay -and -not $InstallDfRemote -and -not $UpdateDfRemoteServer -and -not $StartService) {
+  Write-Host "===================== SESSION COMPLETE =====================" -ForegroundColor Green
+  Write-Host "Play:       Interactive DF session completed"
+  Write-Host "Service:    dfremote restarted (iOS app ready)"
+  Write-Host "SSH:        ssh $AdminUsername@$pubIp"
+  Write-Host "==========================================================="
 } else {
-  Write-Host "Install dir: /opt/dfremote (launcher auto-detects dfremote-server or dfhack)"
+  Write-Host "==================== DEPLOYMENT COMPLETE ====================" -ForegroundColor Green
+  Write-Host "VM Action:   $(if ($SkipAzureProvisioning) { 'Skipped Azure provisioning' } elseif ($vmCreated) { 'Created' } else { 'Reused existing VM' })"
+  Write-Host "SSH:        ssh $AdminUsername@$pubIp"
+  Write-Host "UDP Port:   1235 (opened in NSG + UFW)"
+  Write-Host "Data dir:   /srv/dfremote (on attached disk, persistent)"
+  if ($InstallDfRemote) {
+    Write-Host "Install dir: /opt/dfremote (DF Remote package installed)"
+  } else {
+    Write-Host "Install dir: /opt/dfremote (launcher auto-detects dfremote-server or dfhack)"
+  }
+  if ($UpdateDfRemoteServer) {
+    Write-Host "Update:     Applied DF Remote server delta from $DfRemoteUpdateUri"
+  }
+  if ($StartService) {
+    Write-Host "Service:    dfremote was enabled and started over SSH"
+  } elseif ($UpdateDfRemoteServer) {
+    Write-Host "Service:    dfremote was restarted after updating server files"
+  } elseif ($SshPlay) {
+    Write-Host "Service:    dfremote restarted after interactive play session"
+  } else {
+    Write-Host "Service:    sudo systemctl enable --now dfremote"
+  }
+  if ($sshPublicKeys.Count -gt 0) {
+    Write-Host "SSH Keys:   Added $($sshPublicKeys.Count) key(s) to /home/$AdminUsername/.ssh/authorized_keys"
+  }
+  Write-Host "IP Address: $pubIp"
+  Write-Host "============================================================="
 }
-if ($UpdateDfRemoteServer) {
-  Write-Host "Update:     Applied DF Remote server delta from $DfRemoteUpdateUri"
-}
-if ($StartService) {
-  Write-Host "Service:    dfremote was enabled and started over SSH"
-} elseif ($UpdateDfRemoteServer) {
-  Write-Host "Service:    dfremote was restarted after updating server files"
-} else {
-  Write-Host "Service:    sudo systemctl enable --now dfremote"
-}
-if ($SshPlay) {
-  Write-Host "Play:       Interactive DF session completed; dfremote service restarted"
-}
-if ($sshPublicKeys.Count -gt 0) {
-  Write-Host "SSH Keys:   Added $($sshPublicKeys.Count) key(s) to /home/$AdminUsername/.ssh/authorized_keys"
-}
-Write-Host "IP Address: $pubIp"
-Write-Host "============================================================="
