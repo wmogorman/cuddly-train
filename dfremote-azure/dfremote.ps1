@@ -142,6 +142,10 @@ resource lookup is skipped.
 After the SSH-based start/install flow completes, run `./dfhack-run remote
 connect` on the VM and display the resulting QR code in the local terminal.
 
+.PARAMETER SshPlay
+Stop the dfremote service, launch Dwarf Fortress interactively in the local
+terminal over SSH, and automatically restart the service when the game exits.
+
 .EXAMPLE
 PS> .\dfremote-azure\write-dfremote-password.ps1
 PS> .\dfremote-azure\dfremote.ps1 -SubscriptionId '<subscription-guid>' -ResourceGroupName 'dfremote-rg' -Location 'eastus' -VmName 'dfremote-vm' -AdminUsername 'william'
@@ -245,7 +249,8 @@ param(
   [switch] $AllowInsecureDfRemoteDownload,
   [switch] $SkipAzureProvisioning,
   [string] $VmHost,
-  [switch] $ShowRemoteQr
+  [switch] $ShowRemoteQr,
+  [switch] $SshPlay
 )
 
 function Resolve-ExistingPath {
@@ -659,6 +664,121 @@ echo "Backup saved to $BACKUP_ROOT"
     -RemoteScriptPrefix 'dfremote-update'
 }
 
+function Invoke-DfRemoteInteractiveSession {
+  param(
+    [Parameter(Mandatory=$true)] [string] $HostName,
+    [Parameter(Mandatory=$true)] [string] $UserName,
+    [Parameter(Mandatory=$true)] [string] $PrivateKeyPath,
+    [int] $Port = 22,
+    [int] $ReadyTimeoutSeconds = 180
+  )
+
+  Write-Host "Waiting for SSH on ${HostName}:$Port..." -ForegroundColor Cyan
+  Wait-ForTcpPort -HostName $HostName -Port $Port -TimeoutSeconds $ReadyTimeoutSeconds
+
+  $remoteScript = @'
+#!/usr/bin/env bash
+set -euo pipefail
+
+DFHACK_INIT='/opt/dfremote/dfhack-config/init/default.dfhack.init'
+REMOTE_PLUGIN='/opt/dfremote/hack/plugins/remote.plug.so'
+
+restore_for_service() {
+  if sudo test -f "${DFHACK_INIT}.play-bak" 2>/dev/null; then
+    sudo mv "${DFHACK_INIT}.play-bak" "$DFHACK_INIT"
+  fi
+  if sudo test -f "${REMOTE_PLUGIN}.play-bak" 2>/dev/null; then
+    sudo mv "${REMOTE_PLUGIN}.play-bak" "$REMOTE_PLUGIN"
+  fi
+}
+
+restart_service() {
+  echo ""
+  echo "Restarting dfremote service..."
+  restore_for_service
+  sudo systemctl start dfremote || echo "Warning: dfremote failed to restart." >&2
+}
+trap restart_service EXIT
+
+echo "Stopping dfremote service..."
+sudo systemctl stop dfremote
+
+echo "Preparing DF for interactive play..."
+
+# Write a Python helper to /tmp (no privilege needed), then run it as root.
+# This patches init.txt to TEXT mode and creates any missing art placeholders
+# that DF 0.47 checks on startup even when not rendering to a local display.
+cat > /tmp/df-play-setup.py << 'PYEOF'
+import re, os, struct, zlib
+
+init_path = '/opt/dfremote/data/init/init.txt'
+if os.path.exists(init_path):
+    try:
+        text = open(init_path).read()
+        text = re.sub(r'\[PRINT_MODE:[^\]]*\]', '[PRINT_MODE:TEXT]', text)
+        open(init_path, 'w').write(text)
+    except Exception as e:
+        print('init.txt patch skipped: ' + str(e))
+
+def mkpng(w, h):
+    def chunk(t, d):
+        return struct.pack('>I', len(d)) + t + d + struct.pack('>I', zlib.crc32(t+d)&0xffffffff)
+    raw = (b'\x00' + b'\x00\x00\x00' * w) * h
+    return (b'\x89PNG\r\n\x1a\n'
+        + chunk(b'IHDR', struct.pack('>IIBBBBB', w, h, 8, 2, 0, 0, 0))
+        + chunk(b'IDAT', zlib.compress(raw))
+        + chunk(b'IEND', b''))
+
+art_dir = '/opt/dfremote/data/art'
+os.makedirs(art_dir, exist_ok=True)
+for name in ['curses_640x300.png', 'curses_800x600.png']:
+    dst = os.path.join(art_dir, name)
+    if not os.path.exists(dst):
+        open(dst, 'wb').write(mkpng(640, 300))
+        print('Created placeholder: ' + dst)
+
+PYEOF
+
+sudo python3 /tmp/df-play-setup.py
+rm -f /tmp/df-play-setup.py
+
+# Strip 'remote connect' from the dfhack init so it doesn't try to start the
+# remote server during interactive play.
+if sudo test -f "$DFHACK_INIT" 2>/dev/null; then
+  sudo cp "$DFHACK_INIT" "${DFHACK_INIT}.play-bak"
+  sudo sh -c "grep -v 'remote connect' '${DFHACK_INIT}.play-bak' > '${DFHACK_INIT}'; true"
+fi
+
+# Move the remote plugin aside so it doesn't load and announce itself.
+# restore_for_service in the EXIT trap puts it back before restarting the service.
+if sudo test -f "$REMOTE_PLUGIN" 2>/dev/null; then
+  sudo mv "$REMOTE_PLUGIN" "${REMOTE_PLUGIN}.play-bak"
+fi
+
+echo "Launching Dwarf Fortress..."
+if [ -x '/opt/dfremote/dfhack' ]; then
+  cd '/opt/dfremote'
+  sudo ./dfhack
+elif [ -x '/opt/dfremote/df' ]; then
+  cd '/opt/dfremote'
+  sudo ./df
+else
+  echo 'No playable DF binary found under /opt/dfremote. Install dfremote first.' >&2
+  exit 1
+fi
+'@
+
+  Write-Host "Starting interactive DF session on $HostName (dfremote service restores on exit)..." -ForegroundColor Cyan
+  Invoke-RemoteScriptOnVm `
+    -ScriptText $remoteScript `
+    -HostName $HostName `
+    -UserName $UserName `
+    -PrivateKeyPath $PrivateKeyPath `
+    -Port $Port `
+    -AllocateTty `
+    -RemoteScriptPrefix 'dfremote-play'
+}
+
 function Import-AzModulesIfAvailable {
   $modules = @('Az.Accounts', 'Az.Resources', 'Az.Network', 'Az.Compute')
   foreach ($moduleName in $modules) {
@@ -734,8 +854,8 @@ if ($InstallDfRemote -and $DfRemoteZipPath -and $DfRemoteZipUri) {
   throw "Specify only one of -DfRemoteZipPath or -DfRemoteZipUri."
 }
 
-if (($InstallDfRemote -or $UpdateDfRemoteServer -or $StartService) -and [string]::IsNullOrWhiteSpace($SshPrivateKeyPath)) {
-  throw "-SshPrivateKeyPath is required when using -InstallDfRemote, -UpdateDfRemoteServer, or -StartService."
+if (($InstallDfRemote -or $UpdateDfRemoteServer -or $StartService -or $SshPlay) -and [string]::IsNullOrWhiteSpace($SshPrivateKeyPath)) {
+  throw "-SshPrivateKeyPath is required when using -InstallDfRemote, -UpdateDfRemoteServer, -StartService, or -SshPlay."
 }
 
 if ($SkipAzureProvisioning -and [string]::IsNullOrWhiteSpace($VmHost)) {
@@ -1156,6 +1276,14 @@ if ($ShowRemoteQr -and -not $pubIp) {
   throw "Could not determine the VM public IP address needed for -ShowRemoteQr."
 }
 
+if ($SshPlay -and [string]::IsNullOrWhiteSpace($SshPrivateKeyPath)) {
+  throw "-SshPrivateKeyPath is required when using -SshPlay."
+}
+
+if ($SshPlay -and -not $pubIp) {
+  throw "Could not determine the VM public IP address needed for -SshPlay."
+}
+
 if ($InstallDfRemote -or $StartService) {
   Invoke-DfRemotePostProvisioning `
     -HostName $pubIp `
@@ -1214,6 +1342,15 @@ exec ./dfhack-run remote connect
     -RemoteScriptPrefix 'dfremote-show-qr'
 }
 
+if ($SshPlay) {
+  Invoke-DfRemoteInteractiveSession `
+    -HostName $pubIp `
+    -UserName $AdminUsername `
+    -PrivateKeyPath $SshPrivateKeyPath `
+    -Port $SshPort `
+    -ReadyTimeoutSeconds $SshReadyTimeoutSeconds
+}
+
 Write-Host ""
 Write-Host "==================== DEPLOYMENT COMPLETE ====================" -ForegroundColor Green
 Write-Host "VM Action:   $(if ($SkipAzureProvisioning) { 'Skipped Azure provisioning' } elseif ($vmCreated) { 'Created' } else { 'Reused existing VM' })"
@@ -1234,6 +1371,9 @@ if ($StartService) {
   Write-Host "Service:    dfremote was restarted after updating server files"
 } else {
   Write-Host "Service:    sudo systemctl enable --now dfremote"
+}
+if ($SshPlay) {
+  Write-Host "Play:       Interactive DF session completed; dfremote service restarted"
 }
 if ($sshPublicKeys.Count -gt 0) {
   Write-Host "SSH Keys:   Added $($sshPublicKeys.Count) key(s) to /home/$AdminUsername/.ssh/authorized_keys"
