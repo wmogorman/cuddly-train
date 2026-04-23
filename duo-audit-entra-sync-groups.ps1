@@ -172,7 +172,9 @@ function Invoke-DuoApi {
     [Parameter(Mandatory)][ValidateSet("GET", "POST", "DELETE")] [string] $Method,
     [Parameter(Mandatory)][string] $ApiHost,
     [Parameter(Mandatory)][string] $Path,
-    [hashtable] $Params = @{}
+    [hashtable] $Params = @{},
+    [Parameter(Mandatory)][string] $IKey,
+    [Parameter(Mandatory)][string] $SKey
   )
 
   $headers = New-DuoAuthHeaders -Method $Method -ApiHost $ApiHost -Path $Path -Params $Params -IKey $IKey -SKey $SKey
@@ -232,12 +234,14 @@ function Normalize-NameList {
 function Get-UserDirectorySyncs {
   param(
     [Parameter(Mandatory)][string] $ApiHost,
-    [Parameter(Mandatory)][string] $AccountId
+    [Parameter(Mandatory)][string] $AccountId,
+    [Parameter(Mandatory)][string] $IKey,
+    [Parameter(Mandatory)][string] $SKey
   )
 
   $resp = Invoke-DuoApi -Method GET -ApiHost $ApiHost -Path "/admin/v1/users/directorysync" -Params @{
     account_id = $AccountId
-  }
+  } -IKey $IKey -SKey $SKey
 
   if ($resp.stat -ne "OK") {
     throw "List directory syncs failed: $($resp | ConvertTo-Json -Depth 10)"
@@ -254,7 +258,9 @@ function Get-UserDirectorySyncs {
 function Get-DuoGroups {
   param(
     [Parameter(Mandatory)][string] $ApiHost,
-    [Parameter(Mandatory)][string] $AccountId
+    [Parameter(Mandatory)][string] $AccountId,
+    [Parameter(Mandatory)][string] $IKey,
+    [Parameter(Mandatory)][string] $SKey
   )
 
   $all = @()
@@ -266,7 +272,7 @@ function Get-DuoGroups {
       account_id = $AccountId
       limit      = $limit
       offset     = $offset
-    }
+    } -IKey $IKey -SKey $SKey
 
     if ($resp.stat -ne "OK") {
       throw "List groups failed: $($resp | ConvertTo-Json -Depth 10)"
@@ -437,7 +443,7 @@ if (-not $RequiredGroupNames -or $RequiredGroupNames.Count -eq 0) {
 }
 
 $ParentApiHost = Resolve-DuoHost -HostOrUrl $ParentApiHost
-$accountsResp = Invoke-DuoApi -Method POST -ApiHost $ParentApiHost -Path "/accounts/v1/account/list" -Params @{}
+$accountsResp = Invoke-DuoApi -Method POST -ApiHost $ParentApiHost -Path "/accounts/v1/account/list" -Params @{} -IKey $IKey -SKey $SKey
 
 if (-not $accountsResp) {
   throw "Unable to retrieve accounts."
@@ -498,7 +504,7 @@ foreach ($acct in $accounts) {
   Write-Host "==> [$childName] ($childId) host=$childHost"
 
   try {
-    $azureSyncs = @(Get-UserDirectorySyncs -ApiHost $childHost -AccountId $childId)
+    $azureSyncs = @(Get-UserDirectorySyncs -ApiHost $childHost -AccountId $childId -IKey $IKey -SKey $SKey)
 
     if ($azureSyncs.Count -eq 0) {
       $summary.NoAzureUserSyncAccounts++
@@ -509,7 +515,7 @@ foreach ($acct in $accounts) {
       continue
     }
 
-    $groups = @(Get-DuoGroups -ApiHost $childHost -AccountId $childId)
+    $groups = @(Get-DuoGroups -ApiHost $childHost -AccountId $childId -IKey $IKey -SKey $SKey)
     $entraManagedGroups = @(
       $groups |
         ForEach-Object {
