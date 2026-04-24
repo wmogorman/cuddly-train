@@ -655,21 +655,20 @@ function Get-DuoIntegrations {
     [scriptblock] $Invoker
   )
 
-  if ($null -eq $Invoker) {
-    $Invoker = {
-      param($Method, $ResolvedApiHost, $Path, $Params)
-      Invoke-DuoApi -Method $Method -ApiHost $ResolvedApiHost -Path $Path -Params $Params
-    }.GetNewClosure()
-  }
-
   $all = @()
   $offset = 0
 
   while ($true) {
-    $resp = & $Invoker "GET" $ApiHost "/admin/v1/integrations" @{
+    $params = @{
       account_id = $AccountId
       limit      = $Limit
       offset     = $offset
+    }
+
+    $resp = if ($null -ne $Invoker) {
+      & $Invoker "GET" $ApiHost "/admin/v1/integrations" $params
+    } else {
+      Invoke-DuoApi -Method "GET" -ApiHost $ApiHost -Path "/admin/v1/integrations" -Params $params
     }
 
     if ($resp.stat -ne "OK") {
