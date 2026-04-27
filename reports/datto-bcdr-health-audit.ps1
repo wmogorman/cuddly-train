@@ -55,7 +55,8 @@ param(
   [string] $OutputCsvPath,
   [int]    $DeviceOfflineHours = 4,
   [int]    $BackupStaleHours   = 25,
-  [switch] $IncludeCancelled
+  [switch] $IncludeCancelled,
+  [switch] $ShowAssetFields
 )
 
 Set-StrictMode -Version Latest
@@ -337,6 +338,13 @@ foreach ($device in $devices) {
 
     $agentKey  = Resolve-Field -Obj $asset -Candidates @("volume","agentKey","keyName","key","assetId","id","name")
     $agentName = Resolve-Field -Obj $asset -Candidates @("name","hostname","displayName","agentName")
+
+    if ($ShowAssetFields) {
+      Write-Host "[RAW ASSET FIELDS - $dname / $agentName]:" -ForegroundColor Magenta
+      $asset.PSObject.Properties | ForEach-Object {
+        Write-Host ("  {0,-40} = {1}" -f $_.Name, $_.Value) -ForegroundColor DarkMagenta
+      }
+    }
 
     $lastSnapshotTs = [long]($asset.lastSnapshot)
     $lastSsAttemptTs = [long]($asset.lastScreenshotAttempt)
