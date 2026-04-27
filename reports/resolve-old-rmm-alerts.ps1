@@ -3,8 +3,12 @@
   Resolves all open Datto RMM alerts older than a configurable number of days.
 
 .DESCRIPTION
-  Authenticates against the Datto RMM REST API using OAuth 2.0, retrieves all
-  open alerts, and resolves any that are older than -AgeDays days (default: 30).
+  Authenticates against the Datto RMM REST API using OAuth 2.0 and resolves
+  open alerts that meet either of these criteria:
+
+    Age       Alert has been open longer than -AgeDays days (default: 30).
+    Duplicate Multiple alerts of the same type exist on a device; all but
+              the most recent are resolved regardless of age.
 
   Use -WhatIf to preview which alerts would be resolved without making changes.
 
@@ -185,6 +189,32 @@ function Get-Prop {
   return $Default
 }
 
+function Get-AlertTypeKey {
+  param($Alert)
+  # alertContext.@class identifies the monitor type (e.g. eventlog_ctx, cpu_ctx).
+  # Adding code+source+logName narrows to the specific check that fired.
+  $ctxProp = $Alert.PSObject.Properties['alertContext']
+  if ($null -ne $ctxProp -and $null -ne $ctxProp.Value) {
+    $c     = $ctxProp.Value
+    $class = Get-Prop $c '@class'
+    $code  = Get-Prop $c 'code'
+    $src   = Get-Prop $c 'source'
+    $log   = Get-Prop $c 'logName'
+    if ($class -ne '') { return "$class|$code|$src|$log" }
+  }
+  return "priority=$(Get-Prop $Alert 'priority' 'unknown')"
+}
+
+function Get-AlertMessage {
+  param($Alert)
+  $ctxProp = $Alert.PSObject.Properties['alertContext']
+  if ($null -ne $ctxProp -and $null -ne $ctxProp.Value) {
+    $desc = Get-Prop $ctxProp.Value 'description'
+    if ($desc -ne '') { return ($desc -replace "`r`n|`n", ' ').Trim() }
+  }
+  return ''
+}
+
 function ConvertFrom-UnixMs {
   param([object] $Ms)
   if ($null -eq $Ms -or $Ms -eq 0) { return "" }
@@ -221,7 +251,11 @@ $devices = Get-AllDevices -BaseUrl $ApiUrl -Token $token
 Write-Step "  Found $($devices.Count) device(s)."
 
 $cutoffMs  = [DateTimeOffset]::UtcNow.AddDays(-$AgeDays).ToUnixTimeMilliseconds()
-$oldAlerts = [System.Collections.Generic.List[PSCustomObject]]::new()
+$allAlerts = [System.Collections.Generic.List[PSCustomObject]]::new()
+
+# ---------------------------------------------------------------------------
+# Pass 1: collect all open alerts, skipping devices with none
+# ---------------------------------------------------------------------------
 
 Write-Step "Scanning open alerts per device ..."
 $i = 0
@@ -230,18 +264,18 @@ foreach ($device in $devices) {
   $deviceUid  = $device.uid
   $deviceName = if ($null -ne $device.hostname) { $device.hostname } else { $deviceUid }
 
-  Write-Progress -Activity "Scanning devices" -Status "$deviceName ($i/$($devices.Count))" -PercentComplete ([int]($i / $devices.Count * 100))
+  Write-Progress -Activity "Scanning devices" -Status "$deviceName ($i/$($devices.Count))" `
+    -PercentComplete ([int]($i / $devices.Count * 100))
 
   try {
     $alerts = Get-DeviceOpenAlerts -BaseUrl $ApiUrl -Token $token -DeviceUid $deviceUid
     foreach ($alert in $alerts) {
-      $ts = Get-Prop $alert 'timestamp' 0
-      if ($ts -ne 0 -and [long]$ts -lt $cutoffMs) {
-        $oldAlerts.Add([PSCustomObject]@{
-          AlertObj   = $alert
-          DeviceName = $deviceName
-        })
-      }
+      $allAlerts.Add([PSCustomObject]@{
+        AlertObj   = $alert
+        DeviceUid  = $deviceUid
+        DeviceName = $deviceName
+        Timestamp  = [long](Get-Prop $alert 'timestamp' 0)
+      })
     }
   }
   catch {
@@ -250,28 +284,64 @@ foreach ($device in $devices) {
 }
 
 Write-Progress -Activity "Scanning devices" -Completed
-Write-Step "  Found $($oldAlerts.Count) open alert(s) older than $AgeDays days."
+Write-Step "  Total open alerts found: $($allAlerts.Count)."
 
-if ($oldAlerts.Count -gt 0 -and $VerbosePreference -ne 'SilentlyContinue') {
-  Write-Verbose "First alert object properties:"
-  $oldAlerts[0].AlertObj | Format-List | Out-String | Write-Verbose
+# ---------------------------------------------------------------------------
+# Pass 2: build target set — aged alerts + duplicate alerts (keep newest)
+# ---------------------------------------------------------------------------
+
+# Key: alertUid → {Entry, Reason}
+$targets = [System.Collections.Generic.Dictionary[string, PSCustomObject]]::new()
+
+# Age filter
+foreach ($entry in $allAlerts) {
+  if ($entry.Timestamp -ne 0 -and $entry.Timestamp -lt $cutoffMs) {
+    $uid = Get-Prop $entry.AlertObj 'alertUid'
+    if ($uid -ne '' -and -not $targets.ContainsKey($uid)) {
+      $targets[$uid] = [PSCustomObject]@{ Entry = $entry; Reason = 'Age' }
+    }
+  }
 }
 
-if ($oldAlerts.Count -eq 0) {
+# Deduplication: group by (deviceUid, alertTypeKey), keep newest, mark rest
+$groups = $allAlerts | Group-Object -Property { "$($_.DeviceUid)|$(Get-AlertTypeKey $_.AlertObj)" }
+foreach ($group in $groups) {
+  if ($group.Count -lt 2) { continue }
+  $sorted = $group.Group | Sort-Object -Property Timestamp -Descending
+  foreach ($entry in ($sorted | Select-Object -Skip 1)) {
+    $uid = Get-Prop $entry.AlertObj 'alertUid'
+    if ($uid -eq '') { continue }
+    if ($targets.ContainsKey($uid)) {
+      $targets[$uid].Reason = 'Age+Duplicate'
+    } else {
+      $targets[$uid] = [PSCustomObject]@{ Entry = $entry; Reason = 'Duplicate' }
+    }
+  }
+}
+
+Write-Step "  Targets: $($targets.Count) alert(s) to resolve ($AgeDays+ days old and/or duplicate)."
+
+if ($targets.Count -eq 0) {
   Write-Step "Nothing to resolve. Exiting."
   exit 0
 }
+
+# ---------------------------------------------------------------------------
+# Pass 3: resolve targets
+# ---------------------------------------------------------------------------
 
 $rows     = [System.Collections.Generic.List[PSCustomObject]]::new()
 $resolved = 0
 $failed   = 0
 
-foreach ($entry in $oldAlerts) {
+foreach ($kv in $targets.GetEnumerator()) {
+  $entry   = $kv.Value.Entry
+  $reason  = $kv.Value.Reason
   $alert   = $entry.AlertObj
   $uid     = Get-Prop $alert 'alertUid'
   $device  = $entry.DeviceName
-  $ts      = [long](Get-Prop $alert 'timestamp' 0)
-  $msg     = Get-Prop $alert 'alertMessage' (Get-Prop $alert 'description' (Get-Prop $alert 'message'))
+  $ts      = $entry.Timestamp
+  $msg     = Get-AlertMessage $alert
   $ageMs   = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() - $ts
   $ageDays = [math]::Round($ageMs / 86400000, 1)
   $created = ConvertFrom-UnixMs -Ms $ts
@@ -279,41 +349,41 @@ foreach ($entry in $oldAlerts) {
 
   $status = ""
 
-  if ($PSCmdlet.ShouldProcess("Alert $uid on $device (age: $ageDays days)", "Resolve")) {
+  if ($PSCmdlet.ShouldProcess("Alert $uid on $device (age: $ageDays d, reason: $reason)", "Resolve")) {
     try {
       Invoke-RmmPost -Uri "$ApiUrl/api/v2/alert/$uid/resolve" -Token $token | Out-Null
       $status = "Resolved"
       $resolved++
-      Write-Step "  RESOLVED  [$ageDays d]  $device — $msg"
+      Write-Step "  RESOLVED  [$ageDays d] [$reason]  $device — $msg"
     }
     catch {
       $status = "Failed: $_"
       $failed++
-      Write-Warning "  FAILED    [$ageDays d]  $device — $msg`n             $_"
+      Write-Warning "  FAILED    [$ageDays d] [$reason]  $device — $msg`n             $_"
     }
   }
   else {
     $status = "WhatIf"
-    Write-Step "  WOULD RESOLVE  [$ageDays d]  $device — $msg"
+    Write-Step "  WOULD RESOLVE  [$ageDays d] [$reason]  $device — $msg"
   }
 
   $rows.Add([PSCustomObject]@{
     AlertUid     = $uid
     DeviceName   = $device
     Priority     = $prio
-    AlertMessage = $msg
+    Description  = $msg
     Created      = $created
     AgeDays      = $ageDays
+    Reason       = $reason
     Status       = $status
   })
 }
 
 Write-Step ""
 if ($WhatIfPreference) {
-  Write-Step "WhatIf complete. $($oldAlerts.Count) alert(s) would be resolved."
-}
-else {
-  Write-Step "Done. Resolved: $resolved  |  Failed: $failed  |  Total candidates: $($oldAlerts.Count)"
+  Write-Step "WhatIf complete. $($targets.Count) alert(s) would be resolved."
+} else {
+  Write-Step "Done. Resolved: $resolved  |  Failed: $failed  |  Total candidates: $($targets.Count)"
 }
 
 if (-not [string]::IsNullOrWhiteSpace($OutputCsvPath)) {
