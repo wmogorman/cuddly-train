@@ -1,10 +1,11 @@
 {
-  "dangerouslySkipPermissions": true,
   "permissions": {
+    "defaultMode": "bypassPermissions",
     "allow": [
       "WebFetch(*)",
       "WebSearch",
-      "Bash(*)"
+      "Bash(*)",
+      "PowerShell(*)"
     ]
   }
 }
