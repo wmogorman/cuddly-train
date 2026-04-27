@@ -120,17 +120,35 @@ function Invoke-RmmApi {
 }
 
 function Invoke-RmmPost {
-  param([string] $Uri, [string] $Token)
-  try {
-    return Invoke-RestMethod `
-      -Uri         $Uri `
-      -Method      POST `
-      -Headers     @{ Authorization = "Bearer $Token" } `
-      -ContentType "application/json"
-  }
-  catch {
-    $status = $_.Exception.Response.StatusCode.value__
-    throw "API error [$Uri] HTTP $status : $($_.Exception.Message)"
+  param([string] $Uri, [string] $Token, [int] $MaxRetries = 5)
+
+  $attempt = 0
+  while ($true) {
+    $attempt++
+    try {
+      return Invoke-RestMethod `
+        -Uri         $Uri `
+        -Method      POST `
+        -Headers     @{ Authorization = "Bearer $Token" } `
+        -ContentType "application/json"
+    }
+    catch {
+      $response = $_.Exception.Response
+      $status   = if ($null -ne $response) { $response.StatusCode.value__ } else { 0 }
+
+      if ($status -eq 429 -and $attempt -le $MaxRetries) {
+        $wait = 60
+        try {
+          $ra = $response.Headers.GetValues('Retry-After')
+          if ($ra) { $wait = [int]$ra[0] }
+        } catch {}
+        Write-Step "  Rate limited (429). Waiting $wait s before retry $attempt/$MaxRetries ..."
+        Start-Sleep -Seconds $wait
+        continue
+      }
+
+      throw "API error [$Uri] HTTP $status : $($_.Exception.Message)"
+    }
   }
 }
 
