@@ -60,6 +60,10 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
+$artifactsDir = Join-Path (Split-Path $PSCommandPath -Parent) "artifacts\datto-rmm"
+if (-not (Test-Path $artifactsDir)) { New-Item -ItemType Directory -Path $artifactsDir -Force | Out-Null }
+if ([string]::IsNullOrWhiteSpace($OutputCsvPath)) { $OutputCsvPath = Join-Path $artifactsDir "resolve-old-rmm-alerts.csv" }
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -404,7 +408,5 @@ if ($WhatIfPreference) {
   Write-Step "Done. Resolved: $resolved  |  Failed: $failed  |  Total candidates: $($targets.Count)"
 }
 
-if (-not [string]::IsNullOrWhiteSpace($OutputCsvPath)) {
-  $rows | Export-Csv -LiteralPath $OutputCsvPath -NoTypeInformation -Encoding UTF8
-  Write-Step "Report written to: $OutputCsvPath"
-}
+$rows | Export-Csv -LiteralPath $OutputCsvPath -NoTypeInformation -Encoding UTF8
+Write-Step "Report written to: $OutputCsvPath"

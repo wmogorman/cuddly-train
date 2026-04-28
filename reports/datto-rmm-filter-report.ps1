@@ -67,13 +67,17 @@ param(
   [string] $ApiSecretKey,
   [string] $EnvFile,
   [string] $ApiUrl        = "https://zinfandel-api.centrastage.net",
-  [string] $OutputCsvPath = "datto-rmm-filters.csv",
+  [string] $OutputCsvPath = "",
   [switch] $IncludeDefault,
   [switch] $SkipDeviceCount
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+
+$artifactsDir = Join-Path (Split-Path $PSCommandPath -Parent) "artifacts\datto-rmm"
+if (-not (Test-Path $artifactsDir)) { New-Item -ItemType Directory -Path $artifactsDir -Force | Out-Null }
+if ([string]::IsNullOrWhiteSpace($OutputCsvPath)) { $OutputCsvPath = Join-Path $artifactsDir "datto-rmm-filters.csv" }
 
 # ---------------------------------------------------------------------------
 # Helpers
