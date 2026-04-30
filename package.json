@@ -11,7 +11,8 @@
     "duo:external-mfa-scrape": "tsx duo-headless/duo-external-mfa-details-scrape.ts",
     "duo:external-mfa-scrape:headed": "cross-env HEADED=1 tsx duo-headless/duo-external-mfa-details-scrape.ts",
     "rmm:snmp-credentials": "tsx datto-rmm-headless/datto-rmm-snmp-credentials.ts",
-    "rmm:snmp-credentials:headed": "cross-env HEADED=1 tsx datto-rmm-headless/datto-rmm-snmp-credentials.ts"
+    "rmm:snmp-credentials:headed": "cross-env HEADED=1 tsx datto-rmm-headless/datto-rmm-snmp-credentials.ts",
+    "rmm:snmp-credentials:cleanup": "cross-env HEADED=1 CLEANUP=1 tsx datto-rmm-headless/datto-rmm-snmp-credentials.ts"
   },
   "dependencies": {
     "dotenv": "16.4.5",

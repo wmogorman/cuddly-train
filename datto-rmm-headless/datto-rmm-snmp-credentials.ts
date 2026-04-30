@@ -198,6 +198,10 @@ async function createCredential(
   // Authentication → SHA1
   await clickToggle(page, 'SHA1');
 
+  // v3 user (security name)
+  const v3UserVal = env('V3_USER', false) || 'ActaMSPv3';
+  await page.getByPlaceholder('Enter a v3 user').fill(v3UserVal);
+
   // v3 password = auth passphrase
   await page.getByPlaceholder('Enter a v3 password').fill(authPassphrase);
 
@@ -207,8 +211,7 @@ async function createCredential(
   // v3 encryption key = privacy passphrase
   await page.getByPlaceholder('Enter a v3 encryption key').fill(privPassphrase);
 
-  // Submit
-  const beforeUrl = page.url();
+  // Submit — the form resets in place on success (URL stays /credential)
   const submitBtn = await firstVisibleOf(
     page.getByRole('button', { name: /create credential/i }).first(),
     page.locator(':text("Create Credential")').first(),
@@ -217,42 +220,74 @@ async function createCredential(
   if (!submitBtn) throw new Error('Cannot find Create Credential submit button.');
   await submitBtn.click();
 
-  // Wait for URL to change — SPAs keep background requests open, so networkidle never fires
-  await page.waitForURL(url => url !== beforeUrl, { timeout: 20_000 }).catch(() => {});
-
-  if (page.url() === beforeUrl) {
+  // Success: Name field clears. Failure: Name field retains our value.
+  await page.waitForTimeout(2_000);
+  const nameAfter = await page.getByPlaceholder('Enter a name').inputValue().catch(() => '');
+  if (nameAfter === credentialName) {
     const errEl = await firstVisibleOf(
       page.locator('[role="alert"]').first(),
       page.locator('[class*="error"]').first(),
       page.locator('[class*="alert-danger"]').first(),
     );
     const errText = errEl ? await errEl.innerText().catch(() => '') : '';
-    throw new Error(`Credential creation may have failed (page did not navigate away). ${errText}`.trim());
+    throw new Error(`Credential creation failed (form was not reset after submit). ${errText}`.trim());
+  }
+}
+
+async function deleteAllSNMPv3Credentials(page: Page, rmmUrl: string): Promise<void> {
+  let deleted = 0;
+
+  // Navigate to credentials list and wait for page heading to confirm it loaded
+  await page.goto(`${rmmUrl}/credentials`, { waitUntil: 'domcontentloaded', timeout: 30_000 });
+  await page.locator(':text("Create Credential")').first().waitFor({ state: 'visible', timeout: 20_000 });
+  await page.waitForTimeout(2_000);
+
+  // Click the SNMP type tab — SNMPv3 credentials are beyond page 1 of the full list
+  // (alphabetically "N" for "Name is not configured" precedes "S" for "SNMPv3")
+  const snmpTab = page.locator(':text("SNMP")').first();
+  if (await snmpTab.isVisible({ timeout: 3_000 }).catch(() => false)) {
+    await snmpTab.click();
+    await page.waitForTimeout(2_000);
+  }
+
+  while (true) {
+    const credEl = page.locator(':text-is("SNMPv3")').first();
+    if (!await credEl.isVisible({ timeout: 5_000 }).catch(() => false)) {
+      console.log(`No more SNMPv3 credentials found. Total deleted: ${deleted}`);
+      break;
+    }
+
+    await credEl.click();
+    await page.waitForTimeout(1_500);
+
+    const deleteBtn = await firstVisibleOf(
+      page.getByRole('button', { name: /^delete$/i }).first(),
+      page.locator(':text-is("Delete")').first(),
+    );
+    if (!deleteBtn) throw new Error('Delete button not found in credential detail panel.');
+    await deleteBtn.click();
+
+    // Confirm inside the validationModal dialog
+    await page.waitForTimeout(800);
+
+    // Check the "I understand this is irreversible" checkbox to enable Delete
+    const checkbox = page.getByTestId('validationModalCheckbox');
+    if (await checkbox.isVisible({ timeout: 2_000 }).catch(() => false)) {
+      await checkbox.click();
+      await page.waitForTimeout(500);
+    }
+
+    await page.getByTestId('dialogConfirm').click();
+
+    await page.waitForTimeout(1_500);
+    deleted++;
+    console.log(`Deleted ${deleted}: SNMPv3`);
   }
 }
 
 (async () => {
   const rmmUrl  = env('DATTO_RMM_URL').replace(/\/$/, '');
-  const csvPath = path.resolve(
-    env('PLAN_CSV_PATH', false) || './artifacts/datto-rmm/snmp-credential-plan.csv'
-  );
-
-  if (!fs.existsSync(csvPath)) {
-    throw new Error(
-      `Plan CSV not found: ${csvPath}\nRun datto-rmm-snmp-credential-plan.ps1 first to generate it.`
-    );
-  }
-
-  const allRows     = readPlanCSV(csvPath);
-  const matchedRows = allRows.filter(r => r.MatchStatus === 'Matched');
-  const skipped     = allRows.length - matchedRows.length;
-
-  console.log(`Plan: ${allRows.length} total rows, ${matchedRows.length} Matched, ${skipped} skipped (Unmatched/MissingPassphrase).`);
-
-  if (matchedRows.length === 0) {
-    console.log('Nothing to do — no Matched rows in plan CSV.');
-    return;
-  }
+  const cleanup = !!process.env.CLEANUP;
 
   const headed  = !!process.env.HEADED;
   const browser = await chromium.launch({ headless: !headed });
@@ -261,11 +296,38 @@ async function createCredential(
     : await browser.newContext();
   const page = await context.newPage();
 
-  let created = 0;
-  let failed  = 0;
-
   try {
     await ensureLoggedIn(page, context, rmmUrl);
+
+    if (cleanup) {
+      console.log('CLEANUP mode: deleting all SNMPv3 credentials...');
+      await deleteAllSNMPv3Credentials(page, rmmUrl);
+      return;
+    }
+
+    const csvPath = path.resolve(
+      env('PLAN_CSV_PATH', false) || './artifacts/datto-rmm/snmp-credential-plan.csv'
+    );
+
+    if (!fs.existsSync(csvPath)) {
+      throw new Error(
+        `Plan CSV not found: ${csvPath}\nRun datto-rmm-snmp-credential-plan.ps1 first to generate it.`
+      );
+    }
+
+    const allRows     = readPlanCSV(csvPath);
+    const matchedRows = allRows.filter(r => r.MatchStatus === 'Matched');
+    const skipped     = allRows.length - matchedRows.length;
+
+    console.log(`Plan: ${allRows.length} total rows, ${matchedRows.length} Matched, ${skipped} skipped (Unmatched/MissingPassphrase).`);
+
+    if (matchedRows.length === 0) {
+      console.log('Nothing to do — no Matched rows in plan CSV.');
+      return;
+    }
+
+    let created = 0;
+    let failed  = 0;
 
     for (const row of matchedRows) {
       console.log(`\nSite: ${row.DattoSiteName}  (IT Glue org: ${row.OrgName})`);
