@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]   $ArtifactsRoot    = (Join-Path $PSScriptRoot ".." "artifacts"),
+    [string]   $ArtifactsRoot    = (Join-Path (Join-Path $PSScriptRoot "..") "artifacts"),
     [string]   $DattoRmmEnvFile  = (Join-Path $PSScriptRoot "datto-rmm.env"),
     [string]   $DattoBcdrEnvFile = (Join-Path $PSScriptRoot "datto-bcdr.env"),
     [string]   $DattoEdrEnvFile  = (Join-Path $PSScriptRoot "datto-edr.env"),
@@ -174,4 +174,4 @@ Write-Host ("=" * 56) -ForegroundColor Cyan
 Write-Host ("Completed in {0}m {1}s  |  {2} OK, {3} failed, {4} skipped" -f $min, $sec, $succeeded, $failed, $skipped)
 Write-Host ""
 
-exit ($failed -gt 0 ? 1 : 0)
+if ($failed -gt 0) { exit 1 } else { exit 0 }
