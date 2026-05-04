@@ -12,6 +12,8 @@ powertechnology-immybot/dist/
 duo-entra-sync-group-audit.csv
 datto-edr-headless/storage_state.json
 datto-edr-headless/datto-edr-headless.env
+datto-rmm-headless/storage_state.json
+datto-rmm-headless/datto-rmm-snmp-credentials.env
 datto-edr-policy-audit.csv
 datto-edr-policy-audit.json
 datto-edr-ui-snapshot.json
