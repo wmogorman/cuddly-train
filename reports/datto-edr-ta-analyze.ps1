@@ -72,7 +72,7 @@ function Add-Finding {
   }) | Out-Null
 }
 
-$scopeGroups = $allRows | Group-Object { "$($_.Organization)|$($_.Location)" }
+$scopeGroups = @($allRows | Group-Object { "$($_.Organization)|$($_.Location)" })
 
 foreach ($group in $scopeGroups) {
   $rows    = @($group.Group)
